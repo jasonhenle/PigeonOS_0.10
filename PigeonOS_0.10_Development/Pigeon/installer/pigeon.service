@@ -1,0 +1,27 @@
+[Unit]
+Description=Pigeon media display (@PIGEON_VERSION@)
+After=network-online.target graphical.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@PIGEON_USER@
+Group=@PIGEON_USER@
+WorkingDirectory=@PIGEON_DIR@
+Environment=HOME=@PIGEON_HOME@
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=@PIGEON_HOME@/.Xauthority
+Environment=PYTHONPYCACHEPREFIX=@PIGEON_DIR@/pigeonCashe
+Environment=PIGEON_DISPLAY_W=800
+Environment=PIGEON_DISPLAY_H=480
+Environment=PIGEON_WINDOW_SCALE=1.0
+Environment=PIGEON_PI_FULLSCREEN=1
+Environment=PIGEON_APPLE_TV_SCAN_TIMEOUT=12
+# Wait for the desktop session before starting Tk.
+ExecStartPre=/bin/sleep 8
+ExecStart=@PIGEON_DIR@/installer/run_pigeon_0_10.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical.target
