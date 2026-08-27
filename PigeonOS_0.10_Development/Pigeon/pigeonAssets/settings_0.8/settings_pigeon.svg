@@ -187,7 +187,7 @@
     <g id="settings_pigeon_03_general_text_group">
       <rect id="settings_pigeon_03_general_box_button" x="658.51" y="668.88" width="89.89" height="24.8" rx="5.64" ry="5.64" style="stroke: #000; stroke-miterlimit: 10; stroke-width: 7px;"/>
       <g id="settings_pigeon_03_general_text" style="isolation: isolate;">
-        <text transform="translate(668.95 688.53)" style="fill: #fff; font-family: Digital-7, Digital-7; font-size: 21px; isolation: isolate;"><tspan x="0" y="0">general</tspan></text>
+        <text transform="translate(668.95 688.53)" style="fill: #fff; font-family: Digital-7, Digital-7; font-size: 21px; isolation: isolate;"><tspan x="0" y="0">OPTIONS</tspan></text>
       </g>
     </g>
     <g id="settings_pigeon_03_general_icon_group">

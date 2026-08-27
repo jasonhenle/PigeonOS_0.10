@@ -196,6 +196,33 @@ class ZoneAdaptTests(unittest.TestCase):
         )
         self.assertEqual(zones[0], "clock")
         self.assertEqual(zones[1], "")
+        self.assertEqual(zones[4], "status_bar")
+
+    def test_status_bar_alias_and_circular_np_are_distinct(self) -> None:
+        zones = _effective_zone_widgets(
+            has_position=True,
+            cast_count=6,
+            zone_widgets=("now_playing", "poster", "volume", "cast_info", "now_playing"),
+        )
+        self.assertEqual(zones[0], "now_playing")
+        self.assertEqual(zones[4], "status_bar")
+
+    def test_no_position_keeps_circular_np_in_zone1(self) -> None:
+        zones = _effective_zone_widgets(
+            has_position=False,
+            cast_count=6,
+            zone_widgets=("now_playing", "poster", "volume", "cast_info", "status_bar"),
+        )
+        self.assertEqual(zones[0], "now_playing")
+
+    def test_idle_content_keeps_clock_only(self) -> None:
+        zones = _effective_zone_widgets(
+            has_position=False,
+            cast_count=0,
+            content_active=False,
+            zone_widgets=("clock", "poster", "volume", "cast_info", "status_bar"),
+        )
+        self.assertEqual(zones, ("clock", "", "", "", ""))
 
 
 if __name__ == "__main__":

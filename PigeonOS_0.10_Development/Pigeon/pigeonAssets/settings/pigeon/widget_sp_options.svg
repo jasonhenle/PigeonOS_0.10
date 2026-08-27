@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="widget_sp_options" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 800">
+  <!-- Pill cards: height 56 → rx=28. Black stroke matches options2.ai. -->
+  <!-- 1 time (top left): 12 hr / clock | 24 hr -->
+  <rect id="toggle_selector_1" x="303.49" y="29.01" width="245.99" height="56" rx="28" ry="28" fill="#FFFFFF" stroke="#FFFFFF" stroke-miterlimit="10" stroke-width="20" display="none"/>
+  <rect id="red_swatch_button1" x="303.49" y="29.01" width="245.99" height="56" rx="28" ry="28" fill="#ff0013" stroke="#000000" stroke-miterlimit="10" stroke-width="5"/>
+  <g id="option_a_1">
+    <text transform="translate(390.27 50.2)" fill="#FFFFFF" font-family="SharpSans-Extrabold, 'Sharp Sans'" font-size="17" font-weight="800" text-anchor="end">12 hr</text>
+    <text transform="translate(390.27 67.2)" fill="#FFFFFF" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="14" font-weight="600" text-anchor="end">clock</text>
+  </g>
+  <g id="toggle_switch1_group">
+    <rect id="toggle_switch1_rectangle" x="398.27" y="45.07" width="47.74" height="23.87" rx="11.93" ry="11.93" fill="#000000"/>
+    <circle id="toggle_switch1_a" cx="410.57" cy="57.0" r="9.97" fill="#FFFFFF"/>
+    <circle id="toggle_switch1_b" cx="433.91" cy="57.0" r="9.97" fill="#FFFFFF" display="none"/>
+  </g>
+  <g id="option_b_1">
+    <text transform="translate(455.95 62.0)" fill="#000000" font-family="SharpSans-Extrabold, 'Sharp Sans'" font-size="17" font-weight="800" text-anchor="start">24 hr</text>
+  </g>
+
+  <!-- 2 clock (bottom left): digital / clock | analog -->
+  <rect id="toggle_selector_2" x="303.49" y="101.01" width="245.99" height="56" rx="28" ry="28" fill="#FFFFFF" stroke="#FFFFFF" stroke-miterlimit="10" stroke-width="20" display="none"/>
+  <rect id="red_swatch_button2" x="303.49" y="101.01" width="245.99" height="56" rx="28" ry="28" fill="#ff0013" stroke="#000000" stroke-miterlimit="10" stroke-width="5"/>
+  <g id="option_a_2">
+    <text transform="translate(390.27 122.2)" fill="#FFFFFF" font-family="SharpSans-Extrabold, 'Sharp Sans'" font-size="17" font-weight="800" text-anchor="end">digital</text>
+    <text transform="translate(390.27 139.2)" fill="#FFFFFF" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="14" font-weight="600" text-anchor="end">clock</text>
+  </g>
+  <g id="toggle_switch2_group">
+    <rect id="toggle_switch2_rectangle" x="398.27" y="117.07" width="47.74" height="23.87" rx="11.93" ry="11.93" fill="#000000"/>
+    <circle id="toggle_switch2_a" cx="410.57" cy="129.0" r="9.97" fill="#FFFFFF"/>
+    <circle id="toggle_switch2_b" cx="433.91" cy="129.0" r="9.97" fill="#FFFFFF" display="none"/>
+  </g>
+  <g id="option_b_2">
+    <text transform="translate(455.95 134.0)" fill="#000000" font-family="SharpSans-Extrabold, 'Sharp Sans'" font-size="17" font-weight="800" text-anchor="start">analog</text>
+  </g>
+
+  <!-- 3 temp (top mid): F° | C° -->
+  <rect id="toggle_selector_3" x="580.69" y="29.01" width="245.99" height="56" rx="28" ry="28" fill="#FFFFFF" stroke="#FFFFFF" stroke-miterlimit="10" stroke-width="20" display="none"/>
+  <rect id="red_swatch_button3" x="580.69" y="29.01" width="245.99" height="56" rx="28" ry="28" fill="#ff0013" stroke="#000000" stroke-miterlimit="10" stroke-width="5"/>
+  <g id="option_a_3">
+    <text transform="translate(676.67 62.0)" fill="#FFFFFF" font-family="SharpSans-Extrabold, 'Sharp Sans'" font-size="20" font-weight="800" text-anchor="end">F°</text>
+  </g>
+  <g id="toggle_switch3_group">
+    <rect id="toggle_switch3_rectangle" x="684.67" y="45.07" width="47.74" height="23.87" rx="11.93" ry="11.93" fill="#000000"/>
+    <circle id="toggle_switch3_a" cx="696.97" cy="57.0" r="9.97" fill="#FFFFFF"/>
+    <circle id="toggle_switch3_b" cx="720.31" cy="57.0" r="9.97" fill="#FFFFFF" display="none"/>
+  </g>
+  <g id="option_b_3">
+    <text transform="translate(742.35 62.0)" fill="#000000" font-family="SharpSans-Extrabold, 'Sharp Sans'" font-size="20" font-weight="800" text-anchor="start">C°</text>
+  </g>
+
+  <!-- 4 color (bottom mid): color / ui | dark -->
+  <rect id="toggle_selector_4" x="580.69" y="101.01" width="245.99" height="56" rx="28" ry="28" fill="#FFFFFF" stroke="#FFFFFF" stroke-miterlimit="10" stroke-width="20" display="none"/>
+  <rect id="red_swatch_button4" x="580.69" y="101.01" width="245.99" height="56" rx="28" ry="28" fill="#ff0013" stroke="#000000" stroke-miterlimit="10" stroke-width="5"/>
+  <g id="option_a_4">
+    <text transform="translate(676.67 122.2)" fill="#FFFFFF" font-family="SharpSans-Extrabold, 'Sharp Sans'" font-size="17" font-weight="800" text-anchor="end">color</text>
+    <text transform="translate(676.67 139.2)" fill="#FFFFFF" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="14" font-weight="600" text-anchor="end">ui</text>
+  </g>
+  <g id="toggle_switch4_group">
+    <rect id="toggle_switch4_rectangle" x="684.67" y="117.07" width="47.74" height="23.87" rx="11.93" ry="11.93" fill="#000000"/>
+    <circle id="toggle_switch4_a" cx="696.97" cy="129.0" r="9.97" fill="#FFFFFF"/>
+    <circle id="toggle_switch4_b" cx="720.31" cy="129.0" r="9.97" fill="#FFFFFF" display="none"/>
+  </g>
+  <g id="option_b_4">
+    <text transform="translate(742.98 134.0)" fill="#000000" font-family="SharpSans-Extrabold, 'Sharp Sans'" font-size="17" font-weight="800" text-anchor="start">dark</text>
+  </g>
+
+  <!-- 5 idle (top right): :60 / idle | :120 -->
+  <rect id="toggle_selector_5" x="857.79" y="29.01" width="245.99" height="56" rx="28" ry="28" fill="#FFFFFF" stroke="#FFFFFF" stroke-miterlimit="10" stroke-width="20" display="none"/>
+  <rect id="red_swatch_button5" x="857.79" y="29.01" width="245.99" height="56" rx="28" ry="28" fill="#ff0013" stroke="#000000" stroke-miterlimit="10" stroke-width="5"/>
+  <g id="option_a_5">
+    <text transform="translate(953.78 50.2)" fill="#FFFFFF" font-family="SharpSans-Extrabold, 'Sharp Sans'" font-size="17" font-weight="800" text-anchor="end">:60</text>
+    <text transform="translate(953.78 67.2)" fill="#FFFFFF" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="14" font-weight="600" text-anchor="end">idle</text>
+  </g>
+  <g id="toggle_switch5_group">
+    <rect id="toggle_switch5_rectangle" x="961.78" y="45.07" width="47.74" height="23.87" rx="11.93" ry="11.93" fill="#000000"/>
+    <circle id="toggle_switch5_a" cx="974.08" cy="57.0" r="9.97" fill="#FFFFFF"/>
+    <circle id="toggle_switch5_b" cx="997.42" cy="57.0" r="9.97" fill="#FFFFFF" display="none"/>
+  </g>
+  <g id="option_b_5">
+    <text transform="translate(1019.46 62.0)" fill="#000000" font-family="SharpSans-Extrabold, 'Sharp Sans'" font-size="17" font-weight="800" text-anchor="start">:120</text>
+  </g>
+
+  <!-- 6 clocksaver (bottom right): on / cycle / color | off -->
+  <rect id="toggle_selector_6" x="857.79" y="101.01" width="245.99" height="56" rx="28" ry="28" fill="#FFFFFF" stroke="#FFFFFF" stroke-miterlimit="10" stroke-width="20" display="none"/>
+  <rect id="red_swatch_button6" x="857.79" y="101.01" width="245.99" height="56" rx="28" ry="28" fill="#ff0013" stroke="#000000" stroke-miterlimit="10" stroke-width="5"/>
+  <g id="option_a_6">
+    <text transform="translate(953.78 116.0)" fill="#FFFFFF" font-family="SharpSans-Extrabold, 'Sharp Sans'" font-size="15" font-weight="800" text-anchor="end">on</text>
+    <text transform="translate(953.78 131.0)" fill="#FFFFFF" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="13" font-weight="600" text-anchor="end">cycle</text>
+    <text transform="translate(953.78 145.5)" fill="#FFFFFF" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="13" font-weight="600" text-anchor="end">color</text>
+  </g>
+  <g id="toggle_switch6_group">
+    <rect id="toggle_switch6_rectangle" x="961.78" y="117.07" width="47.74" height="23.87" rx="11.93" ry="11.93" fill="#000000"/>
+    <circle id="toggle_switch6_a" cx="974.08" cy="129.0" r="9.97" fill="#FFFFFF"/>
+    <circle id="toggle_switch6_b" cx="997.42" cy="129.0" r="9.97" fill="#FFFFFF" display="none"/>
+  </g>
+  <g id="option_b_6">
+    <text transform="translate(1015.09 134.0)" fill="#000000" font-family="SharpSans-Extrabold, 'Sharp Sans'" font-size="17" font-weight="800" text-anchor="start">off</text>
+  </g>
+</svg>

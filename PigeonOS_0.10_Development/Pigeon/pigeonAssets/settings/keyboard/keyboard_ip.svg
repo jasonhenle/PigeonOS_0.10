@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1333.33 800">
+  <g id="numeric_template">
+    <rect x="778.16" y="524.23" width="105.91" height="70.18" rx="19" ry="19" fill="#ff0013"/>
+    <path d="M850.91,671.07h-42.57c-17.49,0-31.67-14.18-31.67-31.67v-6.84c0-17.49,14.18-31.67,31.67-31.67h42.57c17.49,0,31.67,14.18,31.67,31.67v6.84c0,17.49-14.18,31.67-31.67,31.67" fill="#ff0013"/>
+    <path d="M741.67,671.07h-42.57c-17.49,0-31.67-14.18-31.67-31.67v-6.84c0-17.49,14.18-31.67,31.67-31.67h42.57c17.49,0,31.67,14.18,31.67,31.67v6.84c0,17.49-14.18,31.67-31.67,31.67" fill="#ff0013"/>
+    <path id="numeric_template_abc" d="M631.29,671.07h-42.57c-17.49,0-31.67-14.18-31.67-31.67v-6.84c0-17.49,14.18-31.67,31.67-31.67h42.57c17.49,0,31.67,14.18,31.67,31.67v6.84c0,17.49-14.18,31.67-31.67,31.67" fill="#ff0013"/>
+    <path id="numeric_template_sym" d="M520.91,671.07h-42.57c-17.49,0-31.67-14.18-31.67-31.67v-6.84c0-17.49,14.18-31.67,31.67-31.67h42.57c17.49,0,31.67,14.18,31.67,31.67v6.84c0,17.49-14.18,31.67-31.67,31.67" fill="#ff0013"/>
+    <path id="numeric_template_8" d="M742.25,594.4h-42.57c-17.49,0-31.67-14.18-31.67-31.67v-6.84c0-17.49,14.18-31.67,31.67-31.67h42.57c17.49,0,31.67,14.18,31.67,31.67v6.84c0,17.49-14.18,31.67-31.67,31.67" fill="#ff0013"/>
+    <path id="numeric_template_7" d="M632.06,594.4h-42.57c-17.49,0-31.67-14.18-31.67-31.67v-6.84c0-17.49,14.18-31.67,31.67-31.67h42.57c17.49,0,31.67,14.18,31.67,31.67v6.84c0,17.49-14.18,31.67-31.67,31.67" fill="#ff0013"/>
+    <path id="numeric_template_6" d="M852.44,517.74h-42.57c-17.49,0-31.67-14.18-31.67-31.67v-6.84c0-17.49,14.18-31.67,31.67-31.67h42.57c17.49,0,31.67,14.18,31.67,31.67v6.84c0,17.49-14.18,31.67-31.67,31.67" fill="#ff0013"/>
+    <path id="numeric_template_5" d="M742.25,517.74h-42.57c-17.49,0-31.67-14.18-31.67-31.67v-6.84c0-17.49,14.18-31.67,31.67-31.67h42.57c17.49,0,31.67,14.18,31.67,31.67v6.84c0,17.49-14.18,31.67-31.67,31.67" fill="#ff0013"/>
+    <path id="numeric_template_4" d="M632.06,517.74h-42.57c-17.49,0-31.67-14.18-31.67-31.67v-6.84c0-17.49,14.18-31.67,31.67-31.67h42.57c17.49,0,31.67,14.18,31.67,31.67v6.84c0,17.49-14.18,31.67-31.67,31.67" fill="#ff0013"/>
+    <path id="numeric_template_3" d="M852.44,442.58h-42.57c-17.49,0-31.67-14.18-31.67-31.67v-6.84c0-17.49,14.18-31.67,31.67-31.67h42.57c17.49,0,31.67,14.18,31.67,31.67v6.84c0,17.49-14.18,31.67-31.67,31.67" fill="#ff0013"/>
+    <path id="numeric_template_2" d="M742.25,442.58h-42.57c-17.49,0-31.67-14.18-31.67-31.67v-6.84c0-17.49,14.18-31.67,31.67-31.67h42.57c17.49,0,31.67,14.18,31.67,31.67v6.84c0,17.49-14.18,31.67-31.67,31.67" fill="#ff0013"/>
+    <path id="numeric_template_1" d="M632.06,442.58h-42.57c-17.49,0-31.67-14.18-31.67-31.67v-6.84c0-17.49,14.18-31.67,31.67-31.67h42.57c17.49,0,31.67,14.18,31.67,31.67v6.84c0,17.49-14.18,31.67-31.67,31.67" fill="#ff0013"/>
+    <path id="numeric_template_0" d="M521.43,594.4h-42.57c-17.49,0-31.67-14.18-31.67-31.67v-158.66c0-17.49,14.18-31.67,31.67-31.67h42.57c17.49,0,31.67,14.18,31.67,31.67v158.66c0,17.49-14.18,31.67-31.67,31.67" fill="#ff0013"/>
+  </g>
+  <g id="numeric_pair_button">
+    <rect id="numeric_pair_button-2" data-name="numeric_pair_button" x="776.67" y="600.9" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text id="numeric_pair_text" transform="translate(790.94 647.91)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="40" font-weight="600"><tspan x="0" y="0" letter-spacing="0em">p</tspan><tspan x="26.44" y="0" letter-spacing="0em">a</tspan><tspan x="50.72" y="0" letter-spacing="0em">i</tspan><tspan x="60.08" y="0" letter-spacing="0em">r</tspan></text>
+  </g>
+  <g id="numeric_.">
+    <rect id="numeric_._button" x="667.43" y="600.9" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text id="numeric_._icon" transform="translate(715.19 654.57)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">.</tspan></text>
+  </g>
+  <g id="numeric_delete_button">
+    <rect id="numeric_delete_button-2" data-name="numeric_delete_button" x="557.05" y="600.74" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <g id="numeric_delete_icon">
+      <polygon points="588.39 635.82 588.39 635.82 613.94 656.93 613.94 656.93 613.94 614.71 613.94 614.71 588.39 635.82" fill="#fff"/>
+      <rect x="606.47" y="628.86" width="20.05" height="13.61" transform="translate(-19.165 1252.1621) rotate(-90)" fill="#fff"/>
+      <text transform="translate(601.55 641.76)" font-family="SharpSans-Extrabold, &apos;Sharp Sans&apos;" font-size="21.67" font-weight="700"><tspan x="0" y="0">x</tspan></text>
+    </g>
+  </g>
+  <g id="numeric_cancel">
+    <rect id="numeric_cancel_button" x="446.67" y="600.9" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text id="numeric_cancel_icon" transform="translate(461.14 645.38)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="23.33" font-weight="600"><tspan x="0" y="0" letter-spacing="0em">c</tspan><tspan x="14.3" y="0">an</tspan><tspan x="42.98" y="0" letter-spacing="0em">c</tspan><tspan x="57.17" y="0" letter-spacing="0em">el</tspan></text>
+  </g>
+  <g id="numeric_8">
+    <rect id="numeric_8_button" x="778.16" y="524.23" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text id="numeric_9_icon" transform="translate(815.92 577.91)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">9</tspan></text>
+  </g>
+  <g id="numeric_8-2" data-name="numeric_8">
+    <rect id="numeric_8_button-2" data-name="numeric_8_button" x="668.01" y="524.23" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text id="numeric_8_icon" transform="translate(705.73 577.91)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">8</tspan></text>
+  </g>
+  <g id="numeric_7">
+    <rect id="numeric_7_button" x="557.82" y="524.23" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text id="numeric_7_icon" transform="translate(596.53 577.91)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">7</tspan></text>
+  </g>
+  <g id="numeric_6">
+    <rect id="numeric_6_button" x="778.2" y="447.56" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text id="numeric_6_icon" transform="translate(815.69 501.52)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">6</tspan></text>
+  </g>
+  <g id="numeric_5">
+    <rect id="numeric_5_button" x="668.01" y="447.56" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text id="numeric_5_icon" transform="translate(706.03 501.52)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">5</tspan></text>
+  </g>
+  <g id="numeric_4">
+    <rect id="numeric_4_button" x="557.82" y="447.56" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text id="numeric_4_icon" transform="translate(595.28 501.52)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">4</tspan></text>
+  </g>
+  <g id="numeric_3">
+    <rect id="numeric_3_button" x="778.2" y="372.41" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text id="numeric_3_icon" transform="translate(816.97 426.24)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">3</tspan></text>
+  </g>
+  <g id="numeric_2">
+    <rect id="numeric_2_button" x="668.01" y="372.41" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text id="numeric_2_icon" transform="translate(706.78 426.24)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">2</tspan></text>
+  </g>
+  <g id="numeric_1">
+    <rect id="numeric_1_button" x="557.82" y="372.41" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text id="numeric_1_icon" transform="translate(602.1 426.24) scale(.89 1)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">1</tspan></text>
+  </g>
+  <g id="numeric_0">
+    <rect id="numeric_0__button" x="447.19" y="372.41" width="105.91" height="222" rx="19" ry="19" fill="#231f20"/>
+    <text id="numeric_0_icon" transform="translate(483.4 506.24)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">0</tspan></text>
+  </g>
+</svg>

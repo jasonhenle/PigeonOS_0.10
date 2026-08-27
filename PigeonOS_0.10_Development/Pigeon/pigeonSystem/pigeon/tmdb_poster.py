@@ -10,11 +10,12 @@ Query hints (optional):
   - Prefix ``tv `` to search TV only (e.g. ``tv Breaking Bad``).
   - Prefix ``movie `` to search movies only.
   - Pass pyatv ``app_name`` / ``app_id`` into :func:`apply_tmdb_movie_query` /
-    :func:`search_best_media` so kids apps (PBS Kids, …) prefer TV, try
-    ``Title Service`` queries, demote adult substring matches, and fall back to a
-    cached episode-title → series index when Apple TV sends only an episode line.
-    That episode→series fallback also runs system-wide (Peacock, etc.) whenever
-    normal TMDb title search is missing or weakly aligned.
+    :func:`search_best_media` so the foreground streaming service is part of
+    identification for **every** app (not only PBS Kids): try ``Title Service``
+    before the bare title, and prefer TMDb rows available on that service.
+    Kids-primary apps still prefer TV and demote adult substring matches.
+    Episode-only lines fall back to a cached episode-title → series index
+    system-wide whenever normal TMDb title search is missing or weakly aligned.
 
 Title matching (env):
   - ``PIGEON_TMDB_MATCH_MODE=literal`` (default) — use now-playing strings as-is where possible; only
@@ -383,6 +384,181 @@ def prefer_media_for_streaming_service(
     if p == "auto" and is_kids_streaming_service(app_name, app_id):
         return "tv"
     return p  # type: ignore[return-value]
+
+
+# TMDb / JustWatch watch-provider ids (US catalog). Keys are ``_norm_query`` form
+# (``Disney+`` → ``disney``, ``Paramount+`` → ``paramount``).
+_WATCH_PROVIDER_IDS_BY_NORM: dict[str, tuple[int, ...]] = {
+    "netflix": (8,),
+    "disney": (337,),
+    "disney plus": (337,),
+    "hulu": (15,),
+    "prime video": (9, 119),
+    "amazon prime video": (9, 119),
+    "amazon video": (9, 10, 119),
+    "amazon prime": (9, 119),
+    "max": (1899, 384),
+    "hbo max": (384, 1899),
+    "hbomax": (384, 1899),
+    "peacock": (386, 387),
+    "peacock premium": (387, 386),
+    "paramount": (531,),
+    "paramount plus": (531,),
+    "apple tv": (350,),
+    "apple tv plus": (350,),
+    "youtube": (192,),
+    "discovery": (524,),
+    "discovery plus": (524,),
+    "pbs": (209,),
+    "pbs kids": (209, 293),
+    "pbskids": (209, 293),
+    "shudder": (99,),
+}
+_WATCH_REGION = "US"
+_WATCH_PROVIDER_BUCKETS: tuple[str, ...] = ("flatrate", "ads", "free")
+_WATCH_PROVIDER_LOOKUP_CAP = 8
+# (kind, tmdb_id) → provider ids in US, or None when the lookup failed.
+_WATCH_PROVIDERS_CACHE: dict[tuple[str, int], frozenset[int] | None] = {}
+
+
+def _service_first_enabled(service_hint: str | None) -> bool:
+    """True when a known streaming app should lead TMDb queries (PBS Kids protocol, all services)."""
+    sh = (service_hint or "").strip()
+    return bool(sh) and bool(_norm_query(sh))
+
+
+def watch_provider_ids_for_streaming_service(
+    app_name: str | None = None,
+    app_id: str | None = None,
+    service_hint: str | None = None,
+) -> frozenset[int]:
+    """TMDb watch-provider ids for the foreground app, or empty when unknown."""
+    labels: list[str] = []
+    seen: set[str] = set()
+
+    def add_label(raw: str | None) -> None:
+        n = _norm_query(str(raw or ""))
+        if not n or n in seen:
+            return
+        seen.add(n)
+        labels.append(n)
+
+    add_label(service_hint)
+    add_label(app_name)
+    add_label(streaming_service_display_name(app_name, app_id))
+    ids: set[int] = set()
+    for n in labels:
+        hit = _WATCH_PROVIDER_IDS_BY_NORM.get(n)
+        if hit:
+            ids.update(hit)
+    return frozenset(ids)
+
+
+def _tmdb_watch_provider_ids(kind: MediaKind, tmdb_id: int) -> frozenset[int] | None:
+    """US subscription/free provider ids for one title, or None when the lookup fails."""
+    try:
+        mid = int(tmdb_id)
+    except (TypeError, ValueError):
+        return None
+    key = (str(kind), mid)
+    if key in _WATCH_PROVIDERS_CACHE:
+        return _WATCH_PROVIDERS_CACHE[key]
+    path = "tv" if kind == "tv" else "movie"
+    try:
+        data = _request_json(f"{TMDB_API_BASE}/{path}/{mid}/watch/providers")
+    except (
+        RuntimeError,
+        urllib.error.HTTPError,
+        urllib.error.URLError,
+        json.JSONDecodeError,
+        OSError,
+        ValueError,
+    ):
+        _WATCH_PROVIDERS_CACHE[key] = None
+        return None
+    results = data.get("results") if isinstance(data, dict) else None
+    if not isinstance(results, dict):
+        _WATCH_PROVIDERS_CACHE[key] = None
+        return None
+    region = results.get(_WATCH_REGION)
+    if not isinstance(region, dict):
+        _WATCH_PROVIDERS_CACHE[key] = None
+        return None
+    ids: set[int] = set()
+    for bucket in _WATCH_PROVIDER_BUCKETS:
+        rows = region.get(bucket)
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                ids.add(int(row.get("provider_id")))
+            except (TypeError, ValueError):
+                continue
+    out = frozenset(ids)
+    _WATCH_PROVIDERS_CACHE[key] = out
+    return out
+
+
+def _service_availability_score(
+    item: dict,
+    media_kind: MediaKind | None,
+    watch_provider_ids: frozenset[int] | None,
+) -> int:
+    """1 when the title is listed on the foreground service, else 0 (unknown does not penalize)."""
+    if not watch_provider_ids or not media_kind:
+        return 0
+    mid = item.get("id") if isinstance(item, dict) else None
+    if mid is None:
+        return 0
+    have = _tmdb_watch_provider_ids(media_kind, int(mid))
+    if not have:
+        return 0
+    return 1 if have & watch_provider_ids else 0
+
+
+def _result_pick_key(
+    item: dict,
+    media_kind: MediaKind | None,
+    watch_provider_ids: frozenset[int] | None,
+) -> tuple[int, int, float]:
+    svc = _service_availability_score(item, media_kind, watch_provider_ids)
+    en, pop = _english_prefer_popularity_key(item)
+    return (svc, en, pop)
+
+
+def _pick_best_from_pool(
+    pool: list[dict],
+    *,
+    media_kind: MediaKind | None = None,
+    watch_provider_ids: frozenset[int] | None = None,
+) -> dict:
+    if not watch_provider_ids or not media_kind or len(pool) == 1:
+        return max(pool, key=_english_prefer_popularity_key)
+    ranked = sorted(pool, key=_english_prefer_popularity_key, reverse=True)
+    probe_ids: set[int] = set()
+    for row in ranked[:_WATCH_PROVIDER_LOOKUP_CAP]:
+        mid = row.get("id") if isinstance(row, dict) else None
+        if mid is None:
+            continue
+        try:
+            probe_ids.add(int(mid))
+        except (TypeError, ValueError):
+            continue
+
+    def key(it: dict) -> tuple[int, int, float]:
+        mid = it.get("id") if isinstance(it, dict) else None
+        try:
+            iid = int(mid) if mid is not None else None
+        except (TypeError, ValueError):
+            iid = None
+        if iid is None or iid not in probe_ids:
+            en, pop = _english_prefer_popularity_key(it)
+            return (0, en, pop)
+        return _result_pick_key(it, media_kind, watch_provider_ids)
+
+    return max(pool, key=key)
 
 
 def _item_has_kids_genre(item: dict) -> bool:
@@ -1404,6 +1580,31 @@ def _download_binary(url: str, dest: Path) -> None:
     dest.write_bytes(data)
 
 
+def _pick_scored_best(
+    scored: list[tuple[dict, tuple[int, int]]],
+    *,
+    query: str,
+    forgiving: bool,
+    media_kind: MediaKind | None = None,
+    watch_provider_ids: frozenset[int] | None = None,
+) -> dict | None:
+    if not scored:
+        return None
+    if forgiving:
+        best_key = max(rank for _, rank in scored)
+        pool = [r for r, rank in scored if rank == best_key] if best_key[0] > 0 else [r for r, _ in scored]
+    else:
+        min_tier = _literal_min_acceptable_tier(query)
+        strict = [(r, rk) for r, rk in scored if rk[0] >= min_tier]
+        if not strict:
+            return None
+        best_key = max(rk for _, rk in strict)
+        pool = [r for r, rk in strict if rk == best_key]
+    return _pick_best_from_pool(
+        pool, media_kind=media_kind, watch_provider_ids=watch_provider_ids
+    )
+
+
 def _best_with_poster_from_results(
     query: str,
     results: list,
@@ -1411,6 +1612,8 @@ def _best_with_poster_from_results(
     tv_title_must_equal_norm: str | None = None,
     forgiving: bool = True,
     kids_bias: bool = False,
+    media_kind: MediaKind | None = None,
+    watch_provider_ids: frozenset[int] | None = None,
 ) -> dict | None:
     if not isinstance(results, list) or not results:
         return None
@@ -1429,24 +1632,17 @@ def _best_with_poster_from_results(
         if not with_poster:
             return None
     # Prefer exact / whole-word title matches from the real search query; tie-break by
-    # shorter title, then English original_language, then TMDb popularity. Fall back to
-    # the full pool only if every rank is 0.
+    # streaming-service availability, then English original_language, then TMDb popularity.
     scored = [(r, _match_rank(query, r)) for r in with_poster]
     scored = [(r, rk) for r, rk in scored if not _weak_short_acronym_match(query, r, rk)]
     scored = _apply_kids_service_result_bias(scored, kids_bias=kids_bias)
-    if not scored:
-        return None
-    if forgiving:
-        best_key = max(rank for _, rank in scored)
-        pool = [r for r, rank in scored if rank == best_key] if best_key[0] > 0 else [r for r, _ in scored]
-    else:
-        min_tier = _literal_min_acceptable_tier(query)
-        strict = [(r, rk) for r, rk in scored if rk[0] >= min_tier]
-        if not strict:
-            return None
-        best_key = max(rk for _, rk in strict)
-        pool = [r for r, rk in strict if rk == best_key]
-    return max(pool, key=_english_prefer_popularity_key)
+    return _pick_scored_best(
+        scored,
+        query=query,
+        forgiving=forgiving,
+        media_kind=media_kind,
+        watch_provider_ids=watch_provider_ids,
+    )
 
 
 def _best_from_results(
@@ -1456,6 +1652,8 @@ def _best_from_results(
     tv_title_must_equal_norm: str | None = None,
     forgiving: bool = True,
     kids_bias: bool = False,
+    media_kind: MediaKind | None = None,
+    watch_provider_ids: frozenset[int] | None = None,
 ) -> dict | None:
     """Best title match among dict results (no poster requirement); English originals preferred."""
     if not isinstance(results, list) or not results:
@@ -1477,19 +1675,13 @@ def _best_from_results(
     scored = [(r, _match_rank(query, r)) for r in items]
     scored = [(r, rk) for r, rk in scored if not _weak_short_acronym_match(query, r, rk)]
     scored = _apply_kids_service_result_bias(scored, kids_bias=kids_bias)
-    if not scored:
-        return None
-    if forgiving:
-        best_key = max(rank for _, rank in scored)
-        pool = [r for r, rank in scored if rank == best_key] if best_key[0] > 0 else [r for r, _ in scored]
-    else:
-        min_tier = _literal_min_acceptable_tier(query)
-        strict = [(r, rk) for r, rk in scored if rk[0] >= min_tier]
-        if not strict:
-            return None
-        best_key = max(rk for _, rk in strict)
-        pool = [r for r, rk in strict if rk == best_key]
-    return max(pool, key=_english_prefer_popularity_key)
+    return _pick_scored_best(
+        scored,
+        query=query,
+        forgiving=forgiving,
+        media_kind=media_kind,
+        watch_provider_ids=watch_provider_ids,
+    )
 
 
 def _tmdb_search_get(endpoint: str, query: str, *, year_param: str | None, year: int | None) -> list:
@@ -1546,6 +1738,7 @@ def search_movie_best_with_poster(
     forgiving: bool | None = None,
     rank_query: str | None = None,
     kids_bias: bool = False,
+    watch_provider_ids: frozenset[int] | None = None,
 ) -> dict | None:
     """Return one TMDb movie dict (has poster_path) or None.
 
@@ -1565,15 +1758,17 @@ def search_movie_best_with_poster(
     rq = (rank_query or q_clean).strip() or q_clean
     rq_clean, _ = split_query_and_year(rq)
     rq_clean = rq_clean or rq
-    results = _tmdb_search_get("search/movie", q_clean, year_param="primary_release_year", year=year)
-    hit = _best_with_poster_from_results(
-        rq_clean, results, forgiving=fg, kids_bias=kids_bias
+    kw = dict(
+        forgiving=fg,
+        kids_bias=kids_bias,
+        media_kind="movie",
+        watch_provider_ids=watch_provider_ids,
     )
+    results = _tmdb_search_get("search/movie", q_clean, year_param="primary_release_year", year=year)
+    hit = _best_with_poster_from_results(rq_clean, results, **kw)
     if hit is None and year is not None:
         results = _tmdb_search_get("search/movie", q_clean, year_param=None, year=None)
-        hit = _best_with_poster_from_results(
-            rq_clean, results, forgiving=fg, kids_bias=kids_bias
-        )
+        hit = _best_with_poster_from_results(rq_clean, results, **kw)
     return hit
 
 
@@ -1583,6 +1778,7 @@ def search_movie_best(
     forgiving: bool | None = None,
     rank_query: str | None = None,
     kids_bias: bool = False,
+    watch_provider_ids: frozenset[int] | None = None,
 ) -> dict | None:
     q = query.strip()
     if not q:
@@ -1592,11 +1788,17 @@ def search_movie_best(
     rq = (rank_query or q_clean).strip() or q_clean
     rq_clean, _ = split_query_and_year(rq)
     rq_clean = rq_clean or rq
+    kw = dict(
+        forgiving=fg,
+        kids_bias=kids_bias,
+        media_kind="movie",
+        watch_provider_ids=watch_provider_ids,
+    )
     results = _tmdb_search_get("search/movie", q_clean, year_param="primary_release_year", year=year)
-    hit = _best_from_results(rq_clean, results, forgiving=fg, kids_bias=kids_bias)
+    hit = _best_from_results(rq_clean, results, **kw)
     if hit is None and year is not None:
         results = _tmdb_search_get("search/movie", q_clean, year_param=None, year=None)
-        hit = _best_from_results(rq_clean, results, forgiving=fg, kids_bias=kids_bias)
+        hit = _best_from_results(rq_clean, results, **kw)
     return hit
 
 
@@ -1606,6 +1808,7 @@ def search_tv_best(
     forgiving: bool | None = None,
     rank_query: str | None = None,
     kids_bias: bool = False,
+    watch_provider_ids: frozenset[int] | None = None,
 ) -> dict | None:
     q = query.strip()
     if not q:
@@ -1616,15 +1819,18 @@ def search_tv_best(
     rq_clean, _ = split_query_and_year(rq)
     rq_clean = rq_clean or rq
     en = _exact_tv_title_norm_for_known_series_query(rq_clean) if fg else None
-    results = _tmdb_search_get("search/tv", q_clean, year_param="first_air_date_year", year=year)
-    hit = _best_from_results(
-        rq_clean, results, tv_title_must_equal_norm=en, forgiving=fg, kids_bias=kids_bias
+    kw = dict(
+        tv_title_must_equal_norm=en,
+        forgiving=fg,
+        kids_bias=kids_bias,
+        media_kind="tv",
+        watch_provider_ids=watch_provider_ids,
     )
+    results = _tmdb_search_get("search/tv", q_clean, year_param="first_air_date_year", year=year)
+    hit = _best_from_results(rq_clean, results, **kw)
     if hit is None and year is not None:
         results = _tmdb_search_get("search/tv", q_clean, year_param=None, year=None)
-        hit = _best_from_results(
-            rq_clean, results, tv_title_must_equal_norm=en, forgiving=fg, kids_bias=kids_bias
-        )
+        hit = _best_from_results(rq_clean, results, **kw)
     return hit
 
 
@@ -1634,6 +1840,7 @@ def search_tv_best_with_poster(
     forgiving: bool | None = None,
     rank_query: str | None = None,
     kids_bias: bool = False,
+    watch_provider_ids: frozenset[int] | None = None,
 ) -> dict | None:
     """Return one TMDb TV result (has poster_path) or None.
 
@@ -1649,15 +1856,18 @@ def search_tv_best_with_poster(
     rq_clean, _ = split_query_and_year(rq)
     rq_clean = rq_clean or rq
     en = _exact_tv_title_norm_for_known_series_query(rq_clean) if fg else None
-    results = _tmdb_search_get("search/tv", q_clean, year_param="first_air_date_year", year=year)
-    hit = _best_with_poster_from_results(
-        rq_clean, results, tv_title_must_equal_norm=en, forgiving=fg, kids_bias=kids_bias
+    kw = dict(
+        tv_title_must_equal_norm=en,
+        forgiving=fg,
+        kids_bias=kids_bias,
+        media_kind="tv",
+        watch_provider_ids=watch_provider_ids,
     )
+    results = _tmdb_search_get("search/tv", q_clean, year_param="first_air_date_year", year=year)
+    hit = _best_with_poster_from_results(rq_clean, results, **kw)
     if hit is None and year is not None:
         results = _tmdb_search_get("search/tv", q_clean, year_param=None, year=None)
-        hit = _best_with_poster_from_results(
-            rq_clean, results, tv_title_must_equal_norm=en, forgiving=fg, kids_bias=kids_bias
-        )
+        hit = _best_with_poster_from_results(rq_clean, results, **kw)
     return hit
 
 
@@ -1762,9 +1972,9 @@ def _service_augmented_search_queries(
     """
     Ordered TMDb search strings.
 
-    When ``service_first`` (kids apps), try ``Title PBS Kids`` before the bare title so the
-    API surface leans toward that service. For other apps the service suffix is a fallback
-    only, so normal title matching stays primary.
+    When ``service_first`` (any known streaming app), try ``Title Netflix`` / ``Title PBS Kids``
+    before the bare title so the API surface leans toward that service. The suffix is also
+    appended as a fallback when service-first is off.
     """
     raw = (query or "").strip()
     if not raw:
@@ -1806,40 +2016,62 @@ def _search_best_media_with_poster_one(
     forgiving: bool,
     rank_query: str | None = None,
     kids_bias: bool = False,
+    watch_provider_ids: frozenset[int] | None = None,
 ) -> tuple[dict | None, MediaKind | None]:
     if not q:
         return None, None
     rq = (rank_query or q).strip() or q
+    providers = watch_provider_ids
     if forgiving:
         en = _exact_tv_title_norm_for_known_series_query(rq)
         if en is not None:
             hit = _forced_tmdb_tv_item_for_canonical_query(rq, require_poster=True)
             if hit is None:
                 hit = search_tv_best_with_poster(
-                    q, forgiving=True, rank_query=rq, kids_bias=kids_bias
+                    q,
+                    forgiving=True,
+                    rank_query=rq,
+                    kids_bias=kids_bias,
+                    watch_provider_ids=providers,
                 )
             if hit is not None:
                 return hit, "tv"
             return None, None
     if prefer == "movie":
         m = search_movie_best_with_poster(
-            q, forgiving=forgiving, rank_query=rq, kids_bias=kids_bias
+            q,
+            forgiving=forgiving,
+            rank_query=rq,
+            kids_bias=kids_bias,
+            watch_provider_ids=providers,
         )
         return (m, "movie") if m else (None, None)
     if prefer == "tv":
         t = search_tv_best_with_poster(
-            q, forgiving=forgiving, rank_query=rq, kids_bias=kids_bias
+            q,
+            forgiving=forgiving,
+            rank_query=rq,
+            kids_bias=kids_bias,
+            watch_provider_ids=providers,
         )
         return (t, "tv") if t else (None, None)
 
     # auto: prefer the movie catalogue when it yields a hit; if no film matches, try TV.
     m = search_movie_best_with_poster(
-        q, forgiving=forgiving, rank_query=rq, kids_bias=kids_bias
+        q,
+        forgiving=forgiving,
+        rank_query=rq,
+        kids_bias=kids_bias,
+        watch_provider_ids=providers,
     )
     if m is not None:
         return m, "movie"
     t = search_tv_best_with_poster(
-        q, forgiving=forgiving, rank_query=rq, kids_bias=kids_bias
+        q,
+        forgiving=forgiving,
+        rank_query=rq,
+        kids_bias=kids_bias,
+        watch_provider_ids=providers,
     )
     return (t, "tv") if t else (None, None)
 
@@ -1926,8 +2158,9 @@ def search_best_media_with_poster(
     Pick one movie or TV hit with a poster.
     ``auto`` takes the best movie result first; only if none is found uses the TV catalogue.
 
-    When ``app_name`` / ``app_id`` (or ``service_hint`` / ``kids_bias``) indicate a kids
-    streaming app, prefer TV and bias ranking away from adult substring matches.
+    When ``app_name`` / ``app_id`` (or ``service_hint``) name a streaming app, search
+    ``Title Service`` first and prefer rows listed on that service. Kids-primary apps
+    also prefer TV and bias ranking away from adult substring matches.
 
     When search still fails (or only a weak hit), resolve episode-only titles via the
     episode→series index (same path PBS Kids uses) — **system-wide**, not kids-only.
@@ -1939,17 +2172,25 @@ def search_best_media_with_poster(
         hint = streaming_service_display_name(app_name, app_id)
     kids = bool(kids_bias) or is_kids_streaming_service(app_name, app_id)
     pref = prefer_media_for_streaming_service(prefer, app_name=app_name, app_id=app_id)
+    providers = watch_provider_ids_for_streaming_service(
+        app_name=app_name, app_id=app_id, service_hint=hint
+    )
     if raw and not kids:
         mf = _forced_tmdb_movie_item_for_disambiguated_query(raw, require_poster=True)
         if mf is not None:
             return mf, "movie"
     variants = _service_augmented_search_queries(
-        raw, service_hint=hint, forgiving=fg, service_first=kids
+        raw, service_hint=hint, forgiving=fg, service_first=_service_first_enabled(hint)
     )
     best: tuple[dict | None, MediaKind | None] = (None, None)
     for q in variants:
         hit = _search_best_media_with_poster_one(
-            q, prefer=pref, forgiving=fg, rank_query=raw, kids_bias=kids
+            q,
+            prefer=pref,
+            forgiving=fg,
+            rank_query=raw,
+            kids_bias=kids,
+            watch_provider_ids=providers,
         )
         if hit[0] is not None:
             best = hit
@@ -1973,6 +2214,7 @@ def search_best_media(
 ) -> tuple[dict | None, MediaKind | None]:
     """Pick one movie or TV hit; ``auto`` tries movies first, then TV if no movie match.
 
+    The foreground streaming service leads query variants and ranks same-title hits.
     Episode-only titles fall back to the episode→series index when search misses or only
     returns a weak title alignment (system-wide; not limited to kids apps).
     """
@@ -1983,17 +2225,25 @@ def search_best_media(
         hint = streaming_service_display_name(app_name, app_id)
     kids = bool(kids_bias) or is_kids_streaming_service(app_name, app_id)
     pref = prefer_media_for_streaming_service(prefer, app_name=app_name, app_id=app_id)
+    providers = watch_provider_ids_for_streaming_service(
+        app_name=app_name, app_id=app_id, service_hint=hint
+    )
     if raw and not kids:
         mf = _forced_tmdb_movie_item_for_disambiguated_query(raw, require_poster=False)
         if mf is not None:
             return mf, "movie"
     variants = _service_augmented_search_queries(
-        raw, service_hint=hint, forgiving=fg, service_first=kids
+        raw, service_hint=hint, forgiving=fg, service_first=_service_first_enabled(hint)
     )
     best: tuple[dict | None, MediaKind | None] = (None, None)
     for q in variants:
         hit = _search_best_media_one(
-            q, prefer=pref, forgiving=fg, rank_query=raw, kids_bias=kids
+            q,
+            prefer=pref,
+            forgiving=fg,
+            rank_query=raw,
+            kids_bias=kids,
+            watch_provider_ids=providers,
         )
         if hit[0] is not None:
             best = hit
@@ -2012,40 +2262,62 @@ def _search_best_media_one(
     forgiving: bool,
     rank_query: str | None = None,
     kids_bias: bool = False,
+    watch_provider_ids: frozenset[int] | None = None,
 ) -> tuple[dict | None, MediaKind | None]:
     if not q:
         return None, None
     rq = (rank_query or q).strip() or q
+    providers = watch_provider_ids
     if forgiving:
         en = _exact_tv_title_norm_for_known_series_query(rq)
         if en is not None:
             hit = _forced_tmdb_tv_item_for_canonical_query(rq, require_poster=False)
             if hit is None:
                 hit = search_tv_best(
-                    q, forgiving=True, rank_query=rq, kids_bias=kids_bias
+                    q,
+                    forgiving=True,
+                    rank_query=rq,
+                    kids_bias=kids_bias,
+                    watch_provider_ids=providers,
                 )
             if hit is not None:
                 return hit, "tv"
             return None, None
     if prefer == "movie":
         m = search_movie_best(
-            q, forgiving=forgiving, rank_query=rq, kids_bias=kids_bias
+            q,
+            forgiving=forgiving,
+            rank_query=rq,
+            kids_bias=kids_bias,
+            watch_provider_ids=providers,
         )
         return (m, "movie") if m else (None, None)
     if prefer == "tv":
         t = search_tv_best(
-            q, forgiving=forgiving, rank_query=rq, kids_bias=kids_bias
+            q,
+            forgiving=forgiving,
+            rank_query=rq,
+            kids_bias=kids_bias,
+            watch_provider_ids=providers,
         )
         return (t, "tv") if t else (None, None)
 
     # auto: movie catalogue first, then TV when no film hit (same policy as with-poster path).
     m = search_movie_best(
-        q, forgiving=forgiving, rank_query=rq, kids_bias=kids_bias
+        q,
+        forgiving=forgiving,
+        rank_query=rq,
+        kids_bias=kids_bias,
+        watch_provider_ids=providers,
     )
     if m is not None:
         return m, "movie"
     t = search_tv_best(
-        q, forgiving=forgiving, rank_query=rq, kids_bias=kids_bias
+        q,
+        forgiving=forgiving,
+        rank_query=rq,
+        kids_bias=kids_bias,
+        watch_provider_ids=providers,
     )
     return (t, "tv") if t else (None, None)
 
@@ -2410,8 +2682,9 @@ def apply_tmdb_movie_query(
 
     Always picks a **random** backdrop from TMDb image results (not served from cache).
 
-    ``app_name`` / ``app_id`` (pyatv) bias search toward the streaming service — kids apps
-    append the service name as a query variant, prefer TV, and demote adult substring hits.
+    ``app_name`` / ``app_id`` (pyatv) are part of identification for every streaming
+    app: search ``Title Service`` first, prefer titles listed on that service, and
+    (for kids-primary apps) prefer TV and demote adult substring hits.
 
     Returns ``(ok, message, backdrop_master_bgr_or_none, match_tier)`` where master is BGR
     scaled to uniform design canvas height for the compositor, or None if no backdrop could be
@@ -2430,6 +2703,7 @@ def apply_tmdb_movie_query(
     hint = (service_hint or "").strip() or streaming_service_display_name(app_name, app_id)
     kids = is_kids_streaming_service(app_name, app_id)
     pref = prefer_media_for_streaming_service(prefer, app_name=app_name, app_id=app_id)
+    service_first = _service_first_enabled(hint)
 
     try:
         item, kind = search_best_media(
@@ -2443,7 +2717,7 @@ def apply_tmdb_movie_query(
         )
         if item is None and not fg:
             variants = _service_augmented_search_queries(
-                q, service_hint=hint, forgiving=True, service_first=kids
+                q, service_hint=hint, forgiving=True, service_first=service_first
             )
             for v in variants:
                 if v.strip().casefold() == q.strip().casefold():
@@ -2483,7 +2757,7 @@ def apply_tmdb_movie_query(
 
     if item is None or kind is None:
         variants = _service_augmented_search_queries(
-            q, service_hint=hint, forgiving=fg, service_first=kids
+            q, service_hint=hint, forgiving=fg, service_first=service_first
         )
         tried_line = (
             "Variants tried: " + ", ".join(repr(x) for x in variants) + "\n"

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="status_bar_05_group" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1190 334.78">
+  <path id="status_bar_remaining_icon" d="M1122.36,112.15H81.69c-7.22,0-13.07-5.85-13.07-13.07v-39.35c0-7.22,5.85-13.07,13.07-13.07h1040.67c7.22,0,13.07,5.85,13.07,13.07v39.35c0,7.22-5.85,13.07-13.07,13.07Z" fill="#939393"/>
+  <path id="status_bar_elapsed_icon" d="M599.87,112.15H81.69c-7.22,0-13.07-5.85-13.07-13.07v-39.35c0-7.22,5.85-13.07,13.07-13.07h518.18c7.22,0,13.07,5.85,13.07,13.07v39.35c0,7.22-5.85,13.07-13.07,13.07Z" fill="red"/>
+  <text id="status_bar_remaining_text" transform="translate(1067.2777 158.5098)" fill="#939393" font-family="Digital-7, Digital-7" font-size="38.56" isolation="isolate"><tspan x="0" y="0">-2:38:22</tspan></text>
+  <text id="status_bar_elapsed_text" transform="translate(574.31 158.51)" fill="#939393" font-family="Digital-7, Digital-7" font-size="38.56" isolation="isolate"><tspan x="0" y="0">1:12:12</tspan></text>
+  <text id="status_bar_service_text" transform="translate(3.1 158.51)" fill="#939393" font-family="Digital-7, Digital-7" font-size="38.56" isolation="isolate"><tspan x="0" y="0">peacock</tspan></text>
+  <text id="status_bar_paused_text" transform="translate(489.05 94.79)" fill="#fff" font-family="SharpSans-MediumItalic, &apos;Sharp Sans&apos;" font-size="57.84" font-style="italic" font-weight="500"><tspan x="0" y="0">p</tspan><tspan x="39.33" y="0" letter-spacing="0em">a</tspan><tspan x="78.37" y="0" letter-spacing="0em">u</tspan><tspan x="113.65" y="0" letter-spacing="-.02em">s</tspan><tspan x="143.15" y="0" letter-spacing="0em">e</tspan><tspan x="180.8" y="0">d</tspan></text>
+</svg>

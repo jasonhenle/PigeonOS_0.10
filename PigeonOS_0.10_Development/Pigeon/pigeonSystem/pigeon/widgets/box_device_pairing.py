@@ -29,6 +29,15 @@ def scan_devices_for_box(box_num: int, *, scan_timeout_s: int = 12) -> tuple[tup
     Box2 → Apple TV / tvOS players (Companion/MRP).
     Box3 → AirPlay AV receivers (non-tvOS).
     """
+    return scan_devices_for_boxes(scan_timeout_s=scan_timeout_s).get(int(box_num), ((), ()))
+
+
+def scan_devices_for_boxes(
+    *,
+    scan_timeout_s: int = 12,
+) -> dict[int, tuple[tuple[tuple[str, str], ...], tuple[dict[str, str], ...]]]:
+    """One LAN scan, filtered for player (2) and audio (3) columns."""
+    empty: tuple[tuple[tuple[str, str], ...], tuple[dict[str, str], ...]] = ((), ())
     try:
         from pigeon.apple_tv_now_playing import scan_apple_tv_devices
         from pigeon.app_state import (
@@ -36,17 +45,19 @@ def scan_devices_for_box(box_num: int, *, scan_timeout_s: int = 12) -> tuple[tup
             filter_discovery_for_streaming,
         )
     except ImportError:
-        return (), ()
+        return {2: empty, 3: empty}
 
     _ok, _msg, rows = scan_apple_tv_devices(scan_timeout_s=scan_timeout_s)
     raw = [dict(r) for r in (rows or [])]
-    if box_num == 2:
-        filtered = filter_discovery_for_streaming(raw)
-    elif box_num == 3:
-        filtered = filter_discovery_for_receiver(raw)
-    else:
-        filtered = raw
+    return {
+        2: _rows_to_box_result(filter_discovery_for_streaming(raw)),
+        3: _rows_to_box_result(filter_discovery_for_receiver(raw)),
+    }
 
+
+def _rows_to_box_result(
+    filtered: list[dict[str, str]],
+) -> tuple[tuple[tuple[str, str], ...], tuple[dict[str, str], ...]]:
     display: list[tuple[str, str]] = []
     out_rows: list[dict[str, str]] = []
     for row in filtered:
@@ -85,4 +96,5 @@ __all__ = [
     "BoxPairingSession",
     "device_row_from_pick",
     "scan_devices_for_box",
+    "scan_devices_for_boxes",
 ]

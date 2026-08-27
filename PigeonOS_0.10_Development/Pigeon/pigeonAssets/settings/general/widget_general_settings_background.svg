@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 2365.03 2422.04">
+  <defs>
+    <clipPath id="clippath">
+      <path d="M648.66,882.51h1143.85c17.46,0,31.64,14.18,31.64,31.64v471.41c0,17.46-14.18,31.64-31.64,31.64H648.66c-17.46,0-31.64-14.18-31.64-31.64v-471.41c0-17.46,14.18-31.64,31.64-31.64Z" fill="none"/>
+    </clipPath>
+    <clipPath id="clippath-1">
+      <path d="M648.66,882.51h1143.85c17.46,0,31.64,14.18,31.64,31.64v471.41c0,17.46-14.18,31.64-31.64,31.64H648.66c-17.46,0-31.64-14.18-31.64-31.64v-471.41c0-17.46,14.18-31.64,31.64-31.64Z" fill="none"/>
+    </clipPath>
+    <clipPath id="clippath-2">
+      <path d="M648.66,882.51h1143.85c17.46,0,31.64,14.18,31.64,31.64v471.41c0,17.46-14.18,31.64-31.64,31.64H648.66c-17.46,0-31.64-14.18-31.64-31.64v-471.41c0-17.46,14.18-31.64,31.64-31.64Z" fill="none"/>
+    </clipPath>
+    <clipPath id="clippath-3">
+      <path d="M648.66,882.51h1143.85c17.46,0,31.64,14.18,31.64,31.64v471.41c0,17.46-14.18,31.64-31.64,31.64H648.66c-17.46,0-31.64-14.18-31.64-31.64v-471.41c0-17.46,14.18-31.64,31.64-31.64Z" fill="none"/>
+    </clipPath>
+    <clipPath id="clippath-4">
+      <path d="M648.66,882.51h1143.85c17.46,0,31.64,14.18,31.64,31.64v471.41c0,17.46-14.18,31.64-31.64,31.64H648.66c-17.46,0-31.64-14.18-31.64-31.64v-471.41c0-17.46,14.18-31.64,31.64-31.64Z" fill="none"/>
+    </clipPath>
+    <clipPath id="clippath-5">
+      <path d="M648.66,882.51h1143.85c17.46,0,31.64,14.18,31.64,31.64v471.41c0,17.46-14.18,31.64-31.64,31.64H648.66c-17.46,0-31.64-14.18-31.64-31.64v-471.41c0-17.46,14.18-31.64,31.64-31.64Z" fill="none"/>
+    </clipPath>
+  </defs>
+  <g id="bg">
+    <rect x="581.39" y="673.72" width="1280" height="800"/>
+  </g>
+  <g id="Layer_1" data-name="Layer 1">
+    <g clip-path="url(#clippath)">
+      <rect x="674.38" y="1426.21" width="1916.01" height="315.24" transform="translate(-628.708 1830.1174) rotate(-50.3514)" fill="#590000"/>
+    </g>
+    <g clip-path="url(#clippath-1)">
+      <rect id="_45_color" data-name="45_color" x="473.3" y="1313.82" width="1916.01" height="208.31" transform="translate(-573.7777 1615.2568) rotate(-50.3512)" fill="#720000"/>
+    </g>
+    <g clip-path="url(#clippath-2)">
+      <rect id="_55_color" data-name="55_color" x="302.48" y="1157.45" width="1916.01" height="236.38" transform="translate(-526.0064 1432.2213) rotate(-50.3513)" fill="#890000"/>
+    </g>
+    <g clip-path="url(#clippath-3)">
+      <rect id="_65_color" data-name="65_color" x="150.46" y="1044.69" width="1914.82" height="210.51" transform="translate(-484.4588 1269.2195) rotate(-50.3514)" fill="#a30000"/>
+    </g>
+    <g clip-path="url(#clippath-4)">
+      <rect id="_75_Color" data-name="75_Color" x="-15.46" y="894.9" width="1913.62" height="232.53" transform="translate(-437.8749 1090.7758) rotate(-50.3513)" fill="#bc0606"/>
+    </g>
+    <g clip-path="url(#clippath-5)">
+      <rect id="_85_color" data-name="85_color" x="-223.22" y="679.58" width="1916.01" height="320.81" transform="translate(-380.83 869.78) rotate(-50.35)" fill="#d60000"/>
+    </g>
+  </g>
+</svg>

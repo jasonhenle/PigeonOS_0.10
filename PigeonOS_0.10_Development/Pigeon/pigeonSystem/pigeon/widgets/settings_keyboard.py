@@ -1,12 +1,11 @@
 """
-Pigeon 0.8 settings keyboards — SVG overlays shared by main_settings text entry.
+Settings keyboards — SVG overlays shared by main_settings text entry.
 
-Layouts (``pigeonAssets/settings_0.8/``):
-  - keyboard_qwerty_lower / keyboard_qwerty_upper
-  - keyboard_symbolic
-  - keyboard_numeric_all  (ids: keyboard_numeric_full_*)
-  - keyboard_numeric_pin
-  - keyboard_bottom_row   (shared ABC / abc / sym / space / delete / cancel / go)
+Native 1280 layouts (``pigeonAssets/settings/keyboard/``):
+  - keyboard_lower / keyboard_upper
+  - keyboard_numeric / keyboard_symbolic / keyboard_ip
+  - keyboard_bottom_row  (shared cancel / SYM / 123 / space / delete / enter)
+  - keyboard_pin         (no bottom row)
 
 Navigation is linear Left/Right. Physical Spacebar activates the focused key.
 """
@@ -24,9 +23,10 @@ import cv2
 import numpy as np
 
 from pigeon.compositing import alpha_blend_bgra_over_bgr
+from pigeon.design import DESIGN_H, DESIGN_W
 from pigeon.widgets.main_settings import (
-    DESIGN_H,
-    DESIGN_W,
+    COLOR_SELECTED,
+    COLOR_UI_DEFAULT,
     SettingsTheme,
     _BUTTON_FILL_CANDIDATES,
     _apply_button_fill,
@@ -84,82 +84,73 @@ class KeySpec:
 
 
 _MODE_SVG: dict[KeyboardMode, str] = {
-    KeyboardMode.QWERTY_LOWER: "keyboard_qwerty_lower.svg",
-    KeyboardMode.QWERTY_UPPER: "keyboard_qwerty_upper.svg",
+    KeyboardMode.QWERTY_LOWER: "keyboard_lower.svg",
+    KeyboardMode.QWERTY_UPPER: "keyboard_upper.svg",
     KeyboardMode.SYMBOLIC: "keyboard_symbolic.svg",
-    KeyboardMode.NUMERIC_ALL: "keyboard_numeric_all.svg",
-    KeyboardMode.NUMERIC_PIN: "keyboard_numeric_pin.svg",
-    KeyboardMode.NUMERIC_IP: "keyboard_numeric_ip.svg",
+    KeyboardMode.NUMERIC_ALL: "keyboard_numeric.svg",
+    KeyboardMode.NUMERIC_PIN: "keyboard_pin.svg",
+    KeyboardMode.NUMERIC_IP: "keyboard_ip.svg",
     KeyboardMode.YES_NO: "keyboard_yes_no.svg",
 }
 
 _BOTTOM_ROW_SVG = "keyboard_bottom_row.svg"
 
-# Bottom-row strip on the 800×480 artboard.
-_BOTTOM_ROW_X = 37  # (800 - 725) / 2
-_BOTTOM_ROW_Y = 378
+# Shared lower / numeric / bottom-row artboard (placed near the bottom of 1280×800).
+_CLUSTER_VB = (0.0, 0.0, 1202.99, 298.66)
+_CLUSTER_KEY_ROW_Y = 228.49
+_CLUSTER_MARGIN_BOTTOM = 24
 
-# Self-contained PIN pad (compact crop). IP uses full 800×480 artboard placement.
-_INTEGRATED_PAD_TOP_Y = 225
+# Compact PIN pad sits in the lower-middle of the 1280 canvas.
+_INTEGRATED_PAD_TOP_Y = 375
 
-# Linear focus order — mode keys differ for uppercase-only fields (Digital-7).
-_BOTTOM_ROW_TAIL: tuple[KeySpec, ...] = (
-    KeySpec(
-        "keyboard_qwerty_space_button",
-        KeyAction.SPACE,
-        char=" ",
-    ),
-    KeySpec(
-        "keyboard_bottom_row_delete_button",
-        KeyAction.DELETE,
-        icon_ids=("keyboard_qwerty_upper_delete_icon",),
-    ),
-    KeySpec(
-        "keyboard_qwerty_cancel_button",
-        KeyAction.CANCEL,
-        icon_ids=("keyboard_qwerty_cancel_icon",),
-    ),
-    KeySpec(
-        "keyboard_qwerty_go_button",
-        KeyAction.GO,
-        icon_ids=("keyboard_qwerty_go_icon",),
-    ),
-)
+def _is_numeric_mode(mode: KeyboardMode) -> bool:
+    return mode in (
+        KeyboardMode.NUMERIC_ALL,
+        KeyboardMode.NUMERIC_PIN,
+        KeyboardMode.NUMERIC_IP,
+    )
 
-_BOTTOM_ROW_NETWORK: tuple[KeySpec, ...] = (
-    KeySpec(
-        "keyboard_bottom_row_button1_buton",
-        KeyAction.MODE_ABC,
-        icon_ids=("keyboard_bottom_row_button1_ABC_icon-2",),
-    ),
-    KeySpec(
-        "keyboard_bottom_row_button2_button",
-        KeyAction.MODE_123,
-        icon_ids=("keyboard_bottom_row_button2_abc",),
-    ),
-    KeySpec(
-        "keyboard_bottom_row_button3_button",
-        KeyAction.MODE_SYM,
-        icon_ids=("keyboard_bottom_row_button3_sym_icon",),
-    ),
-) + _BOTTOM_ROW_TAIL
 
-# Back-compat alias used in tests / exports.
+def _bottom_row_mode_labels(mode: KeyboardMode) -> tuple[str, str]:
+    """Labels for the two mode keys (lower_SYM, lower_123)."""
+    if _is_numeric_mode(mode):
+        return "SYM", "abc"
+    if mode == KeyboardMode.SYMBOLIC:
+        return "abc", "123"
+    return "SYM", "123"
+
+
+def _action_for_mode_label(label: str) -> KeyAction:
+    if label.upper() == "SYM":
+        return KeyAction.MODE_SYM
+    if label == "123":
+        return KeyAction.MODE_123
+    return KeyAction.MODE_ABC
+
+
+def _bottom_row_keys(mode: KeyboardMode) -> tuple[KeySpec, ...]:
+    left, right = _bottom_row_mode_labels(mode)
+    return (
+        KeySpec("lower_cancel", KeyAction.CANCEL),
+        KeySpec("lower_SYM", _action_for_mode_label(left)),
+        KeySpec("lower_123", _action_for_mode_label(right)),
+        KeySpec("lower_space", KeyAction.SPACE, char=" "),
+        KeySpec("lower_del", KeyAction.DELETE, icon_ids=("delete",)),
+        KeySpec("lower_enter", KeyAction.GO),
+    )
+
+
+# Visual left→right on lowercase: cancel, SYM, 123, space, delete, enter.
+_BOTTOM_ROW_NETWORK: tuple[KeySpec, ...] = _bottom_row_keys(KeyboardMode.QWERTY_LOWER)
 _BOTTOM_ROW_KEYS = _BOTTOM_ROW_NETWORK
+_BOTTOM_ROW_TAIL = _BOTTOM_ROW_NETWORK[3:]
+_BOTTOM_ROW_UPPERCASE: tuple[KeySpec, ...] = _bottom_row_keys(KeyboardMode.QWERTY_UPPER)
 
-# Uppercase-only: no button1; button2 → numeric, button3 → symbolic.
-_BOTTOM_ROW_UPPERCASE: tuple[KeySpec, ...] = (
-    KeySpec(
-        "keyboard_bottom_row_button2_button",
-        KeyAction.MODE_123,
-        icon_ids=("keyboard_bottom_row_button2_abc",),
-    ),
-    KeySpec(
-        "keyboard_bottom_row_button3_button",
-        KeyAction.MODE_SYM,
-        icon_ids=("keyboard_bottom_row_button3_sym_icon",),
-    ),
-) + _BOTTOM_ROW_TAIL
+_IP_HIDDEN_IDS: tuple[str, ...] = (
+    "numeric_template",
+    "numeric_cancel",
+    "numeric_delete_button",
+)
 
 
 @dataclass
@@ -181,15 +172,30 @@ class KeyboardState:
     def rebuild_focus_ring(self, *, assets_dir: Path | str | None = None) -> None:
         if self.mode == KeyboardMode.YES_NO:
             self.focus_ring = discover_yes_no_keys(assets_dir=assets_dir)
+            if not self.focus_ring:
+                self.focus_ring = (
+                    KeySpec("keyboard_yes_no_yes_button", KeyAction.YES),
+                    KeySpec("keyboard_yes_no_no_button", KeyAction.NO),
+                )
             self.include_bottom_row = False
         elif self.mode == KeyboardMode.NUMERIC_IP:
-            self.focus_ring = discover_integrated_pad_keys(
-                KeyboardMode.NUMERIC_IP, assets_dir=assets_dir
-            )
-            self.include_bottom_row = False
+            pad = [
+                k
+                for k in discover_integrated_pad_keys(
+                    KeyboardMode.NUMERIC_IP, assets_dir=assets_dir
+                )
+                if k.action not in (KeyAction.CANCEL, KeyAction.DELETE, KeyAction.GO)
+            ]
+            self.focus_ring = tuple(pad) + _bottom_row_keys(self.mode)
+            self.include_bottom_row = True
         elif self.mode == KeyboardMode.NUMERIC_PIN:
-            self.focus_ring = discover_integrated_pad_keys(self.mode, assets_dir=assets_dir)
-            self.include_bottom_row = False
+            pad = [
+                k
+                for k in discover_integrated_pad_keys(self.mode, assets_dir=assets_dir)
+                if k.action not in (KeyAction.CANCEL, KeyAction.DELETE, KeyAction.GO)
+            ]
+            self.focus_ring = tuple(pad) + _bottom_row_keys(self.mode)
+            self.include_bottom_row = True
         else:
             char_keys = discover_char_keys(self.mode, assets_dir=assets_dir)
             # Digital-7 uppercase-only fields drop Shift; Wi‑Fi password keeps it.
@@ -199,14 +205,12 @@ class KeyboardState:
                 and not self.password_mask
             ):
                 char_keys = tuple(k for k in char_keys if k.action != KeyAction.SHIFT)
-            bottom = _BOTTOM_ROW_NETWORK if self.supports_lowercase else _BOTTOM_ROW_UPPERCASE
             if self.include_bottom_row:
-                self.focus_ring = tuple(char_keys) + bottom
+                self.focus_ring = tuple(char_keys) + _bottom_row_keys(self.mode)
             else:
                 self.focus_ring = tuple(char_keys)
         if not self.focus_ring:
-            fallback = _BOTTOM_ROW_NETWORK if self.supports_lowercase else _BOTTOM_ROW_UPPERCASE
-            self.focus_ring = fallback
+            self.focus_ring = _bottom_row_keys(self.mode)
         self.focus_index = int(self.focus_index) % len(self.focus_ring)
 
     @property
@@ -253,22 +257,81 @@ class KeyboardState:
 
 
 def _button_xy(el: ET.Element) -> tuple[float, float]:
-    """Sort key: top→bottom, left→right."""
-    x = el.get("x")
-    y = el.get("y")
-    if x is not None and y is not None:
-        try:
-            return float(x), float(y)
-        except ValueError:
-            pass
-    d = el.get("d") or ""
-    m = re.search(r"[Mm]\s*([-\d.]+)[,\s]+([-\d.]+)", d)
-    if m:
-        try:
-            return float(m.group(1)), float(m.group(2))
-        except ValueError:
-            pass
+    """Sort key: top→bottom, left→right. Walks descendants for group-based keys."""
+    for node in el.iter():
+        x = node.get("x")
+        y = node.get("y")
+        if x is not None and y is not None:
+            try:
+                return float(x), float(y)
+            except ValueError:
+                pass
+        d = node.get("d") or ""
+        m = re.search(r"[Mm]\s*([-\d.]+)[,\s]+([-\d.]+)", d)
+        if m:
+            try:
+                return float(m.group(1)), float(m.group(2))
+            except ValueError:
+                pass
     return (0.0, 0.0)
+
+
+def _group_prefix_for_mode(mode: KeyboardMode) -> str:
+    if mode == KeyboardMode.QWERTY_LOWER:
+        return "lower_"
+    if mode == KeyboardMode.QWERTY_UPPER:
+        return "upper_"
+    if mode == KeyboardMode.NUMERIC_ALL:
+        return "num_"
+    return ""
+
+
+def discover_group_keys(
+    mode: KeyboardMode,
+    root: ET.Element,
+) -> list[KeySpec]:
+    """Build character-key specs from unlabeled 1280 group exports."""
+    prefix = _group_prefix_for_mode(mode)
+    if not prefix:
+        return []
+    skip = {
+        "lower_enter",
+        "lower_del",
+        "lower_space",
+        "lower_123",
+        "lower_sym",
+        "lower_cancel",
+        "delete",
+    }
+    seen: set[tuple[float, float]] = set()
+    found: list[tuple[float, float, KeySpec]] = []
+    for el in root.iter():
+        if not el.tag.endswith("g"):
+            continue
+        logical = _normalize_logical(el.get("id") or "")
+        if not logical.startswith(prefix) or logical in skip:
+            continue
+        x, y = _button_xy(el)
+        pos = (round(x, 1), round(y, 1))
+        if pos in seen or pos == (0.0, 0.0):
+            continue
+        seen.add(pos)
+        text = "".join(el.itertext()).strip()
+        if "shift" in logical.lower():
+            found.append((y, x, KeySpec(logical, KeyAction.SHIFT)))
+            continue
+        ch = text[:1] if text else ""
+        if not ch:
+            m = re.search(r"_([A-Za-z0-9])(?:-\d+)?$", logical)
+            if m:
+                ch = m.group(1)
+        if mode == KeyboardMode.QWERTY_UPPER and ch:
+            ch = ch.upper()
+        elif mode == KeyboardMode.QWERTY_LOWER and ch:
+            ch = ch.lower()
+        found.append((y, x, KeySpec(logical, KeyAction.CHAR, char=ch)))
+    found.sort(key=lambda t: (round(t[0], 1), round(t[1], 1)))
+    return [spec for _y, _x, spec in found]
 
 
 def _pair_icon_id(button_id: str) -> str:
@@ -295,6 +358,9 @@ def discover_char_keys(
     if not path.is_file():
         return []
     root = ET.parse(path).getroot()
+    grouped = discover_group_keys(mode, root)
+    if grouped:
+        return grouped
 
     # Index icon layers by normalized id for fuzzy pairing.
     icon_nodes: dict[str, ET.Element] = {}
@@ -339,16 +405,27 @@ def discover_char_keys(
             keys.append(KeySpec(logical, KeyAction.SHIFT, icon_ids=shift_icons))
             continue
 
-        # Symbolic: symbolic_button_X
+        # Symbolic: symbolic_button_X (or symbolic_button__-28 with the glyph on the icon).
         if logical.startswith("symbolic_button_"):
-            ch = logical[len("symbolic_button_") :]
-            icon_id = f"symbolic_icon_{ch}"
-            # Prefer an existing icon node (may carry AI uniqueness suffix).
+            suffix = logical[len("symbolic_button_") :]
+            icon_id = f"symbolic_icon_{suffix}"
             resolved = icon_id
+            ch = suffix if len(suffix) == 1 else ""
             for cand, node in icon_nodes.items():
                 if cand == icon_id or cand.startswith(icon_id + "_"):
                     resolved = cand
+                    text = "".join(node.itertext()).strip()
+                    if text:
+                        ch = text[0]
                     break
+            if not ch:
+                for cand, node in icon_nodes.items():
+                    if cand.replace("symbolic_icon_", "") == suffix:
+                        resolved = cand
+                        text = "".join(node.itertext()).strip()
+                        if text:
+                            ch = text[0]
+                        break
             keys.append(KeySpec(logical, KeyAction.CHAR, char=ch, icon_ids=(resolved,)))
             continue
 
@@ -472,6 +549,40 @@ def discover_yes_no_keys(*, assets_dir: Path | str | None = None) -> tuple[KeySp
     return tuple(keys)
 
 
+def _discover_ip_group_keys(root: ET.Element) -> list[KeySpec]:
+    """0–9 / pair / dot from the 1280 IP pad (skip template + built-in cancel/delete)."""
+    skip = set(_IP_HIDDEN_IDS)
+    seen: set[tuple[float, float]] = set()
+    found: list[tuple[float, float, KeySpec]] = []
+    for el in root:
+        logical = _normalize_logical(el.get("id") or "")
+        if not logical.startswith("numeric_") or logical in skip:
+            continue
+        x, y = _button_xy(el)
+        pos = (round(x, 1), round(y, 1))
+        if pos in seen:
+            continue
+        seen.add(pos)
+        text = "".join(el.itertext()).strip()
+        if "pair" in logical:
+            found.append((y, x, KeySpec(logical, KeyAction.GO)))
+            continue
+        if "cancel" in logical:
+            found.append((y, x, KeySpec(logical, KeyAction.CANCEL)))
+            continue
+        if "delete" in logical:
+            found.append((y, x, KeySpec(logical, KeyAction.DELETE)))
+            continue
+        ch = text[:1] if text else ""
+        if ch == "x" and "delete" in logical:
+            continue
+        if not ch and ("." in logical or logical.endswith("_.")):
+            ch = "."
+        found.append((y, x, KeySpec(logical, KeyAction.CHAR, char=ch)))
+    found.sort(key=lambda t: (round(t[0], 1), round(t[1], 1)))
+    return [spec for _y, _x, spec in found]
+
+
 def discover_integrated_pad_keys(
     mode: KeyboardMode,
     *,
@@ -482,6 +593,8 @@ def discover_integrated_pad_keys(
     if not path.is_file():
         return ()
     root = ET.parse(path).getroot()
+    if mode == KeyboardMode.NUMERIC_IP:
+        return tuple(_discover_ip_group_keys(root))
     icon_nodes: dict[str, ET.Element] = {}
     for el in root.iter():
         raw = el.get("id") or ""
@@ -515,18 +628,43 @@ def discover_integrated_pad_keys(
             keys.append(KeySpec(logical, KeyAction.CANCEL, icon_ids=icon_ids))
         elif "delete" in logical:
             keys.append(KeySpec(logical, KeyAction.DELETE, icon_ids=icon_ids))
-        elif logical.endswith("_go_button") or "_go_button" in logical:
+        elif "pair" in logical or logical.endswith("_go_button") or "_go_button" in logical:
             keys.append(KeySpec(logical, KeyAction.GO, icon_ids=icon_ids))
-        elif "dot" in logical:
+        elif "dot" in logical or logical.endswith("._button") or "numeric_._button" in logical:
             keys.append(KeySpec(logical, KeyAction.CHAR, char=".", icon_ids=icon_ids))
         else:
             ch = ""
-            for part in logical.split("_"):
-                if len(part) == 1 and part.isdigit():
-                    ch = part
+            for iid in icon_ids:
+                node = icon_nodes.get(iid)
+                if node is None:
+                    continue
+                text = "".join(node.itertext()).strip()
+                if text:
+                    ch = text[0]
                     break
+            if not ch:
+                for part in logical.split("_"):
+                    if len(part) == 1 and (part.isdigit() or part == "."):
+                        ch = part
+                        break
             keys.append(KeySpec(logical, KeyAction.CHAR, char=ch, icon_ids=icon_ids))
     return tuple(keys)
+
+
+def _keyboard_idle_fill(theme: SettingsTheme) -> str:
+    """Idle key chrome uses the UI color in place of black."""
+    return str(theme.ui or COLOR_UI_DEFAULT)
+
+
+def _keyboard_paint_theme(theme: SettingsTheme) -> SettingsTheme:
+    idle = _keyboard_idle_fill(theme)
+    return SettingsTheme(
+        ui=idle,
+        selected=theme.selected or COLOR_SELECTED,
+        deselected=idle,
+        inactive=theme.inactive,
+        accent=theme.accent,
+    )
 
 
 def _paint_kb_button_shape(
@@ -536,7 +674,7 @@ def _paint_kb_button_shape(
     theme: SettingsTheme,
 ) -> None:
     """Flat key fill — accent outlines are turned off on keyboards."""
-    fill = theme.selected if selected else theme.deselected
+    fill = theme.selected if selected else _keyboard_idle_fill(theme)
     _set_paint(node, fill=fill, stroke="none")
     style = node.get("style") or ""
     style = _rewrite_style_prop(style, "stroke-width", "0")
@@ -556,10 +694,13 @@ def apply_keyboard_selection(
     """Recolor every known button; contrast paint on paired icons/text."""
     from pigeon.widgets.main_settings import _iter_style_fill_stroke, _set_paint
 
+    theme = _keyboard_paint_theme(theme)
     icon_map = icon_ids_by_button or {}
+    idle = _keyboard_idle_fill(theme)
     fill_ok = set(_BUTTON_FILL_CANDIDATES) | _KB_BUTTON_EXTRA | {
         theme.selected.lower(),
         theme.deselected.lower(),
+        idle.lower(),
         theme.inactive.lower(),
         "#ffffff",
         "#fff",
@@ -576,13 +717,19 @@ def apply_keyboard_selection(
         el = _find_by_logical_id(root, logical)
         if el is None:
             continue
-        fill = theme.selected if selected else theme.deselected
+        delete_nodes: set[int] = set()
+        for node in el.iter():
+            if _normalize_logical(node.get("id") or "") == "delete":
+                delete_nodes.update(id(n) for n in node.iter())
+        fill = theme.selected if selected else idle
         for node in el.iter():
             tag = node.tag.rsplit("}", 1)[-1]
             if tag not in ("path", "rect", "polygon", "circle", "ellipse"):
                 continue
+            if id(node) in delete_nodes:
+                continue
             nid = _normalize_logical(node.get("id") or "")
-            if nid.endswith("_accent"):
+            if nid.endswith("_accent") or nid == "delete":
                 continue
             cur_fill, _ = _iter_style_fill_stroke(node)
             if cur_fill in ("none", "transparent"):
@@ -598,7 +745,7 @@ def apply_keyboard_selection(
                         _set_paint(node, fill=fill, stroke="none")
                         continue
                 _paint_kb_button_shape(node, selected=selected, theme=theme)
-        _apply_button_fill(el, selected=selected, theme=theme)
+        # Skip _apply_button_fill — it would recolor the delete glyph as a key.
 
         icons = list(icon_map.get(logical, ()))
         paired_icon = _pair_icon_id(logical)
@@ -631,6 +778,15 @@ def apply_keyboard_selection(
                         theme=theme,
                         muted_deselected=muted_deselected,
                     )
+        # 1280 group exports often leave labels unnamed — contrast-paint text in the group.
+        for node in el.iter():
+            if node.tag.endswith("text") or node.tag.endswith("tspan"):
+                _apply_contrast_paint(
+                    node,
+                    selected=selected,
+                    theme=theme,
+                    muted_deselected=muted_deselected,
+                )
 
 
 def _bottom_row_icons(root: ET.Element, group_logical: str, *icon_logicals: str) -> list[ET.Element]:
@@ -841,7 +997,12 @@ def _remove_bottom_row_button1(root: ET.Element) -> None:
 
 def _remove_qwerty_shift_key(root: ET.Element) -> None:
     """Drop the shift key from uppercase QWERTY (Digital-7 fields never need it)."""
-    for logical in ("keyboard_qwerty_upper_shift_button", "keyboard_qwerty_upper_SHIFT_icon"):
+    for logical in (
+        "keyboard_qwerty_upper_shift_button",
+        "keyboard_qwerty_upper_SHIFT_icon",
+        "upper_SHIFT",
+        "lower_shift",
+    ):
         el = _find_by_logical_id(root, logical)
         if el is None:
             continue
@@ -851,6 +1012,60 @@ def _remove_qwerty_shift_key(root: ET.Element) -> None:
             parent.remove(el)
 
 
+def _remove_logical(root: ET.Element, logical: str) -> None:
+    el = _find_by_logical_id(root, logical)
+    if el is None:
+        return
+    parents = _parent_map(root)
+    parent = parents.get(el)
+    if parent is not None:
+        parent.remove(el)
+
+
+def _set_native_key_label(root: ET.Element, group_id: str, label: str) -> None:
+    """Replace the label inside a 1280 bottom-row group and center it on the pill."""
+    group = _find_by_logical_id(root, group_id)
+    if group is None:
+        return
+    rect = None
+    text_el = None
+    for el in group.iter():
+        tag = el.tag.rsplit("}", 1)[-1]
+        if tag == "rect" and rect is None:
+            rect = el
+        elif tag == "text":
+            text_el = el
+    if text_el is None:
+        return
+    if rect is not None:
+        cx = float(rect.get("x", 0)) + float(rect.get("width", 0)) * 0.5
+        cy = float(rect.get("y", 0)) + float(rect.get("height", 0)) * 0.5
+        text_el.set("text-anchor", "middle")
+        text_el.set("dominant-baseline", "middle")
+        text_el.set("alignment-baseline", "middle")
+        text_el.set("transform", f"translate({cx:.2f} {cy:.2f})")
+    tspans = [c for c in list(text_el) if c.tag.endswith("tspan")]
+    if tspans:
+        tspans[0].text = label
+        tspans[0].set("x", "0")
+        tspans[0].set("y", "0")
+        tspans[0].attrib.pop("letter-spacing", None)
+        for extra in tspans[1:]:
+            extra.text = ""
+            extra.set("x", "0")
+            extra.set("y", "0")
+    else:
+        text_el.text = label
+
+
+def _apply_native_bottom_row_labels(root: ET.Element, mode: KeyboardMode) -> None:
+    if _find_by_logical_id(root, "lower_enter") is None:
+        return
+    left, right = _bottom_row_mode_labels(mode)
+    _set_native_key_label(root, "lower_SYM", left)
+    _set_native_key_label(root, "lower_123", right)
+
+
 def apply_bottom_row_mode_icons(
     root: ET.Element,
     mode: KeyboardMode,
@@ -858,6 +1073,8 @@ def apply_bottom_row_mode_icons(
     uppercase_only: bool = False,
 ) -> None:
     """Show one mode label per bottom-row button (never two labels on the same key)."""
+    if _find_by_logical_id(root, "lower_enter") is not None:
+        return
     btn1_group = _find_by_logical_id(root, "keyboard_bottom_row_button1")
     btn1_abc = _bottom_row_icons(
         root,
@@ -944,10 +1161,12 @@ def apply_bottom_row_mode_icons(
 
 
 def _fit_full_artboard(root: ET.Element) -> None:
-    """Match main_settings: native 800×480 artboard."""
+    """Match main_settings: native 800×480 artboard, letterboxed into design."""
+    from pigeon.design import LEGACY_DESIGN_H, LEGACY_DESIGN_W
+
     root.set("viewBox", "0 0 800 480")
-    root.set("width", str(DESIGN_W))
-    root.set("height", str(DESIGN_H))
+    root.set("width", str(LEGACY_DESIGN_W))
+    root.set("height", str(LEGACY_DESIGN_H))
 
 
 def _center_integrated_pad_labels(root: ET.Element) -> None:
@@ -973,14 +1192,57 @@ def _center_integrated_pad_labels(root: ET.Element) -> None:
                 tspan.set("y", "0")
 
 
+def _cluster_xy() -> tuple[int, int]:
+    """Sit the key cluster in the zone 2–4 band, bottom-aligned like other pads."""
+    from pigeon.settings_layout import SETTINGS_MAIN_ZONES, menu_plate_chrome_bottom
+
+    x = int(round((DESIGN_W - _CLUSTER_VB[2]) * 0.5))
+    plate_bottom = menu_plate_chrome_bottom()
+    zone_top = float(SETTINGS_MAIN_ZONES[2].y)
+    max_bottom = plate_bottom - float(_CLUSTER_MARGIN_BOTTOM)
+    y = max_bottom - _CLUSTER_VB[3]
+    if y < zone_top:
+        y = zone_top
+        if y + _CLUSTER_VB[3] > max_bottom:
+            y = max_bottom - _CLUSTER_VB[3]
+    return x, int(round(y))
+
+
+def _rasterize_svg_patch(root: ET.Element) -> tuple[np.ndarray, tuple[float, float, float, float]]:
+    vb = viewbox_from_root(root)
+    w = max(1, int(round(vb[2])))
+    h = max(1, int(round(vb[3])))
+    root.set("viewBox", f"{vb[0]} {vb[1]} {vb[2]} {vb[3]}")
+    patch = rasterize_settings_svg_bgra(root, width=w, height=h, font_mode="keyboard")
+    return patch, vb
+
+
+def _place_in_cluster(
+    canvas: np.ndarray,
+    patch: np.ndarray,
+    vb: tuple[float, float, float, float],
+    mode: KeyboardMode,
+) -> None:
+    cx, cy = _cluster_xy()
+    dest_x = cx + int(round((_CLUSTER_VB[2] - vb[2]) * 0.5))
+    if mode == KeyboardMode.QWERTY_UPPER:
+        dest_y = cy + int(round(_CLUSTER_KEY_ROW_Y - vb[3]))
+    elif mode == KeyboardMode.SYMBOLIC:
+        dest_y = cy + int(round(_CLUSTER_KEY_ROW_Y - 434.33))
+    else:
+        dest_y = cy
+    _blit_bottom_row(canvas, patch, dest_x=dest_x, dest_y=dest_y)
+
+
 def _rasterize_keyboard_chars(
     state: KeyboardState,
     *,
     assets_dir: Path | str | None,
 ) -> np.ndarray:
+    canvas = np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)
     path = keyboard_svg_path(_MODE_SVG[state.mode], assets_dir=assets_dir)
     if not path.is_file():
-        return np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)
+        return canvas
 
     root = ET.parse(path).getroot()
     if (
@@ -1012,13 +1274,10 @@ def _rasterize_keyboard_chars(
         muted_deselected=(state.mode == KeyboardMode.YES_NO),
     )
 
-    # Compact cropped pads (PIN / yes-no). IP uses the full 800×480 artboard
-    # so it lines up with keyboard_numeric_all / Illustrator placement.
     if pad_mode:
         _center_integrated_pad_labels(root)
         vb = viewbox_from_root(root)
-        # Design scale (same as IP / numeric / yes-no) — do not upscale the compact PIN crop.
-        content_w = max(1, int(round(vb[2] * (DESIGN_W / 800.0))))
+        content_w = max(1, int(round(vb[2])))
         layout = _integrated_pad_layout(vb, content_w=content_w)
         root.set("overflow", "visible")
         pad = rasterize_settings_svg_bgra(
@@ -1028,22 +1287,29 @@ def _rasterize_keyboard_chars(
             view_box=layout.padded_vb,
             font_mode="keyboard",
         )
-        canvas = np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)
         dest_x = max(0, (DESIGN_W - layout.out_w) // 2)
         if state.mode == KeyboardMode.YES_NO:
             dest_y = max(0, (DESIGN_H - layout.out_h) // 2)
         else:
-            dest_y = int(_INTEGRATED_PAD_TOP_Y * (DESIGN_H / 480)) - layout.pad_px
+            dest_y = int(_INTEGRATED_PAD_TOP_Y) - layout.pad_px
         _blit_bottom_row(canvas, pad, dest_x=dest_x, dest_y=dest_y)
         return canvas
 
     if full_ip:
+        for hid in _IP_HIDDEN_IDS:
+            _remove_logical(root, hid)
         _center_integrated_pad_labels(root)
+        vb = viewbox_from_root(root)
+        vw = float(DESIGN_W)
+        vx = vb[0] + max(0.0, (vb[2] - vw) * 0.5)
+        root.set("viewBox", f"{vx} {vb[1]} {vw} {vb[3]}")
+        return rasterize_settings_svg_bgra(
+            root, width=DESIGN_W, height=DESIGN_H, font_mode="keyboard"
+        )
 
-    _fit_full_artboard(root)
-    return rasterize_settings_svg_bgra(
-        root, width=DESIGN_W, height=DESIGN_H, font_mode="keyboard"
-    )
+    patch, vb = _rasterize_svg_patch(root)
+    _place_in_cluster(canvas, patch, vb, state.mode)
+    return canvas
 
 
 def _rasterize_bottom_row(
@@ -1058,8 +1324,9 @@ def _rasterize_bottom_row(
         return None
     root = ET.parse(path).getroot()
     apply_bottom_row_mode_icons(root, state.mode, uppercase_only=not state.supports_lowercase)
+    _apply_native_bottom_row_labels(root, state.mode)
 
-    bottom = _BOTTOM_ROW_NETWORK if state.supports_lowercase else _BOTTOM_ROW_UPPERCASE
+    bottom = _bottom_row_keys(state.mode)
     button_ids = {k.button_id for k in bottom}
     icon_map = {k.button_id: k.icon_ids for k in bottom if k.icon_ids}
     focused = state.focused.button_id
@@ -1072,20 +1339,8 @@ def _rasterize_bottom_row(
         icon_ids_by_button=icon_map,
     )
     _prune_display_none(root)
-
-    layout = _bottom_row_layout()
-    root.set(
-        "viewBox",
-        f"{layout.padded_vb[0]} {layout.padded_vb[1]} {layout.padded_vb[2]} {layout.padded_vb[3]}",
-    )
-    root.set("overflow", "visible")
-    return rasterize_settings_svg_bgra(
-        root,
-        width=layout.out_w,
-        height=layout.out_h,
-        view_box=layout.padded_vb,
-        font_mode="keyboard",
-    )
+    patch, _vb = _rasterize_svg_patch(root)
+    return patch
 
 
 def render_keyboard_bgra(
@@ -1093,16 +1348,16 @@ def render_keyboard_bgra(
     *,
     assets_dir: Path | str | None = None,
 ) -> np.ndarray:
-    """Composite character keys + bottom row → 800×480 BGRA."""
+    """Composite character keys + shared bottom row onto the 1280×800 canvas."""
     if not state.focus_ring:
         state.rebuild_focus_ring(assets_dir=assets_dir)
 
     canvas = _rasterize_keyboard_chars(state, assets_dir=assets_dir)
     row = _rasterize_bottom_row(state, assets_dir=assets_dir)
     if row is not None and row.size:
-        layout = _bottom_row_layout()
-        dest_x = int(_BOTTOM_ROW_X * (DESIGN_W / 800)) - layout.pad_px
-        dest_y = int(_BOTTOM_ROW_Y * (DESIGN_H / 480)) - layout.pad_px
+        cx, cy = _cluster_xy()
+        dest_x = cx + int(round((_CLUSTER_VB[2] - row.shape[1]) * 0.5))
+        dest_y = cy
         _blit_bottom_row(canvas, row, dest_x=dest_x, dest_y=dest_y)
     return canvas
 
@@ -1155,10 +1410,6 @@ def activate_key(state: KeyboardState, *, assets_dir: Path | str | None = None) 
         if state.supports_lowercase:
             if state.mode == KeyboardMode.QWERTY_LOWER:
                 state.set_mode(KeyboardMode.QWERTY_UPPER, assets_dir=assets_dir)
-            elif state.mode == KeyboardMode.QWERTY_UPPER:
-                state.set_mode(KeyboardMode.QWERTY_LOWER, assets_dir=assets_dir)
-            elif state.mode in (KeyboardMode.NUMERIC_ALL, KeyboardMode.NUMERIC_PIN):
-                state.set_mode(KeyboardMode.QWERTY_UPPER, assets_dir=assets_dir)
             else:
                 state.set_mode(KeyboardMode.QWERTY_LOWER, assets_dir=assets_dir)
         else:
@@ -1179,12 +1430,13 @@ def activate_key(state: KeyboardState, *, assets_dir: Path | str | None = None) 
             state.set_mode(KeyboardMode.SYMBOLIC, assets_dir=assets_dir)
         return f"mode:{state.mode.value}"
     if act == KeyAction.MODE_123:
+        numeric = _is_numeric_mode(state.mode)
         if not state.supports_lowercase:
-            if state.mode == KeyboardMode.NUMERIC_ALL:
+            if numeric:
                 state.set_mode(KeyboardMode.QWERTY_UPPER, assets_dir=assets_dir)
             else:
                 state.set_mode(KeyboardMode.NUMERIC_ALL, assets_dir=assets_dir)
-        elif state.mode == KeyboardMode.NUMERIC_ALL:
+        elif numeric:
             state.set_mode(KeyboardMode.QWERTY_LOWER, assets_dir=assets_dir)
         else:
             state.set_mode(KeyboardMode.NUMERIC_ALL, assets_dir=assets_dir)

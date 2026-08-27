@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" viewBox="0 0 375 325">
+  <!-- Generator: Adobe Illustrator 30.7.0, SVG Export Plug-In . SVG Version: 2.1.4 Build 114)  -->
+  <defs>
+    <clipPath id="clippath">
+      <rect x="100.69" y="85" width="167.53" height="155" style="fill: none;"/>
+    </clipPath>
+    <clipPath id="clippath-1">
+      <polygon points="129.24 240 268.22 240 268.22 101.02 129.24 240" style="fill: none;"/>
+    </clipPath>
+    <clipPath id="clippath-2">
+      <polygon points="100.69 85 100.69 222.7 238.39 85 100.69 85" style="fill: none;"/>
+    </clipPath>
+  </defs>
+  <text transform="translate(166.55 193.29)" style="font-family: Digital-7, Digital-7; font-size: 92.42px;"><tspan x="0" y="0">+</tspan></text>
+  <text id="add_player" transform="translate(118.6 85.01)" style="fill: #202020; font-family: SharpSans-Semibold, &apos;Sharp Sans&apos;; font-size: 26.96px; font-weight: 600;"><tspan x="0" y="0">add player</tspan></text>
+  <g id="widget_x5F_search_x5F_icon">
+    <g style="clip-path: url(#clippath);">
+      <g style="clip-path: url(#clippath-1);">
+        <path d="M148.78,199.14c-20.15-20.15-20.15-52.82,0-72.97,20.15-20.15,52.82-20.15,72.97,0,20.15,20.15,20.15,52.82,0,72.97-20.15,20.15-52.82,20.15-72.97,0Z" style="fill: none; stroke: #202020; stroke-miterlimit: 10; stroke-width: 8px;"/>
+      </g>
+      <g style="clip-path: url(#clippath-2);">
+        <path d="M221.74,126.18c20.15,20.15,20.15,52.82,0,72.97-20.15,20.15-52.82,20.15-72.97,0-20.15-20.15-20.15-52.82,0-72.97,20.15-20.15,52.82-20.15,72.97,0Z" style="fill: none; stroke: #202020; stroke-miterlimit: 10; stroke-width: 8px;"/>
+      </g>
+      <polygon points="157.78 169.59 152.91 192.36 147.54 215.03 130.25 199.43 113.31 183.44 135.46 176.27 157.78 169.59" style="fill: #202020;"/>
+      <polygon points="211.13 155.99 216 133.21 221.37 110.55 238.66 126.15 255.6 142.13 233.45 149.31 211.13 155.99" style="fill: #202020;"/>
+    </g>
+  </g>
+</svg>

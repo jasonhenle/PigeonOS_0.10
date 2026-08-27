@@ -36,6 +36,7 @@ class BoxDevicePanelState:
     scanning: bool = False
     scan_started_mono: float = 0.0
     scan_angle_deg: float = 0.0
+    scan_duration_s: float = _BOX_SCAN_MAX_DURATION_S
     devices: tuple[tuple[str, str], ...] = ()  # (name, ip)
     device_rows: tuple[dict[str, str], ...] = ()
     scroll: int = 0
@@ -71,11 +72,14 @@ def box_search_center_svg(box_num: int) -> tuple[float, float]:
 def box_devices_with_special_rows(
     devices: tuple[tuple[str, str], ...],
 ) -> tuple[tuple[str, str], ...]:
-    """Append CANCEL and ENTER IP rows after discovered LAN devices."""
+    """Append ENTER IP + CANCEL once after discovered LAN devices."""
     extra = ((BOX_DEVICE_ROW_ENTER_IP, ""), (BOX_DEVICE_ROW_CANCEL, ""))
-    if not devices:
-        return extra
-    return tuple(devices) + extra
+    clean = tuple(
+        (str(n), str(ip or ""))
+        for n, ip in tuple(devices or ())
+        if str(n) not in (BOX_DEVICE_ROW_ENTER_IP, BOX_DEVICE_ROW_CANCEL)
+    )
+    return clean + extra
 
 
 def is_special_device_row(name: str) -> bool:

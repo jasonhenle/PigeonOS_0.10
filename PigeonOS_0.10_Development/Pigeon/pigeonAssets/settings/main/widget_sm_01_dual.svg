@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_1" data-name="Layer 1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1165 105">
+  <path id="dual_container" d="M26.17,10.53h1113.66c8.28,0,15,6.72,15,15v53.94c0,8.28-6.72,15-15,15H25.17c-8.28,0-15-6.72-15-15V26.53c0-8.83,7.17-16,16-16Z" fill="#202020" stroke="#000" stroke-miterlimit="10" stroke-width="7"/>
+  <rect id="dual_button_container_b" x="594.33" y="20.6" width="552.3" height="63.81" rx="10.8" ry="10.8" fill="#fff"/>
+  <rect id="dual_button_container_a" x="20.16" y="20.6" width="553.61" height="63.81" rx="10.8" ry="10.8" fill="#fff"/>
+  <text id="dual___icon" data-name="dual_|_icon" transform="translate(576.43 67.92)" fill="#fff" font-family="MyriadPro-Regular, &apos;Myriad Pro&apos;" font-size="61.67"><tspan x="0" y="0">|</tspan></text>
+</svg>

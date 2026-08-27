@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_1" data-name="Layer 1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 342.19 324.53">
+  <g id="sm_02-03-04-a_thru_e">
+    <path id="sm_02-03-04-e" d="M9.87,227.65h322.46c4.62,0,8.37,3.75,8.37,8.37v19.97c0,4.62-3.75,8.37-8.37,8.37H9.87c-4.62,0-8.37-3.75-8.37-8.37v-19.97c0-4.62,3.75-8.37,8.37-8.37Z" fill="#fff" stroke="#000" stroke-miterlimit="10" stroke-width="3"/>
+    <path id="sm_02-03-04-d" d="M9.87,186.25h322.46c4.62,0,8.37,3.75,8.37,8.37v19.97c0,4.62-3.75,8.37-8.37,8.37H9.87c-4.62,0-8.37-3.75-8.37-8.37v-19.97c0-4.62,3.75-8.37,8.37-8.37Z" fill="#fff" stroke="#000" stroke-miterlimit="10" stroke-width="3"/>
+    <path id="sm_02-03-04-c" d="M9.87,144.86h322.46c4.62,0,8.37,3.75,8.37,8.37v19.97c0,4.62-3.75,8.37-8.37,8.37H9.87c-4.62,0-8.37-3.75-8.37-8.37v-19.97c0-4.62,3.75-8.37,8.37-8.37Z" fill="#fff" stroke="#000" stroke-miterlimit="10" stroke-width="3"/>
+    <path id="sm_02-03-04-b" d="M9.87,103.47h322.46c4.62,0,8.37,3.75,8.37,8.37v19.97c0,4.62-3.75,8.37-8.37,8.37H9.87c-4.62,0-8.37-3.75-8.37-8.37v-19.97c0-4.62,3.75-8.37,8.37-8.37Z" fill="#fff" stroke="#000" stroke-miterlimit="10" stroke-width="3"/>
+    <path id="sm_02-03-04-a" d="M9.87,62.08h322.46c4.62,0,8.37,3.75,8.37,8.37v19.97c0,4.62-3.75,8.37-8.37,8.37H9.87c-4.62,0-8.37-3.75-8.37-8.37v-19.97c0-4.62,3.75-8.37,8.37-8.37Z" fill="#fff" stroke="#000" stroke-miterlimit="10" stroke-width="3"/>
+  </g>
+  <g id="navigation_arrow_group">
+    <polygon id="arrow_down" points="171.1 321.53 191.69 285.87 150.51 285.87 171.1 321.53" fill="#fff" stroke="#202020" stroke-miterlimit="10" stroke-width="3"/>
+    <polygon id="arrow_up" points="171.1 3 150.51 38.66 191.69 38.66 171.1 3" fill="#fff" stroke="#202020" stroke-miterlimit="10" stroke-width="3"/>
+  </g>
+</svg>

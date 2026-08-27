@@ -25,7 +25,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from pigeon.compositing import alpha_blend_bgra_over_bgr
-from pigeon.design import DESIGN_H, DESIGN_W
+from pigeon.design import DESIGN_H, DESIGN_W, LEGACY_DESIGN_H, LEGACY_DESIGN_W, map_legacy_size, map_legacy_xy
 from pigeon.font_paths import resolve_digital7_font, resolve_ui_font_medium
 from pigeon.widgets.box_device_search import (
     BOX_DEVICE_ROW_CANCEL,
@@ -54,7 +54,19 @@ _BOX_COLUMN_INNER_SVG: dict[int, tuple[float, float]] = {
 }
 _BOX_LOCATION_TEXT_Y_SVG: dict[int, float] = {1: 325.6104, 2: 325.704, 3: 325.6104}
 _BOX_LOCATION_TEXT_FONT_SVG = 48.0
-_LOCATION_SLOT_DEFAULT_NAMES: tuple[str, ...] = ("nest 1", "nest 2", "nest 3")
+_LOCATION_SLOT_DEFAULT_NAMES: tuple[str, ...] = ("ROOM 1", "ROOM 2", "ROOM 3")
+_NEST_OR_ROOM_RE = re.compile(r"^(?:nest|room)\s*(\d+)$", re.IGNORECASE)
+
+
+def location_room_label(name: str, *, slot_index: int | None = None) -> str:
+    """Show ROOM N for leftover nest/room placeholders; keep custom names."""
+    raw = str(name or "").strip()
+    match = _NEST_OR_ROOM_RE.fullmatch(raw)
+    if match:
+        return f"ROOM {int(match.group(1))}"
+    if not raw or raw.lower() in ("room", "nest"):
+        return f"ROOM {max(1, int(slot_index or 1))}"
+    return raw
 _BOX_DEVICE_NAME_Y_SVG = 319.8984
 _BOX_DEVICE_IP_Y_SVG = 359.6094
 _BOX_DEVICE_NAME_FONT_SVG = 48.1346
@@ -77,7 +89,7 @@ _TRANSLATE_RE = re.compile(
 # --- Colors (settingInstructions_0.8.0) ---
 COLOR_SELECTED = "#FFFFFF"
 COLOR_DESELECTED = "#000013"
-COLOR_UI_DEFAULT = "#ff0013"
+COLOR_UI_DEFAULT = "#4EA6F7"
 COLOR_ACCENT_DEFAULT = "#FFFFFF"
 COLOR_INACTIVE = "#404040"
 COLOR_VERSION_TEXT = "#000000"
@@ -167,19 +179,18 @@ _KEYBOARD_HIDE_WHEN_OPEN: tuple[str, ...] = (
     "main_box3_search_icon",
 )
 
-# Keyboard SVG stubs (full systems not implemented yet).
+# Native 1280 keyboards live in settings/keyboard/; yes/no stays legacy.
 KEYBOARD_SVG_NAMES: tuple[str, ...] = (
     "keyboard_bottom_row.svg",
-    "keyboard_qwerty_lower.svg",
-    "keyboard_qwerty_upper.svg",
-    "keyboard_numeric_all.svg",
-    "keyboard_numeric_pin.svg",
-    "keyboard_numeric_ip.svg",
-    "keyboard_yes_no.svg",
+    "keyboard_lower.svg",
+    "keyboard_upper.svg",
+    "keyboard_numeric.svg",
+    "keyboard_pin.svg",
+    "keyboard_ip.svg",
     "keyboard_symbolic.svg",
+    "keyboard_yes_no.svg",
 )
-# Specified in instructions but not in the current GFX export set.
-KEYBOARD_NUMERIC_IP_SVG = "keyboard_numeric_ip.svg"
+KEYBOARD_NUMERIC_IP_SVG = "keyboard_ip.svg"
 
 _HEX_RE = re.compile(r"^#?[0-9A-Fa-f]{6}$")
 _AI_SUFFIX_RE = re.compile(r"_\d{20,}_?$")
@@ -227,7 +238,10 @@ _WIFI_SCAN_MIN_DURATION_S = 0.0
 _WIFI_SCAN_MAX_DURATION_S = 55.0
 _WIFI_SCAN_ROTATION_DPS = 720.0
 _WIFI_SCAN_CACHE_TTL_S = 120.0
-_BOX_SCAN_CACHE_TTL_S = 120.0
+_BOX_SCAN_CACHE_TTL_S = 180.0
+_BOX_PREFETCH_INTERVAL_S = 90.0
+_BOX_SCAN_CACHE_HIT_MIN_S = 1.2
+_BOX_SCAN_LIVE_MIN_S = 1.2
 # Location switch: show centered search spinner only if reload takes this long.
 _LOCATION_SWITCH_SPINNER_DELAY_S = 2.0
 _LOCATION_SWITCH_ROTATION_DPS = _WIFI_SCAN_ROTATION_DPS
@@ -248,7 +262,9 @@ _WIFI_ONBOARDING_FOCUS: tuple[str, ...] = (
     "main_exit_button",
     "main_dual_location_button",
     "main_dual_network_button",
-    "main_box2_add_search_icon",
+    "main_box1_button",
+    "main_box2_button",
+    "main_box3_button",
 )
 
 # Button → associated contrast layers (logical ids; AI suffixes tolerated).
@@ -382,7 +398,9 @@ _CONTRAST_SWAP_CANDIDATES = frozenset(
     }
 )
 
-_UI_BRAND_COLORS = frozenset({COLOR_UI_DEFAULT.lower(), "#ff0013"})
+_UI_BRAND_COLORS = frozenset(
+    {COLOR_UI_DEFAULT.lower(), "#4ea6f7", "#ff0013"}
+)
 
 
 def _theme_swatch_hexes() -> frozenset[str]:
@@ -448,7 +466,7 @@ class MainSettingsState:
     focus_index: int = 0
     theme: SettingsTheme = field(default_factory=SettingsTheme)
     wifi_level: int = 3  # stub 0–3
-    location_name: str = "nest 1"
+    location_name: str = "ROOM 1"
     selected_wifi_ssid: str = ""
     pending_wifi_ssid: str = ""
     wifi_password: str = ""
@@ -512,7 +530,7 @@ class MainSettingsState:
         "poster",
         "volume",
         "cast_info",
-        "now_playing",
+        "status_bar",
     )
     # Live playback progress 0..1 for prefs circular now-playing; None → idle demo.
     preferences_np_progress: float | None = None
@@ -531,6 +549,8 @@ class MainSettingsState:
     preferences_song_title: str | None = None
     preferences_album_title: str | None = None
     preferences_artist_title: str | None = None
+    # Settings-main zone 2: TMDb title treatment while content is playing.
+    zone2_tt_bgra: object | None = None  # np.ndarray | None
     # System color page (settings_pigeon_ui_color) — opened from preferences color.
     show_ui_color: bool = False
     # "classes" = accent/ui/button/back; "swatches" = colors within active class.
@@ -538,8 +558,12 @@ class MainSettingsState:
     ui_color_focus_index: int = 0
     ui_color_active_class: str = ""  # accent | ui | button while in swatch nav
     ui_color_accent_key: str = "white"
-    ui_color_ui_key: str = "red"
+    ui_color_ui_key: str = "blue"
     ui_color_button_key: str = "black"
+    # System-wide options bar (settings_pigeon GENERAL).
+    show_options: bool = False
+    options_focus_index: int = 0
+    options_values: dict[str, object] = field(default_factory=dict)
     show_update_popup: bool = False
     update_popup_focus_index: int = 0
     update_available: bool = False
@@ -729,7 +753,8 @@ class MainSettingsState:
         slots: list[tuple[str, str]] = []
         for i, loc in enumerate(locs[:3]):
             lid = str(loc.get("id") or "").strip()
-            name = str(loc.get("name") or "").strip() or _LOCATION_SLOT_DEFAULT_NAMES[i]
+            raw = str(loc.get("name") or "").strip() or _LOCATION_SLOT_DEFAULT_NAMES[i]
+            name = location_room_label(raw, slot_index=i + 1)
             if lid:
                 slots.append((lid, name))
         self.location_slots = tuple(slots)
@@ -759,7 +784,21 @@ class MainSettingsState:
                 panel.phase = "idle"
         self.refresh_location_slots()
         self.ensure_focus_ring()
-        if "main_dual_location_button" in self.focus_ring:
+        current_lid = ""
+        try:
+            from pigeon.app_state import read_current_location_id
+
+            current_lid = str(read_current_location_id() or "").strip()
+        except Exception:
+            current_lid = ""
+        box_btn = "main_box1_button"
+        for i, (sid, _name) in enumerate(self.location_slots):
+            if current_lid and str(sid) == current_lid:
+                box_btn = ("main_box1_button", "main_box2_button", "main_box3_button")[i]
+                break
+        if box_btn in self.focus_ring:
+            self.focus_index = self.focus_ring.index(box_btn)
+        elif "main_dual_location_button" in self.focus_ring:
             self.focus_index = self.focus_ring.index("main_dual_location_button")
 
     def exit_location_picker(self) -> None:
@@ -780,16 +819,24 @@ class MainSettingsState:
         lid, name = slot
         self.renaming_location_id = lid
         self.renaming_location_slot = int(box_num)
-        self.location_name = name
+        self.location_name = location_room_label(name, slot_index=box_num)
         return True
 
     def select_location_slot(self, box_num: int) -> bool:
-        """Make the nest in ``box_num`` the active location (dual-location picker)."""
+        """Make the room in ``box_num`` the active location (dual-location picker)."""
         if self.location_switching:
             return False
+        if not self.location_slots:
+            try:
+                self.refresh_location_slots()
+            except Exception:
+                pass
         slot = self.location_slot(box_num)
         if slot is None:
-            self.refresh_location_slots()
+            try:
+                self.refresh_location_slots()
+            except Exception:
+                pass
             slot = self.location_slot(box_num)
         if slot is None:
             return False
@@ -797,11 +844,11 @@ class MainSettingsState:
         try:
             from pigeon.app_state import set_current_location_id
 
-            if not set_current_location_id(str(lid)):
-                return False
+            if lid:
+                set_current_location_id(str(lid))
         except Exception:
-            return False
-        self.location_name = str(name or "").strip() or self.location_name
+            pass
+        self.location_name = location_room_label(name, slot_index=box_num) or self.location_name
         self.renaming_location_id = ""
         self.renaming_location_slot = 0
         try:
@@ -854,7 +901,9 @@ class MainSettingsState:
                 if not name:
                     name = str(slot[1] or "")
                 break
-        self.location_name = str(name or "").strip() or "Room"
+        self.location_name = location_room_label(
+            name, slot_index=self.renaming_location_slot or 1
+        )
         return True
 
     def ensure_focus_ring(self) -> None:
@@ -910,6 +959,7 @@ class MainSettingsState:
         self.close_update_popup()
         self.close_preferences()
         self.close_ui_color()
+        self.close_options()
         self.close_metadata_debug()
         load_persisted_theme_into_state(self)
         try:
@@ -943,6 +993,7 @@ class MainSettingsState:
         self.close_update_popup()
         self.close_preferences()
         self.close_ui_color()
+        self.close_options()
         self.show_metadata_debug = True
         self.metadata_debug_page = 0
         try:
@@ -964,6 +1015,7 @@ class MainSettingsState:
     def exit_pigeon_settings(self) -> None:
         self.close_update_popup()
         self.close_preferences()
+        self.close_options()
         self.close_metadata_debug()
         self.show_pigeon_settings = False
         self.pigeon_needs_update_prefetch = False
@@ -979,6 +1031,7 @@ class MainSettingsState:
         )
 
         self.show_preferences = True
+        self.close_options()
         self.preferences_nav = "zones"
         self.preferences_active_zone = 0
         self.preferences_zone_widgets = read_now_playing_zone_widgets()
@@ -1001,129 +1054,142 @@ class MainSettingsState:
         self.preferences_focus_index = 0
 
     def open_ui_color(self) -> None:
-        """Open the system color customizer (from preferences color control)."""
+        """Open the inline UI-color bar on settings_pigeon."""
         from pigeon.widgets.ui_color_settings import (
             apply_color_keys_to_state,
             read_ui_color_keys,
-            ui_color_class_focus_ring,
+            ui_color_swatch_focus_ring,
         )
 
         keys = read_ui_color_keys()
         apply_color_keys_to_state(self, keys, persist=False)
+        self.close_options()
         self.show_ui_color = True
-        self.ui_color_nav = "classes"
-        self.ui_color_active_class = ""
-        ring = ui_color_class_focus_ring()
-        self.ui_color_focus_index = ring.index("accent") if "accent" in ring else 0
+        self.show_preferences = False
+        self.ui_color_nav = "swatches"
+        self.ui_color_active_class = "ui"
+        ring = ui_color_swatch_focus_ring("ui")
+        current = str(self.ui_color_ui_key or "blue")
+        self.ui_color_focus_index = ring.index(current) if current in ring else 0
 
     def close_ui_color(self) -> None:
         self.show_ui_color = False
-        self.ui_color_nav = "classes"
+        self.ui_color_nav = "swatches"
         self.ui_color_active_class = ""
         self.ui_color_focus_index = 0
+        if self.show_pigeon_settings:
+            from pigeon.widgets.pigeon_settings import pigeon_focus_ring
+
+            ring = pigeon_focus_ring()
+            if "color_button" in ring:
+                self.pigeon_focus_index = ring.index("color_button")
 
     @property
     def ui_color_focused_id(self) -> str:
-        from pigeon.widgets.ui_color_settings import (
-            ui_color_class_focus_ring,
-            ui_color_swatch_focus_ring,
-        )
+        from pigeon.widgets.ui_color_settings import ui_color_swatch_focus_ring
 
-        if str(self.ui_color_nav or "") == "swatches":
-            ring = ui_color_swatch_focus_ring(str(self.ui_color_active_class or ""))
-        else:
-            ring = ui_color_class_focus_ring()
+        ring = ui_color_swatch_focus_ring("ui")
         if not ring:
-            return "back"
+            return "red"
         return ring[int(self.ui_color_focus_index) % len(ring)]
 
     def navigate_ui_color(self, *, forward: bool = True) -> None:
         from pigeon.widgets.ui_color_settings import (
             apply_color_keys_to_state,
-            ui_color_class_focus_ring,
             ui_color_swatch_focus_ring,
         )
 
-        step = 1 if forward else -1
-        if str(self.ui_color_nav or "") == "swatches":
-            cls = str(self.ui_color_active_class or "")
-            ring = ui_color_swatch_focus_ring(cls)
-            if not ring:
-                return
-            self.ui_color_focus_index = (
-                int(self.ui_color_focus_index) + step
-            ) % len(ring)
-            focused = ring[self.ui_color_focus_index]
-            keys = {
-                "accent": self.ui_color_accent_key,
-                "ui": self.ui_color_ui_key,
-                "button": self.ui_color_button_key,
-            }
-            if cls in keys:
-                keys[cls] = focused
-                # Live preview theme while browsing swatches (persist on activate).
-                apply_color_keys_to_state(self, keys, persist=False)
-            return
-        ring = ui_color_class_focus_ring()
+        ring = ui_color_swatch_focus_ring("ui")
         if not ring:
             return
-        self.ui_color_focus_index = (
-            int(self.ui_color_focus_index) + step
-        ) % len(ring)
+        step = 1 if forward else -1
+        self.ui_color_focus_index = (int(self.ui_color_focus_index) + step) % len(ring)
+        focused = ring[self.ui_color_focus_index]
+        apply_color_keys_to_state(
+            self,
+            {
+                "accent": self.ui_color_accent_key,
+                "ui": focused,
+                "button": self.ui_color_button_key,
+            },
+            persist=False,
+        )
 
     def activate_ui_color(self) -> str:
-        """Handle activate on the system color page."""
-        from pigeon.widgets.preferences_settings import preferences_zone_focus_ring
+        """Confirm the focused swatch, persist it, and close the picker."""
         from pigeon.widgets.ui_color_settings import (
             apply_color_keys_to_state,
-            ui_color_class_focus_ring,
             ui_color_swatch_focus_ring,
         )
 
+        ring = ui_color_swatch_focus_ring("ui")
         focused = self.ui_color_focused_id
-        if str(self.ui_color_nav or "") != "swatches":
-            if focused == "back":
-                self.close_ui_color()
-                # Return to preferences with the color control focused.
-                ring = preferences_zone_focus_ring()
-                if "color" in ring:
-                    self.preferences_focus_index = ring.index("color")
-                self.preferences_nav = "zones"
-                return "ui_color_back"
-            if focused in ("accent", "ui", "button"):
-                self.ui_color_nav = "swatches"
-                self.ui_color_active_class = focused
-                ring = ui_color_swatch_focus_ring(focused)
-                current = {
-                    "accent": self.ui_color_accent_key,
-                    "ui": self.ui_color_ui_key,
-                    "button": self.ui_color_button_key,
-                }.get(focused, ring[0] if ring else "")
-                if current in ring:
-                    self.ui_color_focus_index = ring.index(current)
-                else:
-                    self.ui_color_focus_index = 0
-                return f"ui_color_class:{focused}"
-            return "ui_color_noop"
+        if focused not in ring:
+            focused = ring[0] if ring else "red"
+        apply_color_keys_to_state(
+            self,
+            {
+                "accent": self.ui_color_accent_key,
+                "ui": focused,
+                "button": self.ui_color_button_key,
+            },
+            persist=True,
+        )
+        self.close_ui_color()
+        return f"ui_color_swatch:ui:{focused}"
 
-        # Swatch activate — commit color and return focus to the class label.
-        cls = str(self.ui_color_active_class or "")
-        keys = {
-            "accent": self.ui_color_accent_key,
-            "ui": self.ui_color_ui_key,
-            "button": self.ui_color_button_key,
-        }
-        if cls in keys and focused:
-            keys[cls] = focused
-        apply_color_keys_to_state(self, keys, persist=True)
-        self.ui_color_nav = "classes"
-        self.ui_color_active_class = ""
-        class_ring = ui_color_class_focus_ring()
-        if cls in class_ring:
-            self.ui_color_focus_index = class_ring.index(cls)
-        else:
-            self.ui_color_focus_index = 0
-        return f"ui_color_swatch:{cls}:{focused}"
+    def open_options(self) -> None:
+        """Open the system-wide options bar on settings_pigeon."""
+        from pigeon.widgets.options_settings import load_options_into_state
+
+        self.close_ui_color()
+        self.close_preferences()
+        load_options_into_state(self)
+        self.show_options = True
+        self.options_focus_index = 0
+
+    def close_options(self) -> None:
+        was = bool(self.show_options)
+        self.show_options = False
+        self.options_focus_index = 0
+        if was and self.show_pigeon_settings:
+            from pigeon.widgets.pigeon_settings import pigeon_focus_ring
+
+            ring = pigeon_focus_ring()
+            if "general_button" in ring:
+                self.pigeon_focus_index = ring.index("general_button")
+
+    @property
+    def options_focused_id(self) -> str:
+        from pigeon.widgets.options_settings import options_focus_ring
+
+        ring = options_focus_ring()
+        if not ring:
+            return "pigeon_back"
+        return ring[int(self.options_focus_index) % len(ring)]
+
+    def navigate_options(self, *, forward: bool = True) -> None:
+        from pigeon.widgets.options_settings import options_focus_ring
+
+        ring = options_focus_ring()
+        if not ring:
+            return
+        step = 1 if forward else -1
+        self.options_focus_index = (int(self.options_focus_index) + step) % len(ring)
+
+    def activate_options(self) -> str:
+        from pigeon.widgets.options_settings import toggle_option
+
+        focused = self.options_focused_id
+        if focused == "pigeon_back":
+            self.close_options()
+            return "options_back"
+        try:
+            n = int(str(focused).rsplit("_", 1)[-1])
+        except ValueError:
+            return "options_noop"
+        self.options_values = toggle_option(n, getattr(self, "options_values", None))
+        return f"options_toggle:{n}"
 
     @property
     def preferences_focused_id(self) -> str:
@@ -1297,6 +1363,9 @@ class MainSettingsState:
         if self.show_ui_color:
             self.navigate_ui_color(forward=forward)
             return
+        if self.show_options:
+            self.navigate_options(forward=forward)
+            return
         if self.show_preferences:
             self.navigate_preferences(forward=forward)
             return
@@ -1348,13 +1417,20 @@ class MainSettingsState:
     def network_picker_absolute_row(self) -> int:
         return int(self.network_picker_scroll) + int(self.network_picker_row)
 
-    def start_box_device_scan(self, box_num: int) -> None:
+    def start_box_device_scan(
+        self, box_num: int, *, duration_s: float | None = None
+    ) -> None:
         panel = self._box_panel(box_num)
         panel.active = True
         panel.phase = "scanning"
         panel.scanning = True
         panel.scan_started_mono = time.monotonic()
         panel.scan_angle_deg = 0.0
+        panel.scan_duration_s = (
+            float(duration_s)
+            if duration_s is not None and duration_s > 0.0
+            else _BOX_SCAN_MAX_DURATION_S
+        )
         panel.devices = ()
         panel.device_rows = ()
         panel.scroll = 0
@@ -1523,8 +1599,10 @@ class MainSettingsState:
 
         buffer_prefill = ""
         if target == "location":
-            initial = ""
-            buffer_prefill = self.location_name
+            initial = location_room_label(
+                self.location_name, slot_index=self.renaming_location_slot or None
+            )
+            buffer_prefill = ""
         elif target == "network":
             initial = ""
             buffer_prefill = self.wifi_password
@@ -1709,8 +1787,11 @@ def keyboard_svg_path(
     *,
     assets_dir: Path | str | None = None,
 ) -> Path:
-    """Resolve a keyboard SVG under ``settings_0.8/`` (stub helper)."""
+    """Resolve a keyboard SVG (native ``settings/keyboard/``, then legacy ``settings_0.8/``)."""
     base = Path(assets_dir) if assets_dir is not None else Path(__file__).resolve().parents[3] / "pigeonAssets"
+    native = Path(base) / "settings" / "keyboard" / name
+    if native.is_file():
+        return native
     return Path(base) / "settings_0.8" / name
 
 
@@ -1761,7 +1842,9 @@ def _load_box1_pigeon_logo_overlay_bgra(
     elif src.shape[2] != 4:
         return None
     if src.shape[0] != DESIGN_H or src.shape[1] != DESIGN_W:
-        src = cv2.resize(src, (DESIGN_W, DESIGN_H), interpolation=cv2.INTER_AREA)
+        from pigeon.np_layout import letterbox_legacy_ui
+
+        src = letterbox_legacy_ui(src)
     _BOX1_PIGEON_LOGO_CACHE.clear()
     _BOX1_PIGEON_LOGO_CACHE[key] = src
     return src
@@ -2366,7 +2449,13 @@ def _text_width_px(text: str, font: ImageFont.FreeTypeFont | ImageFont.ImageFont
 
 
 def _px_to_svg_x(px: float) -> float:
-    return px * 800.0 / float(DESIGN_W)
+    from pigeon.design import legacy_fit_origin, legacy_fit_scale
+
+    ox, _oy = legacy_fit_origin()
+    s = legacy_fit_scale()
+    if s <= 1e-6:
+        return 0.0
+    return (float(px) - ox) / s
 
 
 def _format_box_result_device_name(name: str, *, box_num: int, ip_width_svg: float = 0.0) -> str:
@@ -2609,8 +2698,11 @@ def _dual_location_text_bounds_svg(root: ET.Element | None = None) -> tuple[floa
 
 
 def _dual_location_text_bounds_px(root: ET.Element | None = None) -> tuple[int, int]:
-    x0, x1 = _dual_location_text_bounds_svg(root)
-    return int(round(x0 * DESIGN_W / 800.0)), int(round(x1 * DESIGN_W / 800.0))
+    from pigeon.settings_layout import DUAL_SLOT_A, dual_slot_design
+
+    del root
+    x, _y, w, _h = dual_slot_design(DUAL_SLOT_A)
+    return x + 96, x + max(97, w - 16)
 
 
 def _find_all_by_logical_id(root: ET.Element, logical_id: str) -> list[ET.Element]:
@@ -3069,12 +3161,12 @@ def _location_text_is_grayed(state: MainSettingsState) -> bool:
     if state.show_instructions:
         return True
     name = str(state.location_name or "").strip().lower()
-    return name in ("", "nest 1", "nest1")
+    return name in ("", "nest 1", "nest1", "room 1", "room1")
 
 
 def _wifi_logout_instruction_text(state: MainSettingsState) -> str:
     ssid = str(state.selected_wifi_ssid or "").strip() or "network"
-    return f"log out of {ssid}?"
+    return f"disconnect {ssid}"
 
 
 def _pairing_instruction_text(state: MainSettingsState) -> str:
@@ -3766,76 +3858,68 @@ def _centered_field_cursor_x(
     return cx - tw // 2 + tw + 1
 
 
-def _draw_text_entry_cursor(bgra: np.ndarray, state: MainSettingsState) -> None:
-    """Blinking insertion caret for the active dual-bar text field."""
+def _draw_text_entry_cursor(
+    bgra: np.ndarray, state: MainSettingsState, *, force: bool = False
+) -> None:
+    """Blinking insertion caret aligned with the 1280 dual-bar field text."""
+    from pigeon.settings_layout import DUAL_SLOT_A, DUAL_SLOT_B, dual_slot_design
+    from pigeon.widgets.settings_main_1280 import (
+        _fit_font,
+        _location_field_boxes,
+        _network_field_boxes,
+        _pin_digits_box,
+    )
+
     kb = state.keyboard
     if kb is None:
         return
-    if int(time.monotonic() * 2) % 2:
+    if not force and int(time.monotonic() * 2) % 2:
         return
     target = str(getattr(kb, "target", "") or "")
-    spec = _text_field_spec(target)
-    if spec is None:
+    if target not in ("location", "device_name", "network", "pin", "device_ip"):
         return
     buffer = str(getattr(kb, "buffer", "") or "")
     initial = str(getattr(kb, "initial_text", "") or "")
-    x0_px, x1_px = _entry_field_bounds_px(target)
-    baseline_px = int(round(float(spec["baseline_y_svg"]) * DESIGN_H / _ARTBOARD_H))
-    display = _entry_cursor_display(
-        buffer=buffer, initial=initial, spec=spec, state=state
-    )
-    placeholder = str(spec.get("placeholder", "") or "")
-    max_field_w = max(24, x1_px - x0_px - 8)
-    content_display = _entry_display_text(
-        buffer=buffer, initial=initial, spec=spec, state=state
-    )
-    size_px = _entry_content_font_size_px(
-        spec, buffer=buffer, display=content_display, max_width_px=max_field_w
-    )
-    font = _field_font(spec, size_px)
+    if target in ("location", "device_name"):
+        _dots, box = _location_field_boxes(dual_slot_design(DUAL_SLOT_A))
+        display = (buffer or initial).upper()
+    elif target == "pin":
+        box = _pin_digits_box(dual_slot_design(DUAL_SLOT_B))
+        display = buffer
+    else:
+        _wifi, box = _network_field_boxes(dual_slot_design(DUAL_SLOT_B))
+        display = ("*" * len(buffer)) if target == "network" else (buffer or initial).upper()
+    x, y, w, h = box
+    if w < 8 or h < 8:
+        return
+    if display:
+        font, tw, th, top, left = _fit_font(
+            display, max_w=w - 10, max_h=h - 4, start=48, digital=True
+        )
+        tx = (w - tw) // 2 - left
+        ty = (h - th) // 2 - top
+        probe = Image.new("L", (max(1, w), max(1, h)), 0)
+        ImageDraw.Draw(probe).text((tx, ty), display, font=font, fill=255)
+        # Ignore the font's anti-alias fringe so the bar matches the glyph body.
+        ys, xs = np.where(np.asarray(probe) > 170)
+        if ys.size:
+            caret_x = x + int(xs.max()) + 3
+            caret_top = y + int(ys.min())
+            caret_bot = y + int(ys.max()) + 1
+        else:
+            caret_x = x + tx + tw + 2
+            caret_top = y + max(8, h // 4)
+            caret_bot = y + h - max(8, h // 4)
+    else:
+        caret_x = x + w // 2
+        caret_top = y + max(8, h // 4)
+        caret_bot = y + h - max(8, h // 4)
+    caret_x = max(x + 4, min(x + w - 4, caret_x))
     rgb = cv2.cvtColor(bgra, cv2.COLOR_BGRA2RGBA)
     img = Image.fromarray(rgb)
-    draw = ImageDraw.Draw(img)
-    cx = (x0_px + x1_px) // 2
-    is_password_error = (
-        state.network_password_error
-        and spec.get("password_mask")
-        and display == "incorrect password"
+    ImageDraw.Draw(img).line(
+        [(caret_x, caret_top), (caret_x, caret_bot)], fill=(0, 0, 0, 255), width=2
     )
-    use_mask_center = bool(
-        spec.get("password_mask") and buffer and display and "*" in display and not is_password_error
-    )
-    text_y = baseline_px
-    if display and not is_password_error:
-        if use_mask_center:
-            _x0, _my, _mw, _vw, cursor_x, top, bot = _password_mask_layout(
-                draw,
-                cx=cx,
-                baseline_px=baseline_px,
-                display=display,
-                font=font,
-                spec=spec,
-                size_px=size_px,
-            )
-        else:
-            if not buffer and spec.get("password_mask") and display == placeholder:
-                text_y += int(spec.get("placeholder_baseline_offset_px", 0))
-            cursor_x = _centered_field_cursor_x(
-                draw, text=display, font=font, x0_px=x0_px, x1_px=x1_px
-            )
-            if display:
-                bbox = draw.textbbox((0, 0), display, font=font, anchor="ls")
-                top = text_y + bbox[1]
-                bot = text_y + bbox[3]
-            else:
-                top = text_y - size_px + 4
-                bot = text_y + 2
-        cursor_x = _clamp_field_cursor_x(cursor_x, x0_px=x0_px, x1_px=x1_px)
-    else:
-        cursor_x = _clamp_field_cursor_x(x0_px + 8, x0_px=x0_px, x1_px=x1_px)
-        top = text_y - size_px + 4
-        bot = text_y + 2
-    draw.line([(cursor_x, top), (cursor_x, bot)], fill=(255, 255, 255, 255), width=2)
     bgra[:] = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGBA2BGRA)
 
 
@@ -3852,13 +3936,12 @@ def _layer_class(logical_id: str) -> str | None:
 
 
 def _svg_scale(value: float) -> float:
-    return value * DESIGN_H / _ARTBOARD_H
+    return map_legacy_size(value)
 
 
 def _svg_to_px(x_svg: float, y_svg: float) -> tuple[int, int]:
-    x = int(round(x_svg * DESIGN_W / 800.0))
-    y = int(round(y_svg * DESIGN_H / _ARTBOARD_H))
-    return x, y
+    x, y = map_legacy_xy(x_svg, y_svg)
+    return int(round(x)), int(round(y))
 
 
 def _svg_radius_to_px(radius_svg: float) -> int:
@@ -4667,7 +4750,7 @@ def _discover_container_stripe_specs(root: ET.Element, container_id: str) -> tup
         matrix = _parse_svg_matrix(transform)
         if matrix is None:
             continue
-        fill = _style_prop(style, "fill") or el.get("fill") or "#ff0013"
+        fill = _style_prop(style, "fill") or el.get("fill") or COLOR_UI_DEFAULT
         if not fill.startswith("#"):
             continue
         try:
@@ -4898,9 +4981,11 @@ def _box_location_label_for_slot(state: MainSettingsState, box_num: int) -> str:
     if state.show_location_picker:
         slot = state.location_slot(box_num)
         if slot is not None:
-            return str(slot[1] or "").strip() or default
+            return location_room_label(str(slot[1] or "").strip() or default, slot_index=box_num)
         return default
-    return str(state.location_name or default).strip() or default
+    return location_room_label(
+        str(state.location_name or default).strip() or default, slot_index=box_num
+    )
 
 
 def _apply_box_location_group_labels(
@@ -4964,7 +5049,7 @@ def _location_display_text(state: MainSettingsState) -> str:
             ssid = str(state.pending_wifi_ssid or state.selected_wifi_ssid or "").strip()
             if ssid:
                 return ssid
-    return state.location_name
+    return location_room_label(state.location_name, slot_index=1)
 
 
 def _force_layer_white(el: ET.Element) -> None:
@@ -5086,8 +5171,10 @@ def _network_field_font_size_svg(display: str) -> float | None:
 
 
 def _dual_bar_pill_center_y_px() -> int:
-    baseline = float(_TEXT_ENTRY_FIELDS["location"]["baseline_y_svg"])
-    return int(round(baseline * DESIGN_H / _ARTBOARD_H))
+    from pigeon.settings_layout import DUAL_SLOT_A, dual_slot_design
+
+    _x, y, _w, h = dual_slot_design(DUAL_SLOT_A)
+    return y + int(round(h * 0.72))
 
 
 def _draw_dual_bar_network_prompt(bgra: np.ndarray, state: MainSettingsState) -> None:
@@ -6011,10 +6098,10 @@ def _svg_tree_from_path(path: Path) -> ET.Element:
     if template is None:
         tree = ET.parse(path)
         root = tree.getroot()
-        # Native 800×480 artboard — matches pigeon.design canvas (full bleed, no letterbox).
+        # Native 800×480 artboard — letterboxed into the 1280×800 design canvas.
         root.set("viewBox", "0 0 800 480")
-        root.set("width", str(DESIGN_W))
-        root.set("height", str(DESIGN_H))
+        root.set("width", str(LEGACY_DESIGN_W))
+        root.set("height", str(LEGACY_DESIGN_H))
         if len(_SVG_TREE_TEMPLATES) >= _SVG_TREE_TEMPLATE_MAX:
             _SVG_TREE_TEMPLATES.clear()
         _SVG_TREE_TEMPLATES[key] = root
@@ -6024,9 +6111,13 @@ def _svg_tree_from_path(path: Path) -> ET.Element:
 
 def _rasterize_svg_tree(root: ET.Element) -> np.ndarray:
     """Return BGRA uint8 (DESIGN_H × DESIGN_W) with Digital-7 / Sharp Sans labels."""
+    from pigeon.np_layout import letterbox_legacy_ui
     from pigeon.widgets.settings_svg_text import rasterize_settings_svg_bgra
 
-    return rasterize_settings_svg_bgra(root, width=DESIGN_W, height=DESIGN_H)
+    native = rasterize_settings_svg_bgra(
+        root, width=LEGACY_DESIGN_W, height=LEGACY_DESIGN_H
+    )
+    return letterbox_legacy_ui(native)
 
 
 def render_main_settings_bgra(
@@ -6036,76 +6127,19 @@ def render_main_settings_bgra(
     assets_dir: Path | str | None = None,
     skip_text_entry: bool = False,
 ) -> np.ndarray:
-    """Load settings_main.svg, apply ``state``, return 800×480 BGRA.
+    """Compose native 1280×800 settings main from the PDF widgets.
 
     ``skip_text_entry`` leaves dual-bar field text undrawn so callers can cache
     chrome and patch the buffer without a full SVG re-raster.
     """
-    if svg_path is not None:
-        path = Path(svg_path)
-    else:
-        path = default_main_settings_svg_path(assets_dir)
-    if not path.is_file():
-        raise FileNotFoundError(f"main settings SVG not found: {path}")
+    del svg_path
+    from pigeon.widgets.settings_main_1280 import render_settings_main_1280_bgra
 
     st = state if state is not None else MainSettingsState()
     st.ensure_focus_ring()
-    root = _svg_tree_from_path(path)
-    # Narrow focus ring to layers that exist in this SVG.
-    present = discover_focus_ring_in_svg(root, st)
-    st.focus_ring = present
-    st.focus_index = int(st.focus_index) % max(1, len(present))
-    apply_main_settings_svg_state(root, st)
-    focused_logical = "" if st.keyboard_open else st.focused_id
-    _disable_embedded_settings_background_layers(root)
-    # Discover after apply so hidden pigeon-logo icons are skipped, and circle
-    # element ids match this tree for hide + OpenCV star-clip redraw.
-    star_specs = _discover_star_masked_circles(root)
-    geom = _svg_geometry_bundle(path, root)
-    onboarding_arc_specs = geom["onboarding_arcs"]  # type: ignore[assignment]
-    onboarding_triangle_specs = geom["onboarding_tris"]  # type: ignore[assignment]
-    wifi_layouts = geom["wifi_layouts"]  # type: ignore[assignment]
-    # Box search rings: path strokes rasterize; leftover clip-path circles are hidden.
-    box_search_arc_overlays = _collect_box_search_arc_overlays(
-        root, st, focused_logical=focused_logical
+    return render_settings_main_1280_bgra(
+        st, assets_dir=assets_dir, skip_text_entry=skip_text_entry
     )
-    parents = _parent_map(root)
-    box1_logo_el = _find_by_logical_id(root, "main_box1_pigeon_logo_icon")
-    draw_box1_pigeon_logo = (
-        box1_logo_el is not None and not _is_subtree_hidden(box1_logo_el, parents)
-    )
-    _hide_box1_wing_logo_polygon(root)
-    _hide_svg_wifi_icons(root)
-    _hide_star_masked_svg_circles(root, star_specs)
-    _hide_box_column_search_svg_circles(root)
-    _prune_display_none(root)
-    ui_bgra = _rasterize_svg_tree(root)
-    bg_bgra = np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)
-    bg_bgra[:, :, :3] = 0
-    bg_bgra[:, :, 3] = 255
-    assets_root = assets_dir if assets_dir is not None else path.parent.parent
-    _draw_container_background_bgra(
-        bg_bgra,
-        ui_hex=st.theme.ui,
-        assets_dir=assets_root,
-    )
-    bgra = _composite_bgra_over_bgra(bg_bgra, ui_bgra)
-    if draw_box1_pigeon_logo:
-        _draw_box1_pigeon_logo_overlay(
-            bgra, assets_dir=assets_root, ui_hex=st.theme.ui
-        )
-    _draw_wifi_overlays(bgra, st, wifi_layouts, focused_logical=focused_logical)
-    _draw_star_masked_circle_overlays(bgra, st, star_specs, focused_logical=focused_logical)
-    _draw_box_search_arc_overlays(bgra, box_search_arc_overlays)
-    _draw_wifi_onboarding_search_overlays(
-        bgra, st, onboarding_arc_specs, onboarding_triangle_specs
-    )
-    if st.keyboard_open or st.wifi_connecting or st.manual_device_entry is not None:
-        if not skip_text_entry:
-            _draw_text_entry_content(bgra, st)
-    if not skip_text_entry:
-        _draw_dual_bar_network_prompt(bgra, st)
-    return bgra
 
 
 class MainSettingsWidget:
@@ -6177,6 +6211,8 @@ class MainSettingsWidget:
         self._box_scan_pending: set[int] = set()
         self._wifi_prefetch_inflight: bool = False
         self._box_prefetch_inflight: set[int] = set()
+        self._box_prefetch_shared_inflight: bool = False
+        self._periodic_prefetch_started: bool = False
         self._pre_scan_main_bgra: dict[int, np.ndarray] = {}
         self._last_tick_mono: float = time.monotonic()
         # Per-focus bitmaps for the current structure — left/right nav revisits are free.
@@ -6198,6 +6234,45 @@ class MainSettingsWidget:
     @property
     def state(self) -> MainSettingsState:
         return self._state
+
+    def _status_bar_animating(self) -> bool:
+        st = self._state
+        if st.wifi_scanning or st.wifi_connecting:
+            return True
+        if st.box2_devices.scanning or st.box3_devices.scanning:
+            return True
+        return bool(st.location_switch_spinner_visible())
+
+    def _scan_anim_token(self) -> int:
+        """Quantized status-bar fill so the main-frame cache cannot freeze mid-scan."""
+        st = self._state
+        now = time.monotonic()
+
+        def steps(started: float, duration: float) -> int:
+            if started <= 0.0 or duration <= 0.0:
+                return 0
+            return int(max(0.0, min(1.0, (now - started) / duration)) * 100)
+
+        if st.box2_devices.scanning:
+            return 2000 + steps(
+                float(st.box2_devices.scan_started_mono),
+                float(getattr(st.box2_devices, "scan_duration_s", 0.0) or _BOX_SCAN_MAX_DURATION_S),
+            )
+        if st.box3_devices.scanning:
+            return 3000 + steps(
+                float(st.box3_devices.scan_started_mono),
+                float(getattr(st.box3_devices, "scan_duration_s", 0.0) or _BOX_SCAN_MAX_DURATION_S),
+            )
+        if st.wifi_scanning:
+            return 1000 + steps(float(st.wifi_scan_started_mono), _WIFI_SCAN_MAX_DURATION_S)
+        if st.wifi_connecting:
+            return 1100 + steps(
+                float(getattr(st, "wifi_connect_started_mono", 0.0) or 0.0),
+                _WIFI_SCAN_MAX_DURATION_S,
+            )
+        if st.location_switch_spinner_visible():
+            return 4000 + int(round(float(st.location_switch_angle_deg) / 10.0))
+        return -1
 
     def invalidate(self) -> None:
         self._cached_bgra = None
@@ -6294,6 +6369,9 @@ class MainSettingsWidget:
                 str(getattr(kb, "target", "")),
                 str(getattr(kb, "initial_text", "")),
                 bool(getattr(kb, "supports_lowercase", True)),
+                int(getattr(kb, "focus_index", 0) or 0)
+                if str(getattr(kb, "target", "") or "") == "wifi_logout"
+                else -1,
             )
         return (
             th.ui,
@@ -6346,10 +6424,11 @@ class MainSettingsWidget:
 
     def _main_with_text_from_chrome(self) -> np.ndarray:
         """Copy keyboard chrome and paint current field text (no SVG raster)."""
+        from pigeon.widgets.settings_main_1280 import draw_settings_main_text_entry
+
         assert self._cached_kb_chrome_bgra is not None
         frame = self._cached_kb_chrome_bgra.copy()
-        _draw_text_entry_content(frame, self._state)
-        _draw_dual_bar_network_prompt(frame, self._state)
+        draw_settings_main_text_entry(frame, self._state)
         return frame
 
     def _compose_keyboard_over_main(
@@ -6445,6 +6524,9 @@ class MainSettingsWidget:
                 str(getattr(kb, "target", "")),
                 str(getattr(kb, "initial_text", "")),
                 bool(getattr(kb, "supports_lowercase", True)),
+                int(getattr(kb, "focus_index", 0) or 0)
+                if str(getattr(kb, "target", "") or "") == "wifi_logout"
+                else -1,
             )
         return (
             int(st.focus_index) if not st.keyboard_open else -1,
@@ -6520,6 +6602,9 @@ class MainSettingsWidget:
             str(st.ui_color_accent_key or ""),
             str(st.ui_color_ui_key or ""),
             str(st.ui_color_button_key or ""),
+            bool(st.show_options),
+            int(st.options_focus_index) if st.show_options else -1,
+            tuple(st.options_values.items()) if st.show_options else (),
             str(st.theme.ui),
             str(st.theme.accent),
             str(st.theme.deselected),
@@ -6543,6 +6628,8 @@ class MainSettingsWidget:
                 str(st.box_pairing.session_key),
                 str(st.box_pairing.device_name),
             ),
+            self._scan_anim_token(),
+            id(st.zone2_tt_bgra) if st.zone2_tt_bgra is not None else 0,
         )
 
     def _keyboard_overlay_sig(self) -> tuple[object, ...] | None:
@@ -6625,6 +6712,9 @@ class MainSettingsWidget:
             str(st.ui_color_accent_key or ""),
             str(st.ui_color_ui_key or ""),
             str(st.ui_color_button_key or ""),
+            bool(st.show_options),
+            int(st.options_focus_index) if st.show_options else -1,
+            tuple(st.options_values.items()) if st.show_options else (),
             str(st.theme.ui),
             str(st.theme.accent),
             str(st.theme.deselected),
@@ -6648,6 +6738,7 @@ class MainSettingsWidget:
                 str(st.box_pairing.session_key),
                 str(st.box_pairing.device_name),
             ),
+            id(st.zone2_tt_bgra) if st.zone2_tt_bgra is not None else 0,
         )
 
     def _focus_cache_key(self) -> tuple[object, ...]:
@@ -6670,11 +6761,18 @@ class MainSettingsWidget:
             str(st.ui_color_accent_key or "") if st.show_ui_color else "",
             str(st.ui_color_ui_key or "") if st.show_ui_color else "",
             str(st.ui_color_button_key or "") if st.show_ui_color else "",
+            int(st.options_focus_index) if st.show_options else -1,
+            bool(st.show_options),
+            tuple(st.options_values.items()) if st.show_options else (),
             int(st.update_popup_focus_index) if st.show_update_popup else -1,
             bool(st.show_update_popup),
+            self._scan_anim_token(),
+            id(st.zone2_tt_bgra) if st.zone2_tt_bgra is not None else 0,
         )
 
     def _store_focus_frame(self, frame: np.ndarray) -> None:
+        if self._status_bar_animating():
+            return
         structure = self._structure_sig()
         if structure != self._focus_cache_structure:
             self._focus_frame_cache.clear()
@@ -6721,8 +6819,12 @@ class MainSettingsWidget:
                 return
 
     def _focus_key_for_state(self, st: MainSettingsState) -> tuple[object, ...]:
+        kb = st.keyboard
+        logout_focus = -1
+        if kb is not None and str(getattr(kb, "target", "") or "") == "wifi_logout":
+            logout_focus = int(getattr(kb, "focus_index", 0) or 0)
         return (
-            int(st.focus_index) if not st.keyboard_open else -1,
+            int(st.focus_index) if not st.keyboard_open else logout_focus,
             int(st.network_picker_row),
             int(st.box2_devices.row),
             str(st.box2_devices.arrow),
@@ -6739,6 +6841,9 @@ class MainSettingsWidget:
             str(st.ui_color_accent_key or "") if st.show_ui_color else "",
             str(st.ui_color_ui_key or "") if st.show_ui_color else "",
             str(st.ui_color_button_key or "") if st.show_ui_color else "",
+            int(st.options_focus_index) if st.show_options else -1,
+            bool(st.show_options),
+            tuple(st.options_values.items()) if st.show_options else (),
             int(st.update_popup_focus_index) if st.show_update_popup else -1,
             bool(st.show_update_popup),
         )
@@ -6827,16 +6932,10 @@ class MainSettingsWidget:
             return
         structure = self._structure_sig()
         if st.show_pigeon_settings and st.show_ui_color:
-            from pigeon.widgets.ui_color_settings import (
-                render_ui_color_settings_bgra,
-                ui_color_class_focus_ring,
-                ui_color_swatch_focus_ring,
-            )
+            from pigeon.widgets.pigeon_settings import render_pigeon_settings_bgra
+            from pigeon.widgets.ui_color_settings import ui_color_swatch_focus_ring
 
-            if str(st.ui_color_nav or "") == "swatches":
-                ring = ui_color_swatch_focus_ring(str(st.ui_color_active_class or ""))
-            else:
-                ring = ui_color_class_focus_ring()
+            ring = ui_color_swatch_focus_ring("ui")
             n = len(ring)
             if n <= 1:
                 return
@@ -6885,7 +6984,7 @@ class MainSettingsWidget:
                         if key in cache:
                             continue
                         try:
-                            frame = render_ui_color_settings_bgra(
+                            frame = render_pigeon_settings_bgra(
                                 state_snap, assets_dir=assets_dir
                             )
                         except Exception:
@@ -7127,17 +7226,13 @@ class MainSettingsWidget:
             return
 
         if st.show_pigeon_settings and st.show_ui_color:
+            from pigeon.widgets.pigeon_settings import render_pigeon_settings_bgra
             from pigeon.widgets.ui_color_settings import (
-                render_ui_color_settings_bgra,
                 theme_from_color_keys,
-                ui_color_class_focus_ring,
                 ui_color_swatch_focus_ring,
             )
 
-            if str(st.ui_color_nav or "") == "swatches":
-                ring = ui_color_swatch_focus_ring(str(st.ui_color_active_class or ""))
-            else:
-                ring = ui_color_class_focus_ring()
+            ring = ui_color_swatch_focus_ring("ui")
             n = len(ring)
             if n <= 0:
                 return
@@ -7170,7 +7265,7 @@ class MainSettingsWidget:
 
             def _work_ui_color_n() -> None:
                 try:
-                    frame = render_ui_color_settings_bgra(snap, assets_dir=assets)
+                    frame = render_pigeon_settings_bgra(snap, assets_dir=assets)
                 except Exception:
                     return
                 if self._focus_cache_structure != struct_ref:
@@ -7518,13 +7613,21 @@ class MainSettingsWidget:
             pending = box_num in self._box_scan_pending
             if panel.scanning:
                 panel.scan_angle_deg = (panel.scan_angle_deg + _BOX_SCAN_ROTATION_DPS * dt) % 360.0
+                invalidated = True
             if not panel.scanning and not pending:
                 continue
             elapsed = now - panel.scan_started_mono
             result = self._box_scan_result.get(box_num)
-            result_ready = result is not None
+            if result is None:
+                cached = self._cached_box_scan(box_num)
+                if cached is not None:
+                    result = cached
+                    self._box_scan_result[box_num] = cached
+            result_ready = result is not None and bool(result[0] or result[1])
+            hold_s = float(getattr(panel, "scan_duration_s", 0.0) or _BOX_SCAN_MAX_DURATION_S)
+            min_hold = min(hold_s, _BOX_SCAN_LIVE_MIN_S)
             timed_out = elapsed >= _BOX_SCAN_MAX_DURATION_S
-            if result_ready or timed_out:
+            if (result_ready and elapsed >= min_hold) or timed_out:
                 devices = result if result is not None else ()
                 self._box_scan_result.pop(box_num, None)
                 self._box_scan_pending.discard(box_num)
@@ -7539,6 +7642,7 @@ class MainSettingsWidget:
                     self._box_scan_cache[box_num] = (*devices, now)
                 invalidated = True
                 self.invalidate()
+        self._maybe_refresh_box_scan_cache()
         if invalidated and not (
             st.wifi_scanning
             or self._any_box_scanning()
@@ -7549,6 +7653,8 @@ class MainSettingsWidget:
             # Spinner still animating — drop composed frames so the next blit rotates.
             self._cached_bgra = None
             self._cached_sig = None
+            self._cached_main_bgra = None
+            self._cached_main_sig = None
 
     def _ensure_location_switch_spinner_frames(self) -> tuple[np.ndarray, ...] | None:
         if self._location_switch_spinner_frames is not None:
@@ -7640,6 +7746,12 @@ class MainSettingsWidget:
             return None
         return networks
 
+    def _box_cache_age_s(self, box_num: int) -> float | None:
+        cached = self._box_scan_cache.get(box_num)
+        if cached is None:
+            return None
+        return time.monotonic() - float(cached[-1])
+
     def _cached_box_scan(self, box_num: int) -> tuple[tuple[tuple[str, str], ...], tuple[dict[str, str], ...]] | None:
         cached = self._box_scan_cache.get(box_num)
         if cached is None:
@@ -7654,10 +7766,12 @@ class MainSettingsWidget:
         return self._cached_wifi_scan() is None and not getattr(self, "_wifi_prefetch_inflight", False)
 
     def _box_prefetch_needed(self, box_num: int) -> bool:
-        return (
-            self._cached_box_scan(box_num) is None
-            and box_num not in getattr(self, "_box_prefetch_inflight", set())
-        )
+        if box_num in getattr(self, "_box_prefetch_inflight", set()):
+            return False
+        if getattr(self, "_box_prefetch_shared_inflight", False):
+            return False
+        age = self._box_cache_age_s(box_num)
+        return age is None or age >= _BOX_PREFETCH_INTERVAL_S
 
     def prefetch_scans_for_settings(self) -> None:
         """Silent background scans so Space on WiFi/box buttons can finish from cache."""
@@ -7665,8 +7779,8 @@ class MainSettingsWidget:
         if not st.wifi_configured:
             self._prefetch_wifi_into_cache()
         else:
-            self._prefetch_box_into_cache(2)
-            self._prefetch_box_into_cache(3)
+            self._prefetch_boxes_shared()
+        self._ensure_periodic_box_prefetch()
         # Full-ring prewarm after the first live paint — avoid contending with cold SVG.
         self._want_prewarm_after_paint = True
         self._prewarm_neighbor_focus(forward=True)
@@ -7677,10 +7791,72 @@ class MainSettingsWidget:
             if not self._state.wifi_configured:
                 self._prefetch_wifi_into_cache()
             return
-        if focused == "main_box2_button":
-            self._prefetch_box_into_cache(2)
-        elif focused == "main_box3_button":
-            self._prefetch_box_into_cache(3)
+        if focused in ("main_box2_button", "main_box3_button"):
+            self._prefetch_boxes_shared()
+
+    def _ensure_periodic_box_prefetch(self) -> None:
+        if getattr(self, "_periodic_prefetch_started", False):
+            return
+        self._periodic_prefetch_started = True
+        import threading
+
+        def loop() -> None:
+            while True:
+                time.sleep(_BOX_PREFETCH_INTERVAL_S)
+                try:
+                    self._maybe_refresh_box_scan_cache()
+                except Exception:
+                    pass
+
+        threading.Thread(target=loop, name="pigeon-lan-prefetch", daemon=True).start()
+
+    def _maybe_refresh_box_scan_cache(self) -> None:
+        st = self._state
+        if not bool(getattr(st, "wifi_configured", True)):
+            return
+        if bool(st.box2_devices.scanning or st.box3_devices.scanning):
+            return
+        if self._box_prefetch_needed(2) or self._box_prefetch_needed(3):
+            self._prefetch_boxes_shared()
+
+    def _store_box_scan_result(
+        self,
+        box_num: int,
+        result: tuple[tuple[tuple[str, str], ...], tuple[dict[str, str], ...]],
+    ) -> None:
+        display, rows = result
+        if display or rows:
+            self._box_scan_cache[box_num] = (*result, time.monotonic())
+        if box_num in self._box_scan_pending and self._box_scan_result.get(box_num) is None:
+            self._box_scan_result[box_num] = result
+
+    def _prefetch_boxes_shared(self) -> None:
+        if getattr(self, "_box_prefetch_shared_inflight", False):
+            return
+        if self._box_prefetch_inflight:
+            return
+        if not (self._box_prefetch_needed(2) or self._box_prefetch_needed(3)):
+            return
+        import threading
+
+        self._box_prefetch_shared_inflight = True
+        self._box_prefetch_inflight.update((2, 3))
+
+        def worker() -> None:
+            try:
+                from pigeon.widgets.box_device_pairing import scan_devices_for_boxes
+
+                found = scan_devices_for_boxes()
+            except Exception:
+                found = {2: ((), ()), 3: ((), ())}
+            finally:
+                self._box_prefetch_shared_inflight = False
+                self._box_prefetch_inflight.discard(2)
+                self._box_prefetch_inflight.discard(3)
+            for box_num, result in found.items():
+                self._store_box_scan_result(int(box_num), result)
+
+        threading.Thread(target=worker, name="pigeon-lan-prefetch-scan", daemon=True).start()
 
     def _prefetch_wifi_into_cache(self) -> None:
         if not self._wifi_prefetch_needed():
@@ -7704,30 +7880,8 @@ class MainSettingsWidget:
         threading.Thread(target=worker, name="pigeon-wifi-prefetch", daemon=True).start()
 
     def _prefetch_box_into_cache(self, box_num: int) -> None:
-        if box_num not in (2, 3) or not self._box_prefetch_needed(box_num):
-            return
-        import threading
-
-        inflight = getattr(self, "_box_prefetch_inflight", None)
-        if inflight is None:
-            inflight = set()
-            self._box_prefetch_inflight = inflight
-        inflight.add(box_num)
-
-        def worker() -> None:
-            try:
-                result = scan_lan_devices(box_num)
-            except Exception:
-                result = (), ()
-            finally:
-                self._box_prefetch_inflight.discard(box_num)
-            display, rows = result
-            if display or rows:
-                self._box_scan_cache[box_num] = (*result, time.monotonic())
-
-        threading.Thread(
-            target=worker, name=f"pigeon-box{box_num}-prefetch", daemon=True
-        ).start()
+        del box_num
+        self._prefetch_boxes_shared()
 
     def _start_wifi_scan_async(self) -> None:
         import threading
@@ -7755,9 +7909,7 @@ class MainSettingsWidget:
             except Exception:
                 result = (), ()
             self._box_scan_result[box_num] = result
-            display, rows = result
-            if display or rows:
-                self._box_scan_cache[box_num] = (*result, time.monotonic())
+            self._store_box_scan_result(box_num, result)
 
         self._box_scan_result[box_num] = None
         threading.Thread(target=worker, daemon=True).start()
@@ -7789,14 +7941,20 @@ class MainSettingsWidget:
         st = self._state
         cached = self._cached_box_scan(box_num)
         if cached is not None:
-            # Prefetch hit — open results immediately (no spinner).
             if box_num == 2:
                 st.show_box2_panel = True
             elif box_num == 3:
                 st.show_box3_panel = True
-            panel = st._box_panel(box_num)
-            panel.active = True
-            st.complete_box_device_scan(box_num, cached)
+            st.start_box_device_scan(box_num, duration_s=_BOX_SCAN_CACHE_HIT_MIN_S)
+            self._box_scan_result[box_num] = cached
+            self._box_scan_pending.add(box_num)
+            self.invalidate()
+            return
+        if box_num in self._box_prefetch_inflight or self._box_prefetch_shared_inflight:
+            if self._cached_main_bgra is not None:
+                self._pre_scan_main_bgra[box_num] = self._cached_main_bgra.copy()
+            st.start_box_device_scan(box_num)
+            self._box_scan_pending.add(box_num)
             self.invalidate()
             return
         # Snapshot the idle UI so abort can restore it without a mid-spin freeze frame.
@@ -7918,6 +8076,38 @@ class MainSettingsWidget:
             self._ensure_wifi_search_glyph_cache()
             self._draw_wifi_search_spinner(frame)
 
+    def _activate_location_picker_slot(self, box_num: int) -> str:
+        """Select a room card, or open rename if that room is already current."""
+        st = self._state
+        if st.location_switching:
+            return "location_switch:busy"
+        if not st.location_slots:
+            try:
+                st.refresh_location_slots()
+            except Exception:
+                pass
+        slot = st.location_slot(box_num)
+        current_lid = ""
+        try:
+            from pigeon.app_state import read_current_location_id
+
+            current_lid = str(read_current_location_id() or "").strip()
+        except Exception:
+            current_lid = ""
+        if slot is not None and current_lid and str(slot[0]) == current_lid:
+            if st.begin_rename_location_slot(box_num):
+                st.open_keyboard(
+                    "location",
+                    assets_dir=self._assets_dir,
+                    trigger_button="main_dual_location_button",
+                )
+                self.invalidate()
+                return "keyboard_open:location"
+        if st.select_location_slot(box_num):
+            self.invalidate()
+            return "location_switch"
+        return ""
+
     def activate(self) -> str:
         """Return an action string for the focused control."""
         st = self._state
@@ -8028,6 +8218,16 @@ class MainSettingsWidget:
                     st.ensure_focus_ring()
                     self.invalidate()
                     return "manual_device_ip_done"
+                if kb is not None and kb_target == "location":
+                    buf = str(getattr(kb, "buffer", "") or "").strip()
+                    if not buf:
+                        buf = str(getattr(kb, "initial_text", "") or "").strip()
+                    st.location_name = location_room_label(
+                        buf, slot_index=st.renaming_location_slot or None
+                    )
+                    st.close_keyboard(commit=False)
+                    self.invalidate()
+                    return "keyboard_go:location"
                 if kb is not None and kb_target == "device_name":
                     entry = st.manual_device_entry
                     if entry is None:
@@ -8058,6 +8258,16 @@ class MainSettingsWidget:
                 return "metadata_debug_exit"
             if st.show_ui_color:
                 action = st.activate_ui_color()
+                self._cached_bgra = None
+                self._cached_sig = None
+                self._cached_main_bgra = None
+                self._cached_main_sig = None
+                self._paste_fully_opaque = None
+                self._want_prewarm_after_paint = True
+                self.invalidate()
+                return action
+            if st.show_options:
+                action = st.activate_options()
                 self._cached_bgra = None
                 self._cached_sig = None
                 self._cached_main_bgra = None
@@ -8112,10 +8322,9 @@ class MainSettingsWidget:
                 self.invalidate()
                 return "preferences_open"
             if focused == "general_button":
-                # WIDGETS — opens the now-playing zone widget editor.
-                st.open_preferences()
+                st.open_options()
                 self.invalidate()
-                return "preferences_open"
+                return "options_open"
             if focused in (
                 "wifi_button",
                 "metadata_button",
@@ -8210,22 +8419,18 @@ class MainSettingsWidget:
             return action
         if action == "focus_box1":
             if st.show_location_picker:
-                if st.location_switching:
-                    return "location_switch:busy"
-                if st.select_location_slot(1):
-                    self.invalidate()
-                    return "location_switch"
+                picked = self._activate_location_picker_slot(1)
+                if picked:
+                    return picked
                 return action
             st.enter_pigeon_settings()
             self.invalidate()
             return "pigeon_settings"
         if action in ("pick_box2_device", "focus_box2"):
             if st.show_location_picker and action == "focus_box2":
-                if st.location_switching:
-                    return "location_switch:busy"
-                if st.select_location_slot(2):
-                    self.invalidate()
-                    return "location_switch"
+                picked = self._activate_location_picker_slot(2)
+                if picked:
+                    return picked
                 return action
             if st.box2_devices.results_locked or action == "pick_box2_device":
                 row = st.pick_box_device(2)
@@ -8251,11 +8456,9 @@ class MainSettingsWidget:
             return action
         if action in ("pick_box3_device", "focus_box3"):
             if st.show_location_picker and action == "focus_box3":
-                if st.location_switching:
-                    return "location_switch:busy"
-                if st.select_location_slot(3):
-                    self.invalidate()
-                    return "location_switch"
+                picked = self._activate_location_picker_slot(3)
+                if picked:
+                    return picked
                 return action
             if st.box3_devices.results_locked or action == "pick_box3_device":
                 row = st.pick_box_device(3)
@@ -8310,12 +8513,10 @@ class MainSettingsWidget:
                         )
                         self._cached_main_bgra = frame
                         self._cached_main_sig = main_sig
-                elif st.show_ui_color:
-                    from pigeon.widgets.ui_color_settings import (
-                        render_ui_color_settings_bgra,
-                    )
+                elif st.show_ui_color or st.show_options:
+                    from pigeon.widgets.pigeon_settings import render_pigeon_settings_bgra
 
-                    frame = render_ui_color_settings_bgra(
+                    frame = render_pigeon_settings_bgra(
                         st,
                         assets_dir=self._assets_dir,
                     )
@@ -8374,29 +8575,46 @@ class MainSettingsWidget:
             if structure != self._focus_cache_structure:
                 self._focus_frame_cache.clear()
                 self._focus_cache_structure = structure
-            if focus_key in self._focus_frame_cache:
+            if (
+                not self._status_bar_animating()
+                and focus_key in self._focus_frame_cache
+            ):
                 frame = self._focus_frame_cache[focus_key]
                 self._cached_main_bgra = frame
                 self._cached_main_sig = main_sig
-            elif self._cached_main_bgra is not None and self._cached_main_sig == main_sig:
+            elif (
+                not self._status_bar_animating()
+                and self._cached_main_bgra is not None
+                and self._cached_main_sig == main_sig
+            ):
                 frame = self._cached_main_bgra
             elif st.keyboard is not None:
-                chrome_sig = self._keyboard_chrome_sig()
-                if (
-                    self._cached_kb_chrome_bgra is not None
-                    and self._cached_kb_chrome_sig == chrome_sig
-                ):
-                    frame = self._main_with_text_from_chrome()
-                else:
-                    chrome = render_main_settings_bgra(
+                kb = st.keyboard
+                if str(getattr(kb, "target", "") or "") == "wifi_logout":
+                    # Native YES/NO lives on the main frame — do not reuse chrome
+                    # that ignores keyboard focus, or left/right look dead.
+                    frame = render_main_settings_bgra(
                         self._state,
                         svg_path=self._svg_path,
                         assets_dir=self._assets_dir,
-                        skip_text_entry=True,
                     )
-                    self._cached_kb_chrome_bgra = chrome
-                    self._cached_kb_chrome_sig = chrome_sig
-                    frame = self._main_with_text_from_chrome()
+                else:
+                    chrome_sig = self._keyboard_chrome_sig()
+                    if (
+                        self._cached_kb_chrome_bgra is not None
+                        and self._cached_kb_chrome_sig == chrome_sig
+                    ):
+                        frame = self._main_with_text_from_chrome()
+                    else:
+                        chrome = render_main_settings_bgra(
+                            self._state,
+                            svg_path=self._svg_path,
+                            assets_dir=self._assets_dir,
+                            skip_text_entry=True,
+                        )
+                        self._cached_kb_chrome_bgra = chrome
+                        self._cached_kb_chrome_sig = chrome_sig
+                        frame = self._main_with_text_from_chrome()
                 self._cached_main_bgra = frame
                 self._cached_main_sig = main_sig
             else:
@@ -8409,63 +8627,52 @@ class MainSettingsWidget:
                 self._cached_main_sig = main_sig
                 self._store_focus_frame(frame)
 
-            if self._state.wifi_scanning or self._state.wifi_connecting:
-                frame = frame.copy()
-                self._apply_wifi_search_overlay(frame)
-
-            if self._any_box_scanning():
-                if not self._state.wifi_scanning and not self._state.wifi_connecting:
-                    frame = frame.copy()
-                self._apply_box_search_overlays(frame)
-
-            if self._state.location_switch_spinner_visible():
-                if not (
-                    self._state.wifi_scanning
-                    or self._state.wifi_connecting
-                    or self._any_box_scanning()
-                ):
-                    frame = frame.copy()
-                self._apply_location_switch_overlay(frame)
+            # Native 1280 compositor draws the scan status bar; skip legacy spinners.
 
             if self._state.keyboard is not None:
-                from pigeon.widgets.settings_keyboard import render_keyboard_bgra
+                from pigeon.widgets.settings_keyboard import KeyboardMode, render_keyboard_bgra
 
                 kb = self._state.keyboard
+                skip_yes_no_overlay = (
+                    getattr(kb, "mode", None) == KeyboardMode.YES_NO
+                    and str(getattr(kb, "target", "") or "") == "wifi_logout"
+                )
                 mode = getattr(kb, "mode", None)
-                if self._kb_cache_mode is None:
-                    self._kb_cache_mode = mode
-                elif self._kb_cache_mode != mode:
-                    self._clear_keyboard_focus_caches()
-                    self._kb_cache_mode = mode
-                kb_sig = self._keyboard_overlay_sig()
-                compose_key = (main_sig, kb_sig)
-                if compose_key in self._kb_composed_cache:
-                    frame = self._kb_composed_cache[compose_key]
-                    self._cached_kb_bgra = self._kb_focus_frame_cache.get(kb_sig)  # type: ignore[arg-type]
-                    self._cached_kb_sig = kb_sig
-                else:
-                    if (
-                        kb_sig is not None
-                        and self._cached_kb_bgra is not None
-                        and self._cached_kb_sig == kb_sig
-                    ):
-                        kb_frame = self._cached_kb_bgra
-                    elif kb_sig is not None and kb_sig in self._kb_focus_frame_cache:
-                        kb_frame = self._kb_focus_frame_cache[kb_sig]
-                        self._cached_kb_bgra = kb_frame
+                if not skip_yes_no_overlay:
+                    if self._kb_cache_mode is None:
+                        self._kb_cache_mode = mode
+                    elif self._kb_cache_mode != mode:
+                        self._clear_keyboard_focus_caches()
+                        self._kb_cache_mode = mode
+                    kb_sig = self._keyboard_overlay_sig()
+                    compose_key = (main_sig, kb_sig)
+                    if compose_key in self._kb_composed_cache:
+                        frame = self._kb_composed_cache[compose_key]
+                        self._cached_kb_bgra = self._kb_focus_frame_cache.get(kb_sig)  # type: ignore[arg-type]
                         self._cached_kb_sig = kb_sig
                     else:
-                        kb_frame = render_keyboard_bgra(
-                            self._state.keyboard,
-                            assets_dir=self._assets_dir,
-                        )
-                        self._cached_kb_bgra = kb_frame
-                        self._cached_kb_sig = kb_sig
+                        if (
+                            kb_sig is not None
+                            and self._cached_kb_bgra is not None
+                            and self._cached_kb_sig == kb_sig
+                        ):
+                            kb_frame = self._cached_kb_bgra
+                        elif kb_sig is not None and kb_sig in self._kb_focus_frame_cache:
+                            kb_frame = self._kb_focus_frame_cache[kb_sig]
+                            self._cached_kb_bgra = kb_frame
+                            self._cached_kb_sig = kb_sig
+                        else:
+                            kb_frame = render_keyboard_bgra(
+                                self._state.keyboard,
+                                assets_dir=self._assets_dir,
+                            )
+                            self._cached_kb_bgra = kb_frame
+                            self._cached_kb_sig = kb_sig
+                            if kb_sig is not None:
+                                self._store_kb_frame(kb_sig, kb_frame)
+                        frame = self._compose_keyboard_over_main(frame, kb_frame, kb_sig)
                         if kb_sig is not None:
-                            self._store_kb_frame(kb_sig, kb_frame)
-                    frame = self._compose_keyboard_over_main(frame, kb_frame, kb_sig)
-                    if kb_sig is not None:
-                        self._store_kb_composed(compose_key, frame)
+                            self._store_kb_composed(compose_key, frame)
         except Exception:
             self.invalidate()
             raise

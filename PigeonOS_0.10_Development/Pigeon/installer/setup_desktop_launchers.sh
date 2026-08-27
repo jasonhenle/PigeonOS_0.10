@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Create side-by-side git worktrees + two Desktop double-click launchers:
+# Create side-by-side git worktrees + Desktop double-click launchers:
 #   Pigeon (experiment).command  -> ~/Desktop/Pigeon  (PigeonOS_0.10 branch)
+#   Pigeon (0.10).command        -> same as experiment
 #   Pigeon (main).command        -> ~/Desktop/Pigeon-main (main branch)
 #
 # Run once (or again after moving the repo):
@@ -21,6 +22,7 @@ DEV_APP="${DEV_ROOT}/PigeonOS_0.10_Development/Pigeon"
 MAIN_APP="${MAIN_ROOT}/PigeonOS_0.10_Development/Pigeon"
 LAUNCHER_EXPERIMENT="${DESKTOP}/Pigeon (experiment).command"
 LAUNCHER_MAIN="${DESKTOP}/Pigeon (main).command"
+LAUNCHER_ALIAS="${DESKTOP}/Pigeon (0.10).command"
 
 echo "==> Pigeon desktop launchers"
 echo "    repo:   ${REPO_ROOT}"
@@ -93,10 +95,12 @@ EOF
 
 write_launcher "${LAUNCHER_EXPERIMENT}" "PigeonOS_0.10 (dev)" "${DEV_ROOT}" "${DEV_APP}" "${DEV_BRANCH}"
 write_launcher "${LAUNCHER_MAIN}" "main (release)" "${MAIN_ROOT}" "${MAIN_APP}" "main"
+write_launcher "${LAUNCHER_ALIAS}" "PigeonOS_0.10 (dev)" "${DEV_ROOT}" "${DEV_APP}" "${DEV_BRANCH}"
 
 echo
 echo "Done. Double-click on your Desktop:"
 echo "  • Pigeon (experiment).command  — ${DEV_BRANCH} / PigeonOS 0.10"
+echo "  • Pigeon (0.10).command        — same as experiment (explicit 0.10 name)"
 echo "  • Pigeon (main).command        — same code the Updates button ships"
 echo
 echo "Re-run this script anytime to refresh the main worktree or recreate launchers."

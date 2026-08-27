@@ -291,7 +291,7 @@ def _full_theme_bgra(
 ) -> np.ndarray:
     from pigeon.widgets.main_settings import _draw_container_background_bgra
 
-    ui_hex = str(getattr(state.theme, "ui", "#ff0013") or "#ff0013")
+    ui_hex = str(getattr(state.theme, "ui", "#4EA6F7") or "#4EA6F7")
     adir = str(assets_dir if assets_dir is not None else path.parent.parent)
     key = (ui_hex, adir, int(DESIGN_W), int(DESIGN_H))
     cached = _THEME_BG_CACHE.get(key)

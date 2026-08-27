@@ -16,11 +16,10 @@ import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from pigeon.design import DESIGN_H, DESIGN_W, GRID_COLS, get_grid_geometry
+from pigeon.design import DESIGN_H, DESIGN_W, LEGACY_DESIGN_H, LEGACY_DESIGN_W, GRID_COLS, get_grid_geometry
 from pigeon.font_paths import (
     resolve_digital7_font,
     resolve_ui_font_bold,
@@ -32,7 +31,8 @@ from pigeon.widgets.clock_calendar import _resolve_display_time
 _CLOCK_SAVER_TIME_ROW_TOP_1BASED = 2
 _CLOCK_SAVER_TIME_ROW_END_1BASED = 7
 
-_TIME_FORMAT = "%H:%M:%S"
+_TIME_FORMAT_24 = "%H:%M:%S"
+_TIME_FORMAT_12 = "%I:%M:%S"
 _DATE_FORMAT = "%A, %B %-d" if os.name != "nt" else "%A, %B %#d"
 
 _TIME_COLOR_SEGMENT_S = 10.0
@@ -338,6 +338,29 @@ def _date_label(now) -> str:
         return now.strftime("%A, %B %d").replace(" 0", " ")
 
 
+def _time_label(now) -> str:
+    try:
+        from pigeon.widgets.options_settings import clock_uses_24h
+
+        use_24 = bool(clock_uses_24h())
+    except Exception:
+        use_24 = True
+    if use_24:
+        return now.strftime(_TIME_FORMAT_24)
+    return now.strftime(_TIME_FORMAT_12)
+
+
+def _format_temp_f(temp_f: int) -> str:
+    try:
+        from pigeon.widgets.options_settings import temp_uses_celsius
+
+        if temp_uses_celsius():
+            return str(int(round((float(temp_f) - 32.0) * 5.0 / 9.0)))
+    except Exception:
+        pass
+    return str(int(temp_f))
+
+
 def _svg_tree_from_path(path: Path) -> ET.Element:
     path = Path(path)
     key = (str(path.resolve()), path.stat().st_mtime_ns)
@@ -345,10 +368,10 @@ def _svg_tree_from_path(path: Path) -> ET.Element:
     if template is None:
         tree = ET.parse(path)
         root = tree.getroot()
-        # Fit Illustrator artboard to design canvas.
+        # Fit Illustrator artboard; leftover screens letterbox into 1280×800.
         root.set("viewBox", "0 0 805.89 481")
-        root.set("width", str(DESIGN_W))
-        root.set("height", str(DESIGN_H))
+        root.set("width", str(LEGACY_DESIGN_W))
+        root.set("height", str(LEGACY_DESIGN_H))
         _SVG_TREE_TEMPLATES.clear()
         _SVG_TREE_TEMPLATES[key] = root
         template = root
@@ -366,8 +389,8 @@ def _apply_clock_saver_svg_state(root: ET.Element, *, color_hex: str) -> None:
 
     date_text = _date_label(now)
     temps = ensure_weather(zip_code=DEFAULT_WEATHER_ZIP)
-    high_s = f"{temps.high_f}" if temps is not None else "--"
-    low_s = f"{temps.low_f}" if temps is not None else "--"
+    high_s = _format_temp_f(temps.high_f) if temps is not None else "--"
+    low_s = _format_temp_f(temps.low_f) if temps is not None else "--"
 
     if date_el is not None:
         _set_flat_text(date_el, date_text)
@@ -574,12 +597,13 @@ def _draw_hhmmss_fixed_cells(
     """
     pairs = _parse_hhmmss_pairs(time_text)
     font_path = resolve_digital7_font() or resolve_ui_font_bold()
-    sy = float(DESIGN_H) / _ARTBOARD_H
+    canvas_h, canvas_w = int(bgra.shape[0]), int(bgra.shape[1])
+    sy = float(canvas_h) / _ARTBOARD_H
     prefer_sz = max(24, int(round(_HHMMSS_FONT_SIZE_SVG * sy)))
     mid_y = int(round(_HHMMSS_MID_Y_SVG * sy))
     max_w = max(
         64,
-        int(round(DESIGN_W * _HHMMSS_MAX_WIDTH_FRAC)) - 2 * _HHMMSS_SIDE_PAD_PX,
+        int(round(canvas_w * _HHMMSS_MAX_WIDTH_FRAC)) - 2 * _HHMMSS_SIDE_PAD_PX,
     )
     max_h = max(24, int(round(prefer_sz * 1.15)))
     font = _fit_digital7_fixed_cells(
@@ -593,7 +617,7 @@ def _draw_hhmmss_fixed_cells(
     img = Image.fromarray(rgba)
     draw = ImageDraw.Draw(img)
     matching_w, _cell_h = _cell_metrics(draw, font, _HHMMSS_CHAR_SET)
-    regions, colon_cx = _hhmmss_locked_scaffold(matching_w, DESIGN_W)
+    regions, colon_cx = _hhmmss_locked_scaffold(matching_w, canvas_w)
     cy = mid_y
 
     for region, pair in zip(regions, pairs):
@@ -637,7 +661,19 @@ def render_clock_saver_bgra(
     assets_dir: Path | str | None = None,
     svg_path: Path | str | None = None,
 ) -> np.ndarray:
-    """Full 800×480 BGRA clock saver frame (transparent outside chrome)."""
+    """Full 1280×800 BGRA idle face: digital clocksaver or centered clock widget."""
+    try:
+        from pigeon.widgets.options_settings import clock_widget_analog
+
+        if clock_widget_analog():
+            from pigeon.widgets.view_circles import render_centered_clock_widget_bgra
+
+            return render_centered_clock_widget_bgra(
+                layer_opacity=layer_opacity,
+                assets_dir=assets_dir,
+            )
+    except Exception:
+        pass
     path = (
         Path(svg_path)
         if svg_path is not None
@@ -645,7 +681,8 @@ def render_clock_saver_bgra(
     )
     color = _time_color_rgba(time.monotonic())
     color_hex = _rgba_to_hex(color)
-    time_text = _resolve_display_time().strftime(_TIME_FORMAT)
+    now = _resolve_display_time()
+    time_text = _time_label(now)
     if not path.is_file():
         # Soft fallback: time-only band if art is missing.
         return _legacy_time_only_bgra(
@@ -654,16 +691,17 @@ def render_clock_saver_bgra(
 
     root = _svg_tree_from_path(path)
     _apply_clock_saver_svg_state(root, color_hex=color_hex)
+    from pigeon.np_layout import letterbox_legacy_ui
     from pigeon.widgets.settings_svg_text import rasterize_settings_svg_bgra
 
-    bgra = rasterize_settings_svg_bgra(
+    native = rasterize_settings_svg_bgra(
         root,
-        width=DESIGN_W,
-        height=DESIGN_H,
+        width=LEGACY_DESIGN_W,
+        height=LEGACY_DESIGN_H,
         font_mode="preferences",
     )
-    _draw_hhmmss_fixed_cells(bgra, time_text, color=color)
-    return _apply_layer_opacity(bgra, layer_opacity)
+    _draw_hhmmss_fixed_cells(native, time_text, color=color)
+    return letterbox_legacy_ui(_apply_layer_opacity(native, layer_opacity))
 
 
 def _legacy_time_only_bgra(
@@ -672,10 +710,13 @@ def _legacy_time_only_bgra(
     layer_opacity: float,
     time_text: str | None = None,
 ) -> np.ndarray:
-    bgra = np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)
-    text = time_text or _resolve_display_time().strftime(_TIME_FORMAT)
+    bgra = np.zeros((LEGACY_DESIGN_H, LEGACY_DESIGN_W, 4), dtype=np.uint8)
+    when = _resolve_display_time()
+    text = time_text or _time_label(when)
     _draw_hhmmss_fixed_cells(bgra, text, color=color)
-    return _apply_layer_opacity(bgra, layer_opacity)
+    from pigeon.np_layout import letterbox_legacy_ui
+
+    return letterbox_legacy_ui(_apply_layer_opacity(bgra, layer_opacity))
 
 
 def clock_saver_composite_bgra(
@@ -691,11 +732,12 @@ def clock_saver_composite_bgra(
     tuple[np.ndarray, tuple[int, int, int, int]],
 ]:
     """
-    Full-frame clock+weather saver.
+    Full-frame idle face (zone 9).
 
-    Returns ``(full_frame, empty_date)`` so existing compose call sites that
-    blit both packs keep working. ``shadow_bgr`` / date anchors are unused
-    (SVG art is flat color-cycled chrome).
+    Digital options → color-cycled digital clocksaver; analog → centered NP
+    clock widget (with digital HH:MM kept on). Returns ``(full_frame, empty_date)``
+    so existing compose call sites that blit both packs keep working.
+    ``shadow_bgr`` / date anchors are unused for the digital SVG path.
     """
     _ = (shadow_bgr, date_layer_opacity, date_anchor_row, date_anchor_col)
     t_op = float(layer_opacity if time_layer_opacity is None else time_layer_opacity)

@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1202.99 298.66">
+  <g id="lower_m">
+    <rect x="938.58" y="151.82" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(968.4 202.17)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">m</tspan></text>
+  </g>
+  <g id="lower_n">
+    <rect x="827.56" y="151.82" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(865.07 202.17)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">n</tspan></text>
+  </g>
+  <g id="lower_b">
+    <rect x="717.37" y="151.82" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(755.07 205.5)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">b</tspan></text>
+  </g>
+  <g id="lower_v">
+    <rect x="607.5" y="151.82" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(645.07 200.5)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">v</tspan></text>
+  </g>
+  <g id="lower_c">
+    <rect x="497.81" y="151.82" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(535.07 200.5)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">c</tspan></text>
+  </g>
+  <g id="lower_x">
+    <rect x="387.37" y="151.82" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(425.07 200.5)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">x</tspan></text>
+  </g>
+  <g id="lower_z">
+    <rect x="277.43" y="151.82" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(317.15 200.5)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">z</tspan></text>
+  </g>
+  <g id="lower_shift">
+    <rect x="111.67" y="151.82" width="159.39" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <g>
+      <polygon points="191.36 169.45 191.36 169.45 170.25 195 170.25 195 212.47 195 212.47 195 191.36 169.45" fill="#fff"/>
+      <rect x="181.5" y="190.76" width="20.05" height="13.61" fill="#fff"/>
+    </g>
+  </g>
+  <g id="lower_l">
+    <rect x="993.17" y="75.15" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(1040.0655 128.8323)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">l</tspan></text>
+  </g>
+  <g id="lower_k">
+    <rect x="882.98" y="75.15" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(923.4 128.83)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">k</tspan></text>
+  </g>
+  <g id="lower_j">
+    <rect x="772.78" y="75.15" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(820.07 123.83)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">j</tspan></text>
+  </g>
+  <g id="lower_h">
+    <rect x="662.59" y="75.15" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(700.07 128.83)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">h</tspan></text>
+  </g>
+  <g id="lower_g">
+    <rect x="552.4" y="75.15" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(588.4 120.5)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">g</tspan></text>
+  </g>
+  <g id="lower_f">
+    <rect x="442.21" y="75.15" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(485.07 130.5)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">f</tspan></text>
+  </g>
+  <g id="lower_d">
+    <rect x="332.01" y="75.15" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(366.73 127.17)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">d</tspan></text>
+  </g>
+  <g id="lower_s">
+    <rect x="221.82" y="75.15" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(261.73 123.83)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">s</tspan></text>
+  </g>
+  <g id="lower_a">
+    <rect x="111.63" y="75.15" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(150.07 122.17)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">a</tspan></text>
+  </g>
+  <g id="lower_q">
+    <rect x="57.04" y="0" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(93.4 43.83)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">q</tspan></text>
+  </g>
+  <g id="lower_w">
+    <rect x="167.24" y="0" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(196.73 48.83)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">w</tspan></text>
+  </g>
+  <g id="lower_e">
+    <rect x="277.43" y="0" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(315.07 48.83)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">e</tspan></text>
+  </g>
+  <g id="lower_r">
+    <rect x="387.62" y="0" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(431.73 48.83)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">r</tspan></text>
+  </g>
+  <g id="lower_t">
+    <rect x="497.81" y="0" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(540.07 53.83)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">t</tspan></text>
+  </g>
+  <g id="lower_y">
+    <rect x="608.01" y="0" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(646.73 47.17)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">y</tspan></text>
+  </g>
+  <g id="lower_u">
+    <rect x="718.2" y="0" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(755.07 48.83)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">u</tspan></text>
+  </g>
+  <g id="lower_i">
+    <rect x="828.39" y="0" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(876.73 52.16) scale(.79 1)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">i</tspan></text>
+  </g>
+  <g id="lower_o">
+    <rect x="938.58" y="0" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(975.07 48.83)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">o</tspan></text>
+  </g>
+  <g id="lower_p">
+    <rect x="1048.78" y="0" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(1086.7325 43.8332)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600"><tspan x="0" y="0">p</tspan></text>
+  </g>
+</svg>

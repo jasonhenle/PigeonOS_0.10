@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1202.99 298.66">
+  <g id="lower_enter">
+    <rect x="991.54" y="228.49" width="211.45" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(1039.211 276.2512)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="41.67" font-weight="600"><tspan x="0" y="0">e</tspan><tspan x="26.79" y="0" letter-spacing="-.02em">n</tspan><tspan x="51.96" y="0" letter-spacing="-.03em">t</tspan><tspan x="68.33" y="0" letter-spacing="0em">er</tspan></text>
+  </g>
+  <g id="lower_del">
+    <rect x="881.67" y="228.49" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <g id="delete">
+      <polygon points="912.24 263.58 912.24 263.58 937.79 284.69 937.79 284.69 937.79 242.46 937.79 242.46 912.24 263.58" fill="#fff"/>
+      <rect x="930.32" y="256.61" width="20.05" height="13.61" transform="translate(676.933 1203.7643) rotate(-90)" fill="#fff"/>
+    </g>
+    <text transform="translate(925.4 269.51)" font-family="SharpSans-Extrabold, &apos;Sharp Sans&apos;" font-size="21.67" font-weight="700"><tspan x="0" y="0">x</tspan></text>
+  </g>
+  <g id="lower_space">
+    <rect x="332.57" y="228.49" width="540.94" height="70.18" rx="19" ry="19" fill="#231f20"/>
+  </g>
+  <g id="lower_123">
+    <rect x="220.76" y="228.49" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(249.27 272.97)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="33.33" font-weight="600"><tspan x="0" y="0">123</tspan></text>
+  </g>
+  <g id="lower_SYM">
+    <rect x="110.38" y="228.49" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(129.27 274.64)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="33.33" font-weight="600"><tspan x="0" y="0" letter-spacing="-.02em">S</tspan><tspan x="20.73" y="0">YM</tspan></text>
+  </g>
+  <g id="lower_cancel">
+    <rect x="0" y="228.49" width="105.91" height="70.18" rx="19" ry="19" fill="#231f20"/>
+    <text transform="translate(14.27 271.31)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="23.33" font-weight="600"><tspan x="0" y="0" letter-spacing="0em">c</tspan><tspan x="14.3" y="0">an</tspan><tspan x="42.98" y="0" letter-spacing="0em">c</tspan><tspan x="57.17" y="0" letter-spacing="0em">el</tspan></text>
+  </g>
+</svg>

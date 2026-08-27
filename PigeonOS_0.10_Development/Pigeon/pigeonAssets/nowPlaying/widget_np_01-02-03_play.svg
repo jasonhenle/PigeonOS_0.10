@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 398 488">
+  <g id="_50_percent_overlay" data-name="50_percent_overlay">
+    <rect width="398" height="488" opacity=".5"/>
+  </g>
+  <g id="play_button">
+    <polygon id="play_button-2" data-name="play_button" points="165.55 202.35 200.83 222.12 235.6 242.79 200.83 263.46 165.55 283.23 165.03 242.79 165.55 202.35" fill="#fff"/>
+  </g>
+</svg>

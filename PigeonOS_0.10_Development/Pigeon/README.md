@@ -78,7 +78,7 @@ See **[RELEASE.md](RELEASE.md)** for the full workflow, or run from the git repo
 ./PigeonOS_0.10_Development/Pigeon/installer/ship_to_main.sh
 ```
 
-### Two Desktop launchers (Mac)
+### Desktop launchers (Mac)
 
 Run once to create/update:
 
@@ -86,4 +86,6 @@ Run once to create/update:
 ./PigeonOS_0.10_Development/Pigeon/installer/setup_desktop_launchers.sh
 ```
 
-This adds **`Pigeon (experiment).command`** and **`Pigeon (main).command`** on your Desktop — separate folders so each branch can run without switching git.
+This adds on your Desktop:
+- **`Pigeon (experiment).command`** / **`Pigeon (0.10).command`** → this tree (`PigeonOS_0.10`)
+- **`Pigeon (main).command`** → `~/Desktop/Pigeon-main` (release worktree)

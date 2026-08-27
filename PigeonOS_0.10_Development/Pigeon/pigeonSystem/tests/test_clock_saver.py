@@ -124,6 +124,28 @@ class ClockSaverSvgTests(unittest.TestCase):
         )
         self.assertEqual(cs._parse_hhmmss_pairs("12:34:56"), ("12", "34", "56"))
 
+    def test_clock_format_analog_is_the_np_widget(self) -> None:
+        from unittest.mock import patch
+
+        from pigeon.widgets.options_settings import _normalize
+        from pigeon.widgets.view_circles import render_centered_clock_widget_bgra
+
+        self.assertEqual(_normalize({"clock_format": "analog"})["clock_format"], "analog")
+        self.assertEqual(_normalize({"clock_format": "digital"})["clock_format"], "digital")
+        with patch(
+            "pigeon.widgets.options_settings.clock_widget_analog", return_value=True
+        ):
+            (frame, rect), _ = cs.clock_saver_composite_bgra(shadow_bgr=None)
+        self.assertEqual(frame.shape[0], cs.DESIGN_H)
+        self.assertEqual(frame.shape[1], cs.DESIGN_W)
+        self.assertEqual(rect, (0, 0, cs.DESIGN_W, cs.DESIGN_H))
+        # Analog idle uses the centered NP clock widget (not the digital saver SVG).
+        direct = render_centered_clock_widget_bgra()
+        self.assertEqual(frame.shape, direct.shape)
+        # Shared non-transparent ink near the disc center (HH:MM stays on).
+        cy, cx = cs.DESIGN_H // 2, cs.DESIGN_W // 2
+        self.assertGreater(int(frame[cy, cx, 3]), 20)
+
 
 class WeatherCacheTests(unittest.TestCase):
     def tearDown(self) -> None:

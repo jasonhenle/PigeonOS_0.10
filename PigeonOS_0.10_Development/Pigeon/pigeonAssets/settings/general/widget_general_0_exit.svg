@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_1" data-name="Layer 1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 125 90">
+  <g id="exit_button">
+    <path d="M102.77,77.06H22.65c-8.45,0-15.29-6.85-15.29-15.29v-28.5c0-9.33,7.56-16.89,16.89-16.89h78.52c8.44,0,15.29,6.85,15.29,15.29v30.1c0,8.44-6.85,15.29-15.29,15.29"/>
+    <path d="M102.77,77.06H22.65c-8.45,0-15.29-6.85-15.29-15.29v-28.5c0-9.33,7.56-16.89,16.89-16.89h78.52c8.44,0,15.29,6.85,15.29,15.29v30.1c0,8.44-6.85,15.29-15.29,15.29" fill="none" stroke="#fff" stroke-miterlimit="10" stroke-width="3"/>
+  </g>
+  <text id="exit_text" transform="translate(27.72 62.24)" fill="#fff" font-family="Digital-7, Digital-7" font-size="46.4"><tspan x="0" y="0">EXIT</tspan></text>
+</svg>
