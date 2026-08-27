@@ -22,6 +22,7 @@ from pathlib import Path
 import numpy as np
 
 from pigeon.design import DESIGN_H, DESIGN_W
+from pigeon.np_layout import canonical_zone_widget, is_status_bar_widget
 from pigeon.widgets.main_settings import (
     MainSettingsState,
     _composite_bgra_over_bgra,
@@ -44,13 +45,13 @@ _COLOR_BLACK = "#000000"
 _COLOR_WHITE = "#FFFFFF"
 _COLOR_GRAY = "#808080"  # 50% gray for unavailable chrome
 
-# Defaults match current now-playing layout.
+# Defaults match the 1280×800 now-playing layout.
 DEFAULT_ZONE_WIDGETS: tuple[str, str, str, str, str] = (
     "clock",
     "poster",
     "volume",
     "cast_info",
-    "now_playing",
+    "status_bar",
 )
 
 # Spec catalog — which widgets may occupy each zone.
@@ -59,7 +60,7 @@ ZONE_WIDGET_CATALOG: dict[int, tuple[str, ...]] = {
     2: ("audio_levels", "clock", "poster", "volume", "now_playing", "cast_info"),
     3: ("audio_levels", "clock", "poster", "volume", "now_playing", "cast_info"),
     4: ("cast_info",),
-    5: ("now_playing", "cast_info"),
+    5: ("status_bar", "cast_info"),
 }
 
 # Selector chrome groups (navigation B), left → right in the SVG.
@@ -69,6 +70,7 @@ _WIDGET_SELECTOR_ORDER: tuple[str, ...] = (
     "poster",
     "volume",
     "now_playing",
+    "status_bar",
     "cast_info",
 )
 
@@ -144,10 +146,11 @@ def _normalize_zone_widgets(
         for i, name in enumerate(list(values)[:5]):
             if str(name or "").strip():
                 base[i] = str(name).strip()
-    # Clamp to catalog.
+    # Clamp to catalog. Saved ``now_playing`` in zone 5 becomes ``status_bar``.
     out: list[str] = []
     for i, name in enumerate(base):
         zone = i + 1
+        name = canonical_zone_widget(zone, name)
         catalog = ZONE_WIDGET_CATALOG.get(zone, ())
         out.append(name if name in catalog else DEFAULT_ZONE_WIDGETS[i])
     return (out[0], out[1], out[2], out[3], out[4])
@@ -573,6 +576,7 @@ _SELECTOR_LABELS: dict[str, tuple[str, ...]] = {
     "poster": ("poster", "art"),
     "volume": ("volume",),
     "now_playing": ("now", "playing"),
+    "status_bar": ("status", "bar"),
     "cast_info": ("cast", "info"),
 }
 _SELECTOR_LABEL_SIZE_PX = 15
@@ -585,6 +589,7 @@ _SELECTOR_LABEL_Y_NUDGE_PX: dict[str, float] = {
     "poster": 0.0,
     "volume": -2.0,
     "now_playing": 0.0,
+    "status_bar": 0.0,
     "cast_info": -2.0,
 }
 
@@ -672,8 +677,21 @@ def _draw_preferences_selector_labels_bgra(
         if nav == "zones":
             selected, is_avail = False, True
         else:
-            selected = focused == wid
-            is_avail = wid in available
+            selected = focused == wid or (
+                wid == "now_playing" and focused == "status_bar"
+            ) or (
+                wid == "status_bar" and focused == "now_playing"
+            )
+            is_avail = wid in available or (
+                wid == "now_playing" and "status_bar" in available
+            ) or (
+                wid == "status_bar" and "now_playing" in available
+            )
+        if nav == "widgets" and active_zone == 5:
+            if wid == "now_playing":
+                continue
+        elif wid == "status_bar":
+            continue
         fill = _selector_label_fill_rgba(selected=selected, available=is_avail)
         patches = [
             _sharp_text_patch(line, _SELECTOR_LABEL_SIZE_PX, fill)
@@ -1242,7 +1260,9 @@ def _draw_preferences_clock_digitals_bgra(
     sy = DESIGN_H / max(vb_h, 1.0)
     when = now or datetime.now()
     hhmm = vc._clock_hhmm(when)
-    time_p, _, _ = vc._text_patch_digital7(hhmm, size_px=_PREFS_NP_TIME_SIZE_PX)
+    time_p, _, _ = vc._text_patch_digital7(
+        hhmm, size_px=_PREFS_NP_TIME_SIZE_PX, fill_rgb=(255, 255, 255)
+    )
     # No curved date on the preferences page — live now-playing keeps it.
     for _zone, center in centers.items():
         cx = (center[0] - vb_x) * sx
@@ -1544,8 +1564,6 @@ def _draw_preferences_cast_bgra(
         )
     else:
         all_cast = list(_PREFS_DEMO_CAST)
-    font_actor = vc._load_digital7(18)
-    font_char = vc._load_digital7(14)
     start = 0
     for cast_zone in (1, 2, 3, 4, 5):
         if assignments[cast_zone - 1] != "cast_info":
@@ -1570,36 +1588,29 @@ def _draw_preferences_cast_bgra(
                     ),
                 )
             )
+            mid_y = (float(actor_y) + float(char_y)) * 0.5
+            x0 = float(center_x) - max_w * 0.5
+            gap = 6
+            char_x = x0
             if actor:
                 label = actor.upper()
-                ap, _aw, _ah = vc._text_patch_digital7(
+                actor_max = max(32, int(max_w * 0.55)) if character else max_w
+                ap, aw, _ah = vc._text_patch_digital7(
                     label,
-                    size_px=18,
-                    max_width_px=max_w,
+                    size_px=16,
+                    max_width_px=actor_max,
                 )
-                vc._paste_baseline_centered(
-                    bgra,
-                    ap,
-                    center_x,
-                    float(actor_y),
-                    bbox_top=vc._font_bbox_top(label, font_actor),
-                    pad=2,
-                )
+                vc._paste_left_vcenter(bgra, ap, x0, mid_y)
+                char_x = x0 + aw + gap
             if character:
                 label = character.upper()
+                char_max = max(24, int(x0 + max_w - char_x))
                 cp, _cw, _ch = vc._text_patch_digital7(
                     label,
-                    size_px=14,
-                    max_width_px=max_w,
+                    size_px=13,
+                    max_width_px=char_max,
                 )
-                vc._paste_baseline_centered(
-                    bgra,
-                    cp,
-                    center_x,
-                    float(char_y),
-                    bbox_top=vc._font_bbox_top(label, font_char),
-                    pad=2,
-                )
+                vc._paste_left_vcenter(bgra, cp, char_x, mid_y)
 
 
 def _draw_preferences_status_bar_bgra(
@@ -1614,7 +1625,7 @@ def _draw_preferences_status_bar_bgra(
     )
     if getattr(state, "preferences_np_progress", None) is None:
         return
-    if assignments[4] != "now_playing":
+    if not is_status_bar_widget(assignments[4], 5):
         return
     if not getattr(state, "preferences_live_content", False):
         return
@@ -1872,7 +1883,7 @@ def _widget_preview_keys(zone: int, widget: str) -> tuple[str, ...]:
     if z == 5:
         # Cast sits beside the bar under a shared outer ``zone5_now_playing_group``.
         # Toggle the inner bar / cast kids — not the outer container.
-        if w == "now_playing":
+        if w in ("now_playing", "status_bar"):
             return ("zone5_now_playing_bar", "zone5_now_playing_group")
         if w == "cast_info":
             return ("zone5_cast_info_group", "zone5_cast_group")
@@ -1972,7 +1983,7 @@ def _apply_zone_preview(root: ET.Element, zone: int, widget: str) -> None:
             _set_visible(outer, True)
         if bar is not None:
             # Inner bar group often reuses the now_playing name — show only for bar widget.
-            _set_visible(bar, w == "now_playing")
+            _set_visible(bar, w in ("now_playing", "status_bar"))
         if cast is not None:
             _set_visible(cast, w == "cast_info")
         return
@@ -1994,6 +2005,7 @@ def _selector_group_for_widget(root: ET.Element, widget: str) -> ET.Element | No
         "poster": "selector_poster_art_group",
         "volume": "selector_volume_group",
         "now_playing": "selector_now_playing_group",
+        "status_bar": "selector_now_playing_group",
         "cast_info": "selector_cast_info_group",
         "exit": "selector_exit_group",
     }
@@ -2069,15 +2081,30 @@ def apply_preferences_svg_state(root: ET.Element, state: MainSettingsState) -> N
         available = set(ZONE_WIDGET_CATALOG[active_zone])
 
     for wid in _WIDGET_SELECTOR_ORDER:
+        if nav == "widgets" and active_zone == 5:
+            if wid == "now_playing":
+                continue
+        elif wid == "status_bar":
+            continue
         group = _selector_group_for_widget(root, wid)
         if nav == "zones":
             # Resting available look while choosing a zone.
             _apply_widget_chrome(group, selected=False, available=True)
         else:
+            selected = focused == wid or (
+                wid == "now_playing" and focused == "status_bar"
+            ) or (
+                wid == "status_bar" and focused == "now_playing"
+            )
+            is_avail = wid in available or (
+                wid == "now_playing" and "status_bar" in available
+            ) or (
+                wid == "status_bar" and "now_playing" in available
+            )
             _apply_widget_chrome(
                 group,
-                selected=(focused == wid),
-                available=(wid in available),
+                selected=selected,
+                available=is_avail,
             )
 
     exit_group = _selector_group_for_widget(root, "exit")

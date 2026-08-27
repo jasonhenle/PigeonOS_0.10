@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_1" data-name="Layer 1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1097.67 221.83">
+  <g id="upper_M">
+    <path d="M953.67,221.83h-42.5c-17.5,0-31.67-14.17-31.67-31.67v-6.83c0-17.5,14.17-31.67,31.67-31.67h42.5c17.5,0,31.67,14.17,31.67,31.67v6.83c0,17.5-14.17,31.67-31.67,31.67Z" fill="#231f20"/>
+    <text transform="translate(911.4 207.08)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600" isolation="isolate"><tspan x="0" y="0">M</tspan></text>
+  </g>
+  <g id="upper_N">
+    <path d="M843.5,221.83h-42.5c-17.5,0-31.67-14.17-31.67-31.67v-6.83c0-17.5,14.17-31.67,31.67-31.67h42.5c17.5,0,31.67,14.17,31.67,31.67v6.83c0,17.5-14.17,31.67-31.67,31.67Z" fill="#231f20"/>
+    <text transform="translate(804.73 205.4)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600" isolation="isolate"><tspan x="0" y="0">N</tspan></text>
+  </g>
+  <g id="upper_B">
+    <path d="M733.33,221.83h-42.5c-17.5,0-31.67-14.17-31.67-31.67v-6.83c0-17.5,14.17-31.67,31.67-31.67h42.5c17.5,0,31.67,14.17,31.67,31.67v6.83c0,17.5-14.17,31.67-31.67,31.67Z" fill="#231f20"/>
+    <text transform="translate(696.4 203.73)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600" isolation="isolate"><tspan x="0" y="0">B</tspan></text>
+  </g>
+  <g id="upper_V">
+    <path d="M623.17,221.83h-42.5c-17.5,0-31.67-14.17-31.67-31.67v-6.83c0-17.5,14.17-31.67,31.67-31.67h42.5c17.5,0,31.67,14.17,31.67,31.67v6.83c0,17.5-14.17,31.67-31.67,31.67Z" fill="#231f20"/>
+    <text transform="translate(584.73 207.08)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600" isolation="isolate"><tspan x="0" y="0">V</tspan></text>
+  </g>
+  <g id="upper_C">
+    <path d="M513,221.83h-42.5c-17.5,0-31.67-14.17-31.67-31.67v-6.83c0-17.5,14.17-31.67,31.67-31.67h42.5c17.5,0,31.67,14.17,31.67,31.67v6.83c0,17.5-14.17,31.67-31.67,31.67Z" fill="#231f20"/>
+    <text transform="translate(471.4 203.73)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600" isolation="isolate"><tspan x="0" y="0">C</tspan></text>
+  </g>
+  <g id="upper_X">
+    <path d="M402.83,221.83h-42.5c-17.5,0-31.67-14.17-31.67-31.67v-6.83c0-17.5,14.17-31.67,31.67-31.67h42.5c17.5,0,31.67,14.17,31.67,31.67v6.83c0,17.5-14.17,31.67-31.67,31.67Z" fill="#202020"/>
+    <text transform="translate(364.74 205.4)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600" isolation="isolate"><tspan x="0" y="0">X</tspan></text>
+  </g>
+  <g id="upper_Z">
+    <path d="M292.67,221.83h-42.5c-17.5,0-31.67-14.17-31.67-31.67v-6.83c0-17.5,14.17-31.67,31.67-31.67h42.5c17.5,0,31.67,14.17,31.67,31.67v6.83c0,17.5-14.33,31.67-31.67,31.67Z" fill="#231f20"/>
+    <text transform="translate(256.4 205.4)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600" isolation="isolate"><tspan x="0" y="0">Z</tspan></text>
+  </g>
+  <g id="upper_SHIFT">
+    <path d="M182.33,221.83h-96c-17.5,0-31.67-14.17-31.67-31.67v-6.83c0-17.5,14.17-31.67,31.67-31.67h96c17.5,0,31.67,14.17,31.67,31.67v6.83c0,17.5-14.17,31.67-31.67,31.67Z" fill="#231f20"/>
+    <g>
+      <polygon points="134.33 169.33 134.33 169.33 113.33 194.83 113.33 194.83 155.5 194.83 155.5 194.83 134.33 169.33" fill="#fff"/>
+      <rect x="124.5" y="190.67" width="20" height="13.67" fill="#fff"/>
+    </g>
+    <circle cx="186.83" cy="173.33" r="6.17" fill="#ff0013"/>
+  </g>
+  <g id="upper_L">
+    <path d="M1010.33,145.17h-42.5c-17.5,0-31.67-14.17-31.67-31.67v-6.83c0-17.5,14.17-31.67,31.67-31.67h42.5c17.5,0,31.67,14.17,31.67,31.67v6.83c0,17.5-14.17,31.67-31.67,31.67Z" fill="#231f20"/>
+    <text transform="translate(974.74 127.08)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600" isolation="isolate"><tspan x="0" y="0">L</tspan></text>
+  </g>
+  <g id="upper_K">
+    <path d="M900.17,145.17h-42.5c-17.5,0-31.67-14.17-31.67-31.67v-6.83c0-17.5,14.17-31.67,31.67-31.67h42.5c17.5,0,31.67,14.17,31.67,31.67v6.83c0,17.5-14.17,31.67-31.67,31.67Z" fill="#231f20"/>
+    <text transform="translate(863.07 130.4)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600" isolation="isolate"><tspan x="0" y="0">K</tspan></text>
+  </g>
+  <g id="upper_J">
+    <path d="M790,145.17h-42.5c-17.5,0-31.67-14.17-31.67-31.67v-6.83c0-17.5,14.17-31.67,31.67-31.67h42.5c17.5,0,31.67,14.17,31.67,31.67v6.83c0,17.5-14.17,31.67-31.67,31.67Z" fill="#231f20"/>
+    <text transform="translate(754.73 128.73)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600" isolation="isolate"><tspan x="0" y="0">J</tspan></text>
+  </g>
+  <g id="upper_H">
+    <path d="M679.83,145.17h-42.5c-17.5,0-31.67-14.17-31.67-31.67v-6.83c0-17.5,14.17-31.67,31.67-31.67h42.5c17.5,0,31.67,14.17,31.67,31.67v6.83c0,17.5-14.17,31.67-31.67,31.67Z" fill="#231f20"/>
+    <text transform="translate(641.4 128.73)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600" isolation="isolate"><tspan x="0" y="0">H</tspan></text>
+  </g>
+  <g id="upper_G">
+    <path d="M569.67,145.17h-42.5c-17.5,0-31.67-14.17-31.67-31.67v-6.83c0-17.5,14.17-31.67,31.67-31.67h42.5c17.5,0,31.67,14.17,31.67,31.67v6.83c0,17.5-14.17,31.67-31.67,31.67Z" fill="#231f20"/>
+    <text transform="translate(528.07 128.73)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600" isolation="isolate"><tspan x="0" y="0">G</tspan></text>
+  </g>
+  <g id="upper_F">
+    <path d="M459.5,145.17h-42.5c-17.5,0-31.67-14.17-31.67-31.67v-6.83c0-17.5,14.17-31.67,31.67-31.67h42.5c17.5,0,31.67,14.17,31.67,31.67v6.83c0,17.5-14.17,31.67-31.67,31.67Z" fill="#231f20"/>
+    <text transform="translate(424.74 130.4)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600" isolation="isolate"><tspan x="0" y="0">F</tspan></text>
+  </g>
+  <g id="upper_D">
+    <path d="M349.33,145.17h-42.5c-17.5,0-31.67-14.17-31.67-31.67v-6.83c0-17.5,14.17-31.67,31.67-31.67h42.5c17.5,0,31.67,14.17,31.67,31.67v6.83c0,17.5-14.33,31.67-31.67,31.67Z" fill="#231f20"/>
+    <text transform="translate(313.07 128.73)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600" isolation="isolate"><tspan x="0" y="0">D</tspan></text>
+  </g>
+  <g id="upper_S">
+    <path d="M239,145.17h-42.5c-17.5,0-31.67-14.17-31.67-31.67v-6.83c0-17.5,14.17-31.67,31.67-31.67h42.5c17.5,0,31.67,14.17,31.67,31.67v6.83c0,17.5-14.17,31.67-31.67,31.67Z" fill="#231f20"/>
+    <text transform="translate(203.07 128.73)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600" isolation="isolate"><tspan x="0" y="0">S</tspan></text>
+  </g>
+  <g id="upper_A">
+    <g id="upper_A-2" data-name="upper_A">
+      <path d="M128.83,145.17h-42.5c-17.5,0-31.67-14.17-31.67-31.67v-6.83c0-17.5,14.17-31.67,31.67-31.67h42.5c17.5,0,31.67,14.17,31.67,31.67v6.83c0,17.5-14.17,31.67-31.67,31.67Z" fill="#231f20"/>
+      <text transform="translate(91.4 127.08)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600" isolation="isolate"><tspan x="0" y="0">A</tspan></text>
+    </g>
+  </g>
+  <g id="upper_P">
+    <g id="upper_P-2" data-name="upper_P">
+      <path d="M1066,70.17h-42.5c-17.5,0-31.67-14.17-31.67-31.67v-6.83c0-17.5,14.17-31.67,31.67-31.67h42.5c17.5,0,31.67,14.17,31.67,31.67v6.83c0,17.33-14.17,31.67-31.67,31.67Z" fill="#231f20"/>
+      <text transform="translate(1029.7233 53.7314)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600" isolation="isolate"><tspan x="0" y="0">P</tspan></text>
+    </g>
+  </g>
+  <g id="upper_O">
+    <g id="upper_I">
+      <path d="M845.67,70.17h-42.67c-17.5,0-31.67-14.17-31.67-31.67v-6.83c0-17.5,14.17-31.67,31.67-31.67h42.5c17.5,0,31.67,14.17,31.67,31.67v6.83c.17,17.33-14,31.67-31.5,31.67Z" fill="#231f20"/>
+      <text transform="translate(819.72 52.08) scale(.79 1)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600" isolation="isolate"><tspan x="0" y="0">I</tspan></text>
+    </g>
+  </g>
+  <g id="upper_I-2" data-name="upper_I">
+    <g id="upper_O-2" data-name="upper_O">
+      <path d="M955.83,70.17h-42.5c-17.5,0-31.67-14.17-31.67-31.67v-6.83c0-17.5,14.17-31.67,31.67-31.67h42.5c17.5,0,31.67,14.17,31.67,31.67v6.83c0,17.33-14.17,31.67-31.67,31.67Z" fill="#231f20"/>
+      <text transform="translate(913.07 53.73)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600" isolation="isolate"><tspan x="0" y="0">O</tspan></text>
+    </g>
+  </g>
+  <g id="upper_U">
+    <g id="upper_U-2" data-name="upper_U">
+      <path d="M735.5,70.17h-42.5c-17.5,0-31.67-14.17-31.67-31.67v-6.83c0-17.5,14.17-31.67,31.67-31.67h42.5c17.5,0,31.67,14.17,31.67,31.67v6.83c0,17.33-14.17,31.67-31.67,31.67Z" fill="#231f20"/>
+      <text transform="translate(696.4 53.73)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600" isolation="isolate"><tspan x="0" y="0">U</tspan></text>
+    </g>
+  </g>
+  <g id="upper_Y">
+    <g id="upper_Y-2" data-name="upper_Y">
+      <path d="M625.17,70.17h-42.5c-17.5,0-31.67-14.17-31.67-31.67v-6.83c0-17.5,14.17-31.67,31.67-31.67h42.5c17.5,0,31.67,14.17,31.67,31.67v6.83c0,17.33-14.17,31.67-31.67,31.67Z" fill="#231f20"/>
+      <text transform="translate(586.4 53.73)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600" isolation="isolate"><tspan x="0" y="0">Y</tspan></text>
+    </g>
+  </g>
+  <g id="upper_T">
+    <g id="upper_T-2" data-name="upper_T">
+      <path d="M515,70.17h-42.5c-17.5,0-31.67-14.17-31.67-31.67v-6.83c0-17.5,14.17-31.67,31.67-31.67h42.5c17.5,0,31.67,14.17,31.67,31.67v6.83c0,17.33-14.17,31.67-31.67,31.67Z" fill="#231f20"/>
+      <text transform="translate(478.06 53.73)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600" isolation="isolate"><tspan x="0" y="0">T</tspan></text>
+    </g>
+  </g>
+  <g id="upper_R">
+    <g id="upper_R-2" data-name="upper_R">
+      <path d="M404.83,70.17h-42.5c-17.5,0-31.67-14.17-31.67-31.67v-6.83c0-17.5,14.17-31.67,31.67-31.67h42.5c17.5,0,31.67,14.17,31.67,31.67v6.83c0,17.33-14.17,31.67-31.67,31.67Z" fill="#231f20"/>
+      <text transform="translate(368.07 52.08)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600" isolation="isolate"><tspan x="0" y="0">R</tspan></text>
+    </g>
+  </g>
+  <g id="upper_E">
+    <g id="upper_E-2" data-name="upper_E">
+      <path d="M294.67,70.17h-42.5c-17.5,0-31.67-14.17-31.67-31.67v-6.83c0-17.5,14.17-31.67,31.67-31.67h42.5c17.5,0,31.67,14.17,31.67,31.67v6.83c0,17.33-14.17,31.67-31.67,31.67Z" fill="#231f20"/>
+      <text transform="translate(258.07 52.08)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600" isolation="isolate"><tspan x="0" y="0">E</tspan></text>
+    </g>
+  </g>
+  <g id="upper_W">
+    <g id="upper_W-2" data-name="upper_W">
+      <path d="M184.5,70.17h-42.5c-17.5,0-31.67-14.17-31.67-31.67v-6.83c0-17.5,14.17-31.67,31.67-31.67h42.5c17.5,0,31.67,14.17,31.67,31.67v6.83c0,17.33-14.17,31.67-31.67,31.67Z" fill="#231f20"/>
+      <text transform="translate(138.06 53.73)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600" isolation="isolate"><tspan x="0" y="0">W</tspan></text>
+    </g>
+  </g>
+  <g id="upper_Q">
+    <g id="upper_Q-2" data-name="upper_Q">
+      <path d="M74.33,70.17H31.67C14.17,70.17,0,56,0,38.5v-6.83C0,14.17,14.17,0,31.67,0h42.5c17.5,0,31.67,14.17,31.67,31.67v6.83c.17,17.33-14,31.67-31.5,31.67Z" fill="#231f20"/>
+      <text transform="translate(31.4 53.73)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50" font-weight="600" isolation="isolate"><tspan x="0" y="0">Q</tspan></text>
+    </g>
+  </g>
+</svg>

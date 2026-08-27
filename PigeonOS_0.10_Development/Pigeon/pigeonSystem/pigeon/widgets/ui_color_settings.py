@@ -18,6 +18,7 @@ from pathlib import Path
 import numpy as np
 
 from pigeon.design import DESIGN_H, DESIGN_W
+from pigeon.settings_layout import MENU_PLATE_XYWH, SETTINGS_CANVAS_ORIGIN
 from pigeon.widgets.main_settings import (
     COLOR_ACCENT_DEFAULT,
     COLOR_DESELECTED,
@@ -80,11 +81,11 @@ _ACCENT_SWATCHES: tuple[_Swatch, ...] = (
 
 _UI_SWATCHES: tuple[_Swatch, ...] = (
     # Keep brand red as the selectable "red" so existing UI-brand protection matches.
-    _Swatch("red", "red_swatch_group", "red_swatch_button", "red_swatch_icon", COLOR_UI_DEFAULT),
+    _Swatch("red", "red_swatch_group", "red_swatch_button", "red_swatch_icon", "#ff0013"),
     _Swatch("orange", "orange_Swatch_group", "orange_swatch", "orange_swatch_icon", "#FFB600"),
     _Swatch("yellow", "yellow_swatch_group", "yellow_swatch", "yellow_swatch_icon", "#FFF800"),
     _Swatch("green", "green_swatch_group", "green_swatch", "green_swatch_icon", "#58FF00"),
-    _Swatch("blue", "blue_swatch_group", "blue_swatch", "blue_swatch_icon", "#0037FF"),
+    _Swatch("blue", "blue_swatch_group", "blue_swatch", "blue_swatch_icon", COLOR_UI_DEFAULT),
     _Swatch("purple", "purple_swatch_group", "purple_swatch", "purple_swatch_icon", "#9500FF"),
     _Swatch("gray", "gray_swatch_group", "gray_swatch", "gray_swatch_icon", "#777777"),
 )
@@ -107,7 +108,7 @@ _CLASS_SWATCHES: dict[str, tuple[_Swatch, ...]] = {
 
 _DEFAULT_KEYS: dict[str, str] = {
     "accent": "white",
-    "ui": "red",
+    "ui": "blue",
     "button": "black",
 }
 
@@ -149,7 +150,7 @@ THEME_SWATCH_HEXES: frozenset[str] = frozenset(
 
 UI_SWATCH_HEXES: frozenset[str] = frozenset(
     s.hex.lower() for s in _UI_SWATCHES
-) | frozenset({COLOR_UI_DEFAULT.lower(), "#ff0013", "red"})
+) | frozenset({COLOR_UI_DEFAULT.lower(), "#4ea6f7", "#ff0013", "red", "blue"})
 
 _SVG_TREE_TEMPLATES: dict[tuple[str, int, int], ET.Element] = {}
 _SVG_TREE_TEMPLATE_MAX = 4
@@ -171,8 +172,12 @@ def ui_color_class_focus_ring() -> tuple[str, ...]:
     return _CLASS_NAV_ORDER
 
 
-def ui_color_swatch_focus_ring(color_class: str) -> tuple[str, ...]:
-    return tuple(s.key for s in _CLASS_SWATCHES.get(color_class, ()))
+def ui_color_swatch_focus_ring(color_class: str = "ui") -> tuple[str, ...]:
+    """Single UI-color row (accent/button rows are no longer selectable)."""
+    cls = str(color_class or "ui")
+    if cls != "ui":
+        cls = "ui"
+    return tuple(s.key for s in _CLASS_SWATCHES.get(cls, ()))
 
 
 def _swatch_by_key(color_class: str, key: str) -> _Swatch | None:
@@ -234,7 +239,7 @@ def write_ui_color_keys(
 def theme_from_color_keys(keys: dict[str, str], *, base: SettingsTheme | None = None) -> SettingsTheme:
     b = base or SettingsTheme()
     return SettingsTheme(
-        ui=hex_for_color_key("ui", keys.get("ui", "red")),
+        ui=hex_for_color_key("ui", keys.get("ui", "blue")),
         selected=b.selected or COLOR_SELECTED,
         deselected=hex_for_color_key("button", keys.get("button", "black")),
         inactive=b.inactive,
@@ -349,7 +354,7 @@ def apply_ui_color_svg_state(root: ET.Element, state: MainSettingsState) -> None
 
     keys = {
         "accent": str(getattr(state, "ui_color_accent_key", "white") or "white"),
-        "ui": str(getattr(state, "ui_color_ui_key", "red") or "red"),
+        "ui": str(getattr(state, "ui_color_ui_key", "blue") or "blue"),
         "button": str(getattr(state, "ui_color_button_key", "black") or "black"),
     }
 
@@ -413,6 +418,112 @@ def _full_theme_bgra(
     return bg_bgra
 
 
+# widget_sp_ui_color_zone0.svg container on the Illustrator board.
+_UI_COLOR_BAR_BOARD = (682.7, 1017.01, 1077.38, 161.98)
+# Sit in the header above the red plate (BACK / version band).
+_UI_COLOR_BAR_X = _UI_COLOR_BAR_BOARD[0] - SETTINGS_CANVAS_ORIGIN[0]
+_UI_COLOR_BAR_GAP = 8.0
+_UI_COLOR_BAR_Y = max(
+    0.0,
+    MENU_PLATE_XYWH[1] - _UI_COLOR_BAR_BOARD[3] - _UI_COLOR_BAR_GAP,
+)
+
+_BAR_BUTTON_IDS: dict[str, str] = {
+    "red": "red_swatch_button",
+    "orange": "orange_swatch_button",
+    "yellow": "yellow_Swatch_button",
+    "green": "green_swatch_button",
+    "blue": "blue_swatch_button",
+    "purple": "purple_swatch_button",
+    "gray": "gray_swatch_button",
+}
+
+
+def _active_ui_swatch_key(state: MainSettingsState) -> str:
+    key = str(getattr(state, "ui_color_ui_key", "") or "").strip().lower()
+    if key in _BAR_BUTTON_IDS:
+        return key
+    hexv = str(getattr(getattr(state, "theme", None), "ui", "") or "").strip().lower()
+    for sw in _UI_SWATCHES:
+        if sw.hex.lower() == hexv:
+            return sw.key
+    return "blue"
+
+
+def apply_ui_color_bar_state(
+    root: ET.Element, state: MainSettingsState, *, preview: bool = False
+) -> None:
+    """Style the inline zone-0 bar: one looping UI-color choice."""
+    focused = str(getattr(state, "ui_color_focused_id", "") or "blue")
+    if focused not in _BAR_BUTTON_IDS:
+        focused = "blue"
+    icon_key = _active_ui_swatch_key(state) if preview else focused
+    icon = _find_by_logical_id(root, "red_swatch_icon")
+    for key, bid in _BAR_BUTTON_IDS.items():
+        el = _find_by_logical_id(root, bid)
+        if el is None:
+            continue
+        on = (not preview) and key == focused
+        sw = _swatch_by_key("ui", key)
+        if sw is not None:
+            _set_paint(el, fill=sw.hex, stroke=_COLOR_WHITE if on else "#202020")
+        if key == icon_key and icon is not None:
+            try:
+                x = float(el.get("x") or 0)
+                y = float(el.get("y") or 0)
+                w = float(el.get("width") or 0)
+                h = float(el.get("height") or 0)
+                icon.set("cx", f"{x + w * 0.5:.2f}")
+                icon.set("cy", f"{y + h * 0.5:.2f}")
+            except ValueError:
+                pass
+    if icon is not None:
+        _set_visible(icon, True)
+    # Label removed from widget_sp_ui_color_zone0 (swatches are centered in the bar).
+    label = _find_by_logical_id(root, "ui_text")
+    if label is not None:
+        _set_visible(label, False)
+
+
+def render_ui_color_bar_bgra(
+    state: MainSettingsState,
+    *,
+    assets_dir: Path | str | None = None,
+    preview: bool = False,
+) -> np.ndarray:
+    """Rasterize the inline picker and place it in the settings_pigeon header."""
+    from pigeon.settings_layout import settings_widget_path
+    from pigeon.widgets.settings_svg_text import rasterize_settings_svg_bgra
+
+    path = settings_widget_path("ui_color_bar", assets_dir=assets_dir)
+    root = ET.parse(path).getroot()
+    vx, vy, vw, vh = _UI_COLOR_BAR_BOARD
+    pw = max(1, int(round(vw)))
+    ph = max(1, int(round(vh)))
+    root.set("viewBox", f"{vx} {vy} {vw} {vh}")
+    root.set("width", str(pw))
+    root.set("height", str(ph))
+    apply_ui_color_bar_state(root, state, preview=preview)
+    patch = rasterize_settings_svg_bgra(
+        root,
+        width=pw,
+        height=ph,
+        font_mode="preferences",
+    )
+    canvas = np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)
+    x0 = int(round(_UI_COLOR_BAR_X))
+    y0 = int(round(_UI_COLOR_BAR_Y))
+    x1 = min(DESIGN_W, x0 + patch.shape[1])
+    y1 = min(DESIGN_H, y0 + patch.shape[0])
+    sx0 = max(0, -x0)
+    sy0 = max(0, -y0)
+    x0 = max(0, x0)
+    y0 = max(0, y0)
+    if x1 > x0 and y1 > y0:
+        canvas[y0:y1, x0:x1] = patch[sy0 : sy0 + (y1 - y0), sx0 : sx0 + (x1 - x0)]
+    return canvas
+
+
 def render_ui_color_settings_bgra(
     state: MainSettingsState,
     *,
@@ -451,6 +562,7 @@ __all__ = [
     "hex_for_color_key",
     "load_persisted_theme_into_state",
     "read_ui_color_keys",
+    "render_ui_color_bar_bgra",
     "render_ui_color_settings_bgra",
     "theme_from_color_keys",
     "ui_color_class_focus_ring",

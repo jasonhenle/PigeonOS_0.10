@@ -1,6 +1,9 @@
-"""Canonical design resolution and 19×8 grid math (800×480).
+"""Canonical design resolution and 19×8 grid math (1280×800).
 
 152 boxes (19 × 8), square cells centered on canvas. Matches the live Tk window / composite cap.
+
+Leftover (not-yet-rebuilt) screens still author against ``LEGACY_DESIGN_W``×``LEGACY_DESIGN_H``
+and are uniformly letterboxed into this canvas.
 """
 
 from __future__ import annotations
@@ -9,9 +12,48 @@ from dataclasses import dataclass
 
 import numpy as np
 
-# Design canvas = nominal display / internal composite (performance target).
-DESIGN_W = 800
-DESIGN_H = 480
+# Design canvas = nominal display / internal composite.
+DESIGN_W = 1280
+DESIGN_H = 800
+# Previous now-playing / settings artboard. Leftover screens scale to fit DESIGN.
+LEGACY_DESIGN_W = 800
+LEGACY_DESIGN_H = 480
+
+
+def legacy_fit_scale() -> float:
+    """Uniform scale that fits 800×480 into the 1280×800 canvas without cropping."""
+    return min(
+        float(DESIGN_W) / float(LEGACY_DESIGN_W),
+        float(DESIGN_H) / float(LEGACY_DESIGN_H),
+    )
+
+
+def legacy_fit_origin() -> tuple[float, float]:
+    """Top-left of the letterboxed 800×480 artboard on the design canvas."""
+    s = legacy_fit_scale()
+    return (
+        (float(DESIGN_W) - float(LEGACY_DESIGN_W) * s) * 0.5,
+        (float(DESIGN_H) - float(LEGACY_DESIGN_H) * s) * 0.5,
+    )
+
+
+def map_legacy_xy(x: float, y: float) -> tuple[float, float]:
+    """Map a leftover 800×480 coordinate onto the 1280×800 canvas."""
+    s = legacy_fit_scale()
+    ox, oy = legacy_fit_origin()
+    return ox + float(x) * s, oy + float(y) * s
+
+
+def map_legacy_x(x: float) -> float:
+    return map_legacy_xy(x, 0.0)[0]
+
+
+def map_legacy_y(y: float) -> float:
+    return map_legacy_xy(0.0, y)[1]
+
+
+def map_legacy_size(value: float) -> float:
+    return float(value) * legacy_fit_scale()
 
 GRID_COLS = 19
 GRID_ROWS = 8

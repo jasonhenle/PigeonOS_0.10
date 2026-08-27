@@ -5,6 +5,8 @@ from pigeon.design import (
     DESIGN_W,
     GRID_COLS,
     GRID_ROWS,
+    LEGACY_DESIGN_H,
+    LEGACY_DESIGN_W,
     GridGeometry,
     get_grid_geometry,
     rect_for_span_at_cell,
@@ -18,6 +20,8 @@ from pigeon.widgets.poster_art import PosterArtWidget
 __all__ = [
     "DESIGN_W",
     "DESIGN_H",
+    "LEGACY_DESIGN_W",
+    "LEGACY_DESIGN_H",
     "GRID_COLS",
     "GRID_ROWS",
     "GridGeometry",

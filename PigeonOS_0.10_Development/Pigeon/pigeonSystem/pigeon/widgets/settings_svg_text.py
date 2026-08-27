@@ -212,11 +212,11 @@ def _is_keyboard_text(
         logical = _normalize_logical(cur.get("id") or "")
         if logical in _KEYBOARD_GROUP_IDS:
             return True
-        if logical.startswith("keyboard") or logical.startswith("symbolic_"):
+        if logical.startswith(("keyboard", "symbolic_", "lower_", "upper_", "num_", "numeric_")):
             return True
         cur = parents.get(cur)
     logical = _normalize_logical(text_el.get("id") or "")
-    return logical.startswith("keyboard") or logical.startswith("symbolic_")
+    return logical.startswith(("keyboard", "symbolic_", "lower_", "upper_", "num_", "numeric_"))
 
 
 def _is_preferences_back_text(

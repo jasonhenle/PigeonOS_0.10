@@ -143,9 +143,8 @@ def scale_uniform_letterbox(image: np.ndarray, target_w: int, target_h: int) -> 
     """
     Uniform scale so the **entire** image fits inside ``target_w``×``target_h``, centered on black bars.
 
-    Unlike ``scale_height_and_center_crop`` (scale-to-height then crop width), this never discards
-    horizontal content. Used for developer grid mode so narrow windows (e.g. 800×480) still show
-    design columns 1–2 instead of cropping them off.
+    Wider display than the source aspect → scale by height (pillarbox). Narrower display →
+    scale by width (letterbox). Never crops. Used to present the 1280×800 design on any panel.
     """
     src_h, src_w = image.shape[:2]
     if src_w < 1 or src_h < 1 or target_w < 1 or target_h < 1:
@@ -167,7 +166,8 @@ def scale_uniform_letterbox(image: np.ndarray, target_w: int, target_h: int) -> 
     bottom = max(0, pad_h - top)
 
     if image.ndim == 3 and image.shape[2] == 4:
-        pad_value = (0, 0, 0, 255)
+        # Transparent bars so BGRA overlays composite cleanly over underlays.
+        pad_value = (0, 0, 0, 0)
     else:
         pad_value = (0, 0, 0)
 

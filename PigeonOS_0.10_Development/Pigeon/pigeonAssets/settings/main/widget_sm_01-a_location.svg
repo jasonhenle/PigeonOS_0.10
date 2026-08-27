@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_1" data-name="Layer 1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 401.2 55.6">
+  <rect id="location_container_icon" y="12.67" width="88.65" height="31.01" rx="14.9" ry="14.9"/>
+  <text id="location_text" transform="translate(207.25 49.06)" font-family="Digital-7, Digital-7" font-size="59.96"><tspan x="0" y="0">THEATER</tspan></text>
+  <circle id="location_1_icon" cx="14.98" cy="28.17" r="11.86" fill="#fff" stroke="#000" stroke-miterlimit="10" stroke-width="2"/>
+  <circle id="location_2_icon" cx="44.33" cy="28.17" r="11.86" fill="#fff" stroke="#000" stroke-miterlimit="10" stroke-width="2"/>
+  <circle id="location_3_icon" cx="73.67" cy="28.17" r="11.86" stroke="#fff" stroke-miterlimit="10" stroke-width="2"/>
+</svg>

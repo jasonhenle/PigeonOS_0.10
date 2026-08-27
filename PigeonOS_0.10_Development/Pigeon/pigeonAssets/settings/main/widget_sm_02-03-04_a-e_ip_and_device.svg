@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_1" data-name="Layer 1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 162.01 196.07">
+  <g id="e_group">
+    <text id="e_device_text" transform="translate(84.63 192.58)" font-family="Digital-7, Digital-7" font-size="32"><tspan x="0" y="0">DEVICE</tspan></text>
+    <text id="e_ip_text" transform="translate(0 188.68)" font-family="Digital-7, Digital-7" font-size="19"><tspan x="0" y="0">00.0.0.000</tspan></text>
+  </g>
+  <g id="d_group">
+    <text id="d_device_text" transform="translate(84.63 150.96)" font-family="Digital-7, Digital-7" font-size="32"><tspan x="0" y="0">device</tspan></text>
+    <text id="d_ip_text" transform="translate(0 147.06)" font-family="Digital-7, Digital-7" font-size="19"><tspan x="0" y="0">00.0.0.000</tspan></text>
+  </g>
+  <g id="c_group">
+    <text id="c_device_text" transform="translate(84.63 109.33)" font-family="Digital-7, Digital-7" font-size="32"><tspan x="0" y="0">device</tspan></text>
+    <text id="c_ip_tet" transform="translate(0 105.43)" font-family="Digital-7, Digital-7" font-size="19"><tspan x="0" y="0">00.0.0.000</tspan></text>
+  </g>
+  <g id="b_group">
+    <text id="b_device_text" transform="translate(84.63 67.7)" font-family="Digital-7, Digital-7" font-size="32"><tspan x="0" y="0">device</tspan></text>
+    <text id="b_ip_text" transform="translate(0 63.8)" font-family="Digital-7, Digital-7" font-size="19"><tspan x="0" y="0">00.0.0.000</tspan></text>
+  </g>
+  <g id="a_group">
+    <text id="a_device_text" transform="translate(84.63 26.18)" font-family="Digital-7, Digital-7" font-size="32"><tspan x="0" y="0">DEVICE</tspan></text>
+    <text id="a_ip_text" transform="translate(0 22.28)" font-family="Digital-7, Digital-7" font-size="19"><tspan x="0" y="0">00.0.0.000</tspan></text>
+  </g>
+</svg>

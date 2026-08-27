@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1207.5 299.78">
+  <g id="num_9">
+    <g id="num_9-2" data-name="num_9">
+      <rect x="720.85" y="152.39" width="106.3" height="70.44" rx="19" ry="19" fill="#231f20"/>
+      <text transform="translate(758.75 206.27)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50.19" font-weight="600"><tspan x="0" y="0">9</tspan></text>
+    </g>
+  </g>
+  <g id="num_8">
+    <g id="num_8-2" data-name="num_8">
+      <rect x="610.28" y="152.39" width="106.3" height="70.44" rx="19" ry="19" fill="#231f20"/>
+      <text transform="translate(648.15 206.27)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50.19" font-weight="600"><tspan x="0" y="0">8</tspan></text>
+    </g>
+  </g>
+  <g id="num_7">
+    <g id="num_7-2" data-name="num_7">
+      <rect x="499.68" y="152.39" width="106.3" height="70.44" rx="19" ry="19" fill="#231f20"/>
+      <text transform="translate(538.54 206.27)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50.19" font-weight="600"><tspan x="0" y="0">7</tspan></text>
+    </g>
+  </g>
+  <g id="num_6">
+    <g id="num_6-2" data-name="num_6">
+      <rect x="720.89" y="75.44" width="106.3" height="70.44" rx="19" ry="19" fill="#231f20"/>
+      <text transform="translate(758.52 129.59)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50.19" font-weight="600"><tspan x="0" y="0">6</tspan></text>
+    </g>
+  </g>
+  <g id="num_5">
+    <g id="num_5-2" data-name="num_5">
+      <rect x="610.28" y="75.44" width="106.3" height="70.44" rx="19" ry="19" fill="#231f20"/>
+      <text transform="translate(648.45 129.59)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50.19" font-weight="600"><tspan x="0" y="0">5</tspan></text>
+    </g>
+  </g>
+  <g id="num_4">
+    <g id="num_4-2" data-name="num_4">
+      <rect x="499.68" y="75.44" width="106.3" height="70.44" rx="19" ry="19" fill="#231f20"/>
+      <text transform="translate(537.28 129.59)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50.19" font-weight="600"><tspan x="0" y="0">4</tspan></text>
+    </g>
+  </g>
+  <g id="num_3">
+    <g id="num_3-2" data-name="num_3">
+      <rect x="720.89" y="0" width="106.3" height="70.44" rx="19" ry="19" fill="#231f20"/>
+      <text transform="translate(759.8 54.03)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50.19" font-weight="600"><tspan x="0" y="0">3</tspan></text>
+    </g>
+  </g>
+  <g id="num_2">
+    <g id="num_2-2" data-name="num_2">
+      <rect x="610.28" y="0" width="106.3" height="70.44" rx="19" ry="19" fill="#231f20"/>
+      <text transform="translate(649.2 54.03)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50.19" font-weight="600"><tspan x="0" y="0">2</tspan></text>
+    </g>
+  </g>
+  <g id="num_1">
+    <g id="num_1-2" data-name="num_1">
+      <rect x="499.68" y="0" width="106.3" height="70.44" rx="19" ry="19" fill="#231f20"/>
+      <text transform="translate(544.13 54.03) scale(.89 1)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50.19" font-weight="600"><tspan x="0" y="0">1</tspan></text>
+    </g>
+  </g>
+  <g id="num_0">
+    <g id="num_0-2" data-name="num_0">
+      <rect x="388.64" y="0" width="106.3" height="222.83" rx="19" ry="19" fill="#231f20"/>
+      <text transform="translate(424.99 134.33)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="50.19" font-weight="600"><tspan x="0" y="0">0</tspan></text>
+    </g>
+  </g>
+</svg>

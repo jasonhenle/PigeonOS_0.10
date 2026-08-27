@@ -283,7 +283,7 @@ class StatusBarWidget:
             )
 
             keys = read_ui_color_keys()
-            hex_color = hex_for_color_key("ui", keys.get("ui", "red"))
+            hex_color = hex_for_color_key("ui", keys.get("ui", "blue"))
             h = (hex_color or "").strip().lstrip("#")
             if len(h) == 3:
                 h = f"{h[0]}{h[0]}{h[1]}{h[1]}{h[2]}{h[2]}"

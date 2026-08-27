@@ -369,8 +369,14 @@ def resolve_ui_font_bold() -> str | None:
     for root in roots:
         for pattern in globs:
             for p in sorted(root.glob(pattern)):
-                if p.is_file():
-                    return str(p)
+                name = p.name.lower().replace(" ", "")
+                if not p.is_file():
+                    continue
+                if "italic" in name or "oblique" in name:
+                    continue
+                if "extrabold" in name:
+                    continue
+                return str(p)
 
     return _first_existing_path(*_BOLD_FALLBACK_PATHS)
 

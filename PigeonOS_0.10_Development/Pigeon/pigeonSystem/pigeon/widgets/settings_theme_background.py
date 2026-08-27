@@ -57,6 +57,11 @@ class ThemeSlantSpec:
 
 
 def default_settings_background_svg_path(assets_dir: Path | str | None = None) -> Path:
+    from pigeon.settings_layout import settings_widget_path
+
+    native = settings_widget_path("background", assets_dir=assets_dir)
+    if native.is_file():
+        return native
     if assets_dir is not None:
         return Path(assets_dir) / "settings_0.8" / "settings_background.svg"
     pigeon_root = Path(__file__).resolve().parents[3]
@@ -201,6 +206,53 @@ def _svg_to_px(x_svg: float, y_svg: float) -> tuple[int, int]:
 _PLATE_CACHE: dict[tuple[str, str, int], np.ndarray] = {}
 
 
+def _menu_plate_mask(h: int, w: int) -> np.ndarray:
+    """Opaque rounded rect matching the background SVG clipPath, in canvas space."""
+    from PIL import Image, ImageDraw
+
+    from pigeon.settings_layout import MENU_PLATE_RADIUS, MENU_PLATE_XYWH
+
+    img = Image.new("L", (w, h), 0)
+    x, y, pw, ph = MENU_PLATE_XYWH
+    r = max(1, int(round(MENU_PLATE_RADIUS)))
+    x0, y0 = int(round(x)), int(round(y))
+    x1, y1 = int(round(x + pw)), int(round(y + ph))
+    ImageDraw.Draw(img).rounded_rectangle((x0, y0, x1, y1), radius=r, fill=255)
+    return np.asarray(img)
+
+
+def _recolor_native_background(root: ET.Element, ui_hex: str) -> None:
+    from pigeon.settings_layout import BACKGROUND_BRIGHTNESS, SETTINGS_CANVAS_H, SETTINGS_CANVAS_ORIGIN, SETTINGS_CANVAS_W
+
+    ox, oy = SETTINGS_CANVAS_ORIGIN
+    root.set("viewBox", f"{ox} {oy} {SETTINGS_CANVAS_W} {SETTINGS_CANVAS_H}")
+    root.set("width", str(int(SETTINGS_CANVAS_W)))
+    root.set("height", str(int(SETTINGS_CANVAS_H)))
+    for el in root.iter():
+        eid = (el.get("id") or el.get("data-name") or "").strip()
+        brightness = BACKGROUND_BRIGHTNESS.get(eid)
+        if brightness is None:
+            continue
+        el.set("fill", scale_ui_hex(ui_hex, brightness))
+        style = el.get("style") or ""
+        parts = [p for p in style.split(";") if p.strip() and not p.strip().startswith("fill")]
+        parts.append(f"fill:{scale_ui_hex(ui_hex, brightness)}")
+        el.set("style", ";".join(parts))
+    # Darkest slant has no id in the export — treat unnamed clipped rects as 35%.
+    for el in root.iter():
+        if not el.tag.endswith("rect"):
+            continue
+        eid = (el.get("id") or "").strip()
+        if eid:
+            continue
+        fill = (el.get("fill") or "").strip()
+        if fill in ("", "none", "#000", "#000000"):
+            continue
+        if (el.get("width") or "") == "1280":
+            continue
+        el.set("fill", scale_ui_hex(ui_hex, 0.35))
+
+
 def draw_settings_theme_background_bgra(
     bgra: np.ndarray,
     *,
@@ -209,15 +261,55 @@ def draw_settings_theme_background_bgra(
     assets_dir: Path | str | None = None,
     svg_path: Path | str | None = None,
 ) -> None:
-    """Fill ``bgra`` black, then paint UI-tinted slants clipped to ``clip_mask``.
+    """Fill ``bgra`` black, then paint UI-tinted slants.
 
-    ``clip_mask`` is an 800×480 uint8 mask (255 = inside menu plate).
+    Native 1280×800 ``widget_general_settings_background.svg`` is preferred.
+    Legacy 800×480 slants still honor ``clip_mask``.
     """
     path = (
         Path(svg_path)
         if svg_path is not None
         else default_settings_background_svg_path(assets_dir)
     )
+    if path.is_file() and "widget_general_settings_background" in path.name:
+        cache_key = (str(path.resolve()), ui_hex.lower(), -1283)
+        cached = _PLATE_CACHE.get(cache_key)
+        if cached is not None:
+            h = min(bgra.shape[0], cached.shape[0])
+            w = min(bgra.shape[1], cached.shape[1])
+            bgra[:h, :w] = cached[:h, :w]
+            return
+        import copy
+        import xml.etree.ElementTree as ET
+
+        from pigeon.widgets.settings_svg_text import rasterize_settings_svg_bgra
+
+        root = copy.deepcopy(ET.parse(path).getroot())
+        _recolor_native_background(root, ui_hex)
+        plate = rasterize_settings_svg_bgra(
+            root, width=int(bgra.shape[1]), height=int(bgra.shape[0])
+        )
+        from pigeon.settings_layout import SETTINGS_BACKGROUND_SHIFT_Y
+
+        shift = -int(SETTINGS_BACKGROUND_SHIFT_Y)
+        if shift > 0 and plate.shape[0] > shift:
+            moved = np.zeros_like(plate)
+            moved[:-shift] = plate[shift:]
+            plate = moved
+        # PyMuPDF ignores SVG clipPath; force slants into the rounded menu plate.
+        mask = _menu_plate_mask(int(plate.shape[0]), int(plate.shape[1]))
+        outside = mask == 0
+        plate[outside, 0] = 0
+        plate[outside, 1] = 0
+        plate[outside, 2] = 0
+        while len(_PLATE_CACHE) >= 12:
+            _PLATE_CACHE.pop(next(iter(_PLATE_CACHE)))
+        _PLATE_CACHE[cache_key] = plate.copy()
+        h = min(bgra.shape[0], plate.shape[0])
+        w = min(bgra.shape[1], plate.shape[1])
+        bgra[:h, :w] = plate[:h, :w]
+        return
+
     if not path.is_file():
         # Fallback: solid UI plate if asset missing (should not happen in installs).
         bgra[:, :, :3] = 0

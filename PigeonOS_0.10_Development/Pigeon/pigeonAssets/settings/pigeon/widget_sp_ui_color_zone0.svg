@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_23" data-name="Layer 23" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2365.03 2422.04">
+  <rect id="color_containter_button" x="682.7" y="1017.01" width="1077.38" height="161.98" rx="13.04" ry="13.04" fill="#1c1c1c" stroke="#1c1c1c" stroke-miterlimit="10" stroke-width="7"/>
+  <rect id="gray_swatch_button" x="1545.6" y="1037.59" width="118.65" height="118.65" rx="10.35" ry="10.35" fill="#777" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+  <rect id="purple_swatch_button" x="1416.66" y="1037.59" width="118.65" height="118.65" rx="10.35" ry="10.35" fill="#9500ff" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+  <rect id="blue_swatch_button" x="1290.96" y="1037.59" width="118.65" height="118.65" rx="10.35" ry="10.35" fill="#4ea6f7" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+  <rect id="green_swatch_button" x="1162.02" y="1037.59" width="118.65" height="118.65" rx="10.35" ry="10.35" fill="#58ff00" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+  <rect id="yellow_Swatch_button" x="1033.2" y="1037.59" width="118.65" height="118.65" rx="10.35" ry="10.35" fill="#fff800" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+  <rect id="orange_swatch_button" x="905.88" y="1037.59" width="118.65" height="118.65" rx="10.35" ry="10.35" fill="#ffb600" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+  <rect id="red_swatch_button" x="778.54" y="1037.63" width="118.65" height="118.65" rx="10.35" ry="10.35" fill="red" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+  <circle id="red_swatch_icon" cx="837.86" cy="1097.28" r="48.89" fill="#fff" stroke="#000" stroke-miterlimit="10" stroke-width="3"/>
+</svg>

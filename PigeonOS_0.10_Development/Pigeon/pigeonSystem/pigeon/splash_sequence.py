@@ -1,9 +1,12 @@
-"""Launch splash: PNG sequence (e.g. 800×480 RGBA) under ``pigeonAssets/pigeonSplash``.
+"""Launch splash: PNG sequence (1280×800 RGBA) under ``pigeonAssets/pigeonSplash``.
 
 Alpha is preserved end-to-end: the overlay is a full-``shell`` layer above ``content_host``.
 Transparent PNG pixels reveal the UI underneath (clock saver from
 ``SPLASH_CLOCK_REVEAL_FRAME``). Optional ``SPLASH_FADE_OUT_FRAMES`` can still apply a
 global alpha ramp at the tail; default is 0 (no fade — the PNG alpha does the reveal).
+
+Authored exports may be 800×480; install letterboxes them into 1280×800 with
+transparent bars (see ``letterbox_legacy_ui``).
 """
 
 from __future__ import annotations
@@ -21,15 +24,16 @@ from pigeon.version import MAJOR, MINOR
 # Folder name next to other pigeonAssets media (user-provided sequence).
 SPLASH_SEQUENCE_DIRNAME = "pigeonSplash"
 _LEGACY_SPLASH_SEQUENCE_DIRNAME = "P_0.5_WIDGET_splash"
-SPLASH_NOMINAL_W = 800
-SPLASH_NOMINAL_H = 480
+SPLASH_NOMINAL_W = 1280
+SPLASH_NOMINAL_H = 800
 SPLASH_FPS = 30
 # Hard cap so a huge folder cannot block startup for minutes.
 SPLASH_MAX_DURATION_S = 18.0
 # Last N frames: global alpha ramps 1 → 0. 0 = no software fade (PNG alpha reveals underlay).
 SPLASH_FADE_OUT_FRAMES = 0
 # 0-based frame index when the clock saver should paint under the splash
-# (``WIDGET_splash_00090.png``). Earlier frames keep a black underlay.
+# (``widget_pigeon_splash_00090.png`` — full hold; PNG fade starts at 92).
+# Earlier frames keep a black underlay.
 SPLASH_CLOCK_REVEAL_FRAME = 90
 
 # Built-in sequence when ``pigeonSplash`` has no PNGs (same nominal size as the window).
@@ -42,11 +46,29 @@ def _natural_png_sort_key(p: Path) -> tuple[object, ...]:
     return tuple(parts) + (p.stem.lower(), p.name.lower())
 
 
+# Tiny PNGs are empty AE pad frames; skip a full decode on the startup trim pass.
+_SPLASH_EMPTY_MAX_BYTES = 4096
+
+
+def _splash_frame_is_empty(path: Path) -> bool:
+    try:
+        if path.stat().st_size <= _SPLASH_EMPTY_MAX_BYTES:
+            return True
+    except OSError:
+        return True
+    im = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    if im is None or im.ndim != 3 or im.shape[2] < 4:
+        return True
+    a = im[:, :, 3]
+    return float(a.mean()) < 1.0 and int((a > 10).sum()) < 1000
+
+
 def splash_effective_frame_count(png_paths: list[Path], *, reveal_frame: int) -> int:
     """Return playback length, trimming trailing fully-transparent frames after reveal.
 
     After Effects / PNG sequences often pad many empty frames after the graphic is gone;
-    playing those looks like the last splash frame is held.
+    playing those looks like the last splash frame is held. Stop at the first empty
+    frame after reveal so startup does not decode the pad run.
     """
     n = len(png_paths)
     if n <= 0:
@@ -54,15 +76,9 @@ def splash_effective_frame_count(png_paths: list[Path], *, reveal_frame: int) ->
     start = max(0, min(int(reveal_frame), n - 1))
     last_substantive = start
     for i in range(start, n):
-        im = cv2.imread(str(png_paths[i]), cv2.IMREAD_UNCHANGED)
-        if im is None or im.ndim != 3 or im.shape[2] < 4:
-            continue
-        a = im[:, :, 3]
-        # Treat as empty once almost no pixels remain (allow tiny encoder dirt).
-        if float(a.mean()) < 1.0 and int((a > 10).sum()) < 1000:
+        if _splash_frame_is_empty(png_paths[i]):
             break
         last_substantive = i
-    # Inclusive end frame → count; keep at least the reveal frame itself.
     return max(start + 1, last_substantive + 1)
 
 

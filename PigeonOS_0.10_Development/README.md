@@ -15,9 +15,12 @@ PigeonOS_0.10_Development/
 **Pi:** see `Pigeon/installer/START-HERE.txt`  
 **Settings / credentials:** `~/.pigeon_0_6` (shared with earlier installs)
 
-Previous 0.9 tree: `../Archive/PigeonOS_0.9_Development/`  
+**Desktop shortcuts:** `Pigeon (experiment).command`, `Pigeon (0.10).command`, `Pigeon (main).command`  
+(from `Pigeon/installer/setup_desktop_launchers.sh`)
+
+Previous 0.9 tree + GFX: `../Archive/PigeonOS_0.9_Development/` (+ `PigeonOS_0.9_GFX/`)  
 Previous 0.8 tree (code + design GFX): `../Archive/Pigeon_0.8.0_Development/`  
-Do **not** link new builds to Archive paths.
+Do **not** link new builds to Archive paths (use `PigeonOS_0.10_GFX/` for 0.10 design).
 
 ---
 

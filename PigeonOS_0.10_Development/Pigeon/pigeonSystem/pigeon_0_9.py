@@ -339,11 +339,11 @@ def _env_truthy(name: str, *, default: bool = False) -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
-# Native UI composes at 800×480. Window/display target matches the Pi panel (800×480).
-UI_TARGET_W = 800
-UI_TARGET_H = 480
-DISPLAY_W = _env_int("PIGEON_DISPLAY_W", 800)
-DISPLAY_H = _env_int("PIGEON_DISPLAY_H", 480)
+# Native UI composes at 1280×800. Window/display target follows the panel (env override).
+UI_TARGET_W = 1280
+UI_TARGET_H = 800
+DISPLAY_W = _env_int("PIGEON_DISPLAY_W", 1280)
+DISPLAY_H = _env_int("PIGEON_DISPLAY_H", 800)
 try:
     _LAUNCH_WINDOW_SCALE = float(os.environ.get("PIGEON_WINDOW_SCALE", "1.0") or "1.0")
 except ValueError:
@@ -374,7 +374,7 @@ def _composite_cap_dims(display_w: int, display_h: int) -> tuple[int, int, bool]
     """
     Internal composite size for video + mic EQ + UI blits.
 
-    Always composes at the native 800×480 design resolution, then
+    Always composes at the native 1280×800 design resolution, then
     ``_present_frame_to_display`` letterboxes/pillarboxes to the live window when needed.
     """
     dw = max(1, int(display_w))
@@ -384,14 +384,30 @@ def _composite_cap_dims(display_w: int, display_h: int) -> tuple[int, int, bool]
     return UI_TARGET_W, UI_TARGET_H, True
 
 
-def _present_frame_to_display(image: np.ndarray, display_w: int, display_h: int) -> np.ndarray:
+def _present_frame_to_display(
+    image: np.ndarray,
+    display_w: int,
+    display_h: int,
+    *,
+    native_now_playing: bool = False,
+) -> np.ndarray:
     """Scale entire frame into the window with black letterbox/pillarbox bars.
 
     Applies pixel-aspect compensation when the panel PAR is non-square (e.g. official
     Pi 7″ touchscreen) so designed circles stay round on glass.
+
+    Screens that are not the rebuilt now-playing layout get a red square at (0, 0).
     """
     dw = max(1, int(display_w))
     dh = max(1, int(display_h))
+    if not native_now_playing:
+        try:
+            from pigeon.np_layout import stamp_legacy_update_mark
+
+            image = np.ascontiguousarray(image.copy())
+            stamp_legacy_update_mark(image)
+        except Exception:
+            pass
     try:
         from pigeon.display_par import apply_par_compensation
 
@@ -406,7 +422,7 @@ def _present_frame_to_display(image: np.ndarray, display_w: int, display_h: int)
 
 
 def _bgra_to_display_window(bgra: np.ndarray) -> np.ndarray:
-    """Fit splash/UI BGRA (800×480) into the live display window with black bars when needed."""
+    """Fit splash/UI BGRA (design size) into the live display window with black bars when needed."""
     if not _PIGEON_EXT:
         return bgra
     assert resize_bgra_if_needed is not None
@@ -765,6 +781,12 @@ def _apply_brightness(frame_bgr: np.ndarray, factor: float) -> np.ndarray:
 
 
 def _bgr_to_tk_image(frame_bgr: np.ndarray) -> ImageTk.PhotoImage:
+    try:
+        from pigeon.widgets.options_settings import apply_ui_mono_bgr
+
+        frame_bgr = apply_ui_mono_bgr(frame_bgr)
+    except Exception:
+        pass
     rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
     img = Image.fromarray(rgb)
     return ImageTk.PhotoImage(image=img)
@@ -779,6 +801,12 @@ def _update_label_photo_from_bgr(
     Reuse one ``PhotoImage`` and ``paste`` each frame. Creating hundreds of new
     ``PhotoImage`` objects per second leaks native Tk storage and locks up after a short run.
     """
+    try:
+        from pigeon.widgets.options_settings import apply_ui_mono_bgr
+
+        frame_bgr = apply_ui_mono_bgr(frame_bgr)
+    except Exception:
+        pass
     rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
     h, w = int(rgb.shape[0]), int(rgb.shape[1])
     if h < 1 or w < 1:
@@ -2959,6 +2987,30 @@ def main() -> int:
                 return False
             return "Playing" in str(lm.get("device_state") or "")
 
+        def _np_widgets_content_active(*, incoming: str = "", config: str = "") -> bool:
+            """True when NP should show more than the clock (title / play / AVR broadcast)."""
+            if _something_playing_now() or _show_paused_row_overlay():
+                return True
+            if bool(apple_tv_playback_clock.get("live_mode")):
+                return True
+            lm = apple_tv_auto_state.get("last_metadata")
+            if isinstance(lm, dict) and not _atv_metadata_is_content_idle(lm):
+                return True
+            if apple_tv_auto_state.get("tmdb_fetch_in_flight") or apple_tv_auto_state.get(
+                "pending_tmdb"
+            ):
+                q = ""
+                if isinstance(lm, dict):
+                    q = str(lm.get("query") or lm.get("title") or lm.get("ocr_title") or "").strip()
+                if not q:
+                    q = str(apple_tv_auto_state.get("query") or "").strip()
+                if q:
+                    return True
+            if not bool(receiver_standby_holder[0]):
+                if str(incoming or "").strip() or str(config or "").strip():
+                    return True
+            return False
+
         def _tmdb_info_current_and_available() -> bool:
             """True when live TMDb art/title matches the current show and is ready."""
             if apple_tv_auto_state.get("tmdb_missing_art"):
@@ -3024,8 +3076,26 @@ def main() -> int:
             except Exception:
                 return bool(str(md.get("query") or md.get("title") or "").strip())
 
+        def _clock_saver_idle_need() -> float:
+            try:
+                from pigeon.widgets.options_settings import clock_saver_idle_s
+
+                return float(clock_saver_idle_s())
+            except Exception:
+                return 60.0
+
+        def _clock_saver_user_enabled() -> bool:
+            try:
+                from pigeon.widgets.options_settings import clock_saver_enabled
+
+                return bool(clock_saver_enabled())
+            except Exception:
+                return True
+
         def _clock_saver_active(now: float) -> bool:
             if clock_saver_composite_bgra is None:
+                return False
+            if not _clock_saver_user_enabled():
                 return False
             if dev_phase != DevPhase.OFF:
                 return False
@@ -3078,8 +3148,8 @@ def main() -> int:
                 sys.stderr.flush()
             if meta_idle:
                 return True
-            ui_idle = (now - float(last_pigeon_user_activity_mono[0])) >= CLOCK_SAVER_AFTER_S
-            dev_idle = (now - float(last_clock_saver_significant_device_mono[0])) >= CLOCK_SAVER_AFTER_S
+            ui_idle = (now - float(last_pigeon_user_activity_mono[0])) >= _clock_saver_idle_need()
+            dev_idle = (now - float(last_clock_saver_significant_device_mono[0])) >= _clock_saver_idle_need()
             return ui_idle and dev_idle
 
         def _effective_display_view() -> DisplayView:
@@ -3410,6 +3480,63 @@ def main() -> int:
                 and view_circles_widget is not None
             )
 
+        def _settings_is_native_1280() -> bool:
+            """True when the on-screen settings page is a rebuilt 1280×800 layout."""
+            if dev_phase != DevPhase.MAIN_SETTINGS or main_settings_widget is None:
+                return False
+            try:
+                st = main_settings_widget.state
+            except Exception:
+                return False
+            if st.keyboard is not None:
+                return False
+            if st.show_metadata_debug or st.show_ui_color or st.show_preferences or st.show_options:
+                return False
+            if st.show_update_popup:
+                return False
+            return True
+
+        def _composite_settings_on_canvas(canvas: np.ndarray) -> None:
+            """Paint settings, then the NP status bar on settings_main while content is up."""
+            if main_settings_widget is None:
+                return
+            try:
+                _sync_preferences_now_playing_progress()
+            except Exception:
+                pass
+            try:
+                _sync_settings_zone2_tt()
+            except Exception:
+                pass
+            main_settings_widget.render(canvas)
+            try:
+                st_ms = main_settings_widget.state
+                pigeon_page = bool(st_ms.show_pigeon_settings)
+            except Exception:
+                return
+            playing = False
+            try:
+                playing = bool(_something_playing_now() or _show_paused_row_overlay())
+            except Exception:
+                playing = False
+            from pigeon.widgets.view_circles import settings_main_keeps_np_status_bar
+
+            if not settings_main_keeps_np_status_bar(
+                show_pigeon_settings=pigeon_page,
+                content_playing=playing,
+            ):
+                return
+            if view_circles_widget is None:
+                return
+            try:
+                _sync_now_playing_screen_state()
+            except Exception:
+                pass
+            try:
+                view_circles_widget.overlay_status_bar(canvas)
+            except Exception:
+                pass
+
         def _sync_now_playing_screen_state() -> None:
             nonlocal skip_cache
             if view_circles_widget is None:
@@ -3464,6 +3591,7 @@ def main() -> int:
                 lm_svc = apple_tv_auto_state.get("last_metadata")
                 if isinstance(lm_svc, dict):
                     circles_service = str(lm_svc.get("app_name") or "").strip()
+            np_active = _np_widgets_content_active(incoming=inc, config=cfg)
             if _vv_is_music():
                 lm_music = apple_tv_auto_state.get("last_metadata")
                 song_t = album_t = artist_t = ""
@@ -3494,6 +3622,7 @@ def main() -> int:
                     paused=circles_paused,
                     service_name=circles_service,
                     has_position=_has_playback_position(),
+                    content_active=np_active,
                 ):
                     changed = True
             else:
@@ -3531,6 +3660,7 @@ def main() -> int:
                     paused=circles_paused,
                     service_name=circles_service,
                     has_position=_has_playback_position(),
+                    content_active=np_active,
                 ):
                     changed = True
             if changed:
@@ -3551,10 +3681,10 @@ def main() -> int:
             scene_enabled = False
             last_frame = None
             brightness_current = brightness_from = brightness_target = LANDING_DISPLAY_BRIGHTNESS
-            if status_bar_widget is not None:
-                if status_bar_widget.set_now_playing_chrome_visible(True):
-                    _warm_status_bar_blits()
-            _sync_now_playing_screen_state()
+            md_sb = apple_tv_auto_state.get("last_metadata")
+            _sync_status_bar_visibility_for_playback(
+                md_sb if isinstance(md_sb, dict) else None
+            )
             skip_cache = None
 
         def _activate_now_playing_after_splash() -> None:
@@ -3583,8 +3713,7 @@ def main() -> int:
                 return
             t0 = time.monotonic()
             display_view_holder[0] = DisplayView.ONE
-            if status_bar_widget is not None:
-                status_bar_widget.set_now_playing_chrome_visible(True)
+            # Clock-only until content is live — do not force the empty status bar on.
             if view_circles_widget.set_now_playing_chrome_visible(True):
                 view_circles_widget.clear_cache()
             try:
@@ -3940,6 +4069,7 @@ def main() -> int:
             return tmdb_logo_widget
 
         _tmdb_poster_cache: dict[str, object] = {"key": None, "bgra": None}
+        _tmdb_tt_src_cache: dict[str, object] = {"key": None, "bgra": None}
 
         def _styled_video_content_c_poster(src_bgra: np.ndarray | None) -> np.ndarray | None:
             """Return poster BGRA with rounded corners + faint white border for viewOne.videoContent_c."""
@@ -4039,6 +4169,124 @@ def main() -> int:
             _tmdb_poster_cache["key"] = key
             _tmdb_poster_cache["bgra"] = raw
             return raw
+
+        def _active_tmdb_tt_src_bgra() -> np.ndarray | None:
+            """Return cached TMDb title-treatment (LogoEn) BGRA, or ``None``.
+
+            Logo art only — no text fallback and no streaming-app logo substitute.
+            Tries the active key, then a year-stripped alias.
+            """
+            if not active_tmdb_title_key:
+                return None
+            try:
+                from pigeon.media_cache import (
+                    ASSET_LOGO,
+                    ASSET_LOGO_EN,
+                    find_cached_reformatted_asset,
+                    title_key as tmdb_title_key,
+                )
+                from pigeon.image_ui_protocol import load_image_bgra
+                from pigeon.tmdb_poster import split_query_and_year
+            except Exception:
+                return None
+            keys: list[str] = []
+            tk0 = str(active_tmdb_title_key).strip()
+            if tk0:
+                keys.append(tk0)
+            disp = str(active_tmdb_display_title or "").strip()
+            if disp:
+                try:
+                    tk_disp = (tmdb_title_key(disp) or "").strip()
+                except Exception:
+                    tk_disp = ""
+                if tk_disp and tk_disp not in keys:
+                    keys.append(tk_disp)
+            try:
+                cleaned, _year = split_query_and_year(tk0)
+                cleaned = (cleaned or "").strip()
+                if cleaned and cleaned not in keys:
+                    keys.append(cleaned)
+            except Exception:
+                pass
+            logo_path = None
+            for tk in keys:
+                for asset in (ASSET_LOGO_EN, ASSET_LOGO):
+                    logo_path = find_cached_reformatted_asset(tk, asset)
+                    if logo_path is not None and logo_path.is_file():
+                        break
+                    logo_path = None
+                if logo_path is not None:
+                    break
+            if logo_path is None:
+                return None
+            try:
+                mtime = logo_path.stat().st_mtime
+            except OSError:
+                return None
+            key = (str(logo_path), float(mtime))
+            if _tmdb_tt_src_cache.get("key") == key:
+                hit = _tmdb_tt_src_cache.get("bgra")
+                return hit if isinstance(hit, np.ndarray) else None
+            raw = load_image_bgra(logo_path)
+            if raw is None or raw.size == 0:
+                _tmdb_tt_src_cache["key"] = key
+                _tmdb_tt_src_cache["bgra"] = None
+                return None
+            _tmdb_tt_src_cache["key"] = key
+            _tmdb_tt_src_cache["bgra"] = raw
+            return raw
+
+        def _settings_zone2_tt_bgra() -> np.ndarray | None:
+            """TMDb TT for the settings-main zone 2 black card, or ``None``."""
+            if _vv_is_music():
+                return None
+            playing = False
+            paused = False
+            try:
+                playing = bool(_something_playing_now())
+            except Exception:
+                playing = False
+            try:
+                paused = bool(_show_paused_row_overlay())
+            except Exception:
+                paused = False
+            if not playing and not paused:
+                return None
+            raw = _active_tmdb_tt_src_bgra()
+            if raw is not None:
+                return raw
+            if tmdb_logo_app_fallback_active:
+                return None
+            patch = tmdb_logo_patch_bgra
+            if (
+                isinstance(patch, np.ndarray)
+                and patch.size > 0
+                and patch.ndim == 3
+                and patch.shape[2] >= 4
+                and int(patch[:, :, 3].max()) > 8
+            ):
+                return patch
+            return None
+
+        def _sync_settings_zone2_tt() -> None:
+            """Center TMDb TT in the settings-main zone 2 card while content is up."""
+            if main_settings_widget is None:
+                return
+            st_ms = main_settings_widget.state
+            want = None
+            try:
+                if not bool(st_ms.show_pigeon_settings):
+                    try:
+                        _warm_tmdb_logo_patch()
+                    except Exception:
+                        pass
+                    want = _settings_zone2_tt_bgra()
+            except Exception:
+                want = None
+            prev = getattr(st_ms, "zone2_tt_bgra", None)
+            if want is prev:
+                return
+            st_ms.zone2_tt_bgra = want
 
         def _clear_music_artwork_cache() -> None:
             """Drop cached pyatv music artwork (leaving music / idle / track miss)."""
@@ -4549,7 +4797,7 @@ def main() -> int:
                         roi2 = canvas_np[sy : sy + sh, sx : sx + sw]
                         roi2[:] = alpha_blend_bgra_over_bgr(roi2, cs_bgra)
                 elif dev_phase == DevPhase.MAIN_SETTINGS and main_settings_widget is not None:
-                    main_settings_widget.render(canvas_np)
+                    _composite_settings_on_canvas(canvas_np)
                 elif (
                     cs_v1
                     and clock_saver_composite_bgra is not None
@@ -4589,7 +4837,9 @@ def main() -> int:
                     ),
                 )
                 if use_cap:
-                    return _present_frame_to_display(base2, dw, dh)
+                    return _present_frame_to_display(
+                        base2, dw, dh, native_now_playing=_settings_is_native_1280()
+                    )
                 return base2
             _set_playback_overlay_clock_saver_volume_flag()
             fast_sig = (
@@ -4980,8 +5230,7 @@ def main() -> int:
             if _maybe_exit_settings_menus_on_idle():
                 pass
             if dev_phase == DevPhase.MAIN_SETTINGS and main_settings_widget is not None:
-                _sync_preferences_now_playing_progress()
-                main_settings_widget.render(canvas)
+                _composite_settings_on_canvas(canvas)
                 dw, dh = display_dims[0], display_dims[1]
                 cap_w, cap_h, use_cap = _composite_cap_dims(dw, dh)
                 base2 = cv2.resize(
@@ -4992,7 +5241,9 @@ def main() -> int:
                     ),
                 )
                 if use_cap:
-                    return _present_frame_to_display(base2, dw, dh)
+                    return _present_frame_to_display(
+                        base2, dw, dh, native_now_playing=_settings_is_native_1280()
+                    )
                 return base2
             _set_playback_overlay_clock_saver_volume_flag()
             now_cs = time.monotonic()
@@ -5016,8 +5267,7 @@ def main() -> int:
                     # Pre-reveal splash underlay stays black.
                     pass
                 elif dev_phase == DevPhase.MAIN_SETTINGS and main_settings_widget is not None:
-                    _sync_preferences_now_playing_progress()
-                    main_settings_widget.render(canvas)
+                    _composite_settings_on_canvas(canvas)
                 else:
                     _sync_now_playing_screen_state()
                     if view_circles_widget is not None:
@@ -5175,7 +5425,13 @@ def main() -> int:
                 ov = build_stage_overlay_source_bgra(_stage_grid_overlay_mode())
                 canvas = blend_overlay_bgr(canvas, ov)
             tw, th = display_dims[0], display_dims[1]
-            return _present_frame_to_display(canvas, tw, th)
+            native_np = (
+                _view_one_uses_now_playing_screen()
+                and dev_phase == DevPhase.OFF
+            ) or _settings_is_native_1280()
+            return _present_frame_to_display(
+                canvas, tw, th, native_now_playing=bool(native_np)
+            )
 
         def _view_four_text_is_placeholder(s: str) -> bool:
             """Hide rows whose text is empty or ends with ``-`` / ``NONE`` (any case)."""
@@ -6931,6 +7187,8 @@ def main() -> int:
             tmdb_error_flag_retry_rule_idx[0] = 0
             _tmdb_poster_cache["key"] = None
             _tmdb_poster_cache["bgra"] = None
+            _tmdb_tt_src_cache["key"] = None
+            _tmdb_tt_src_cache["bgra"] = None
             if tmdb_logo_widget is not None:
                 tmdb_logo_widget.clear_cache()
             if tmdb_logo_widget_view_six is not None:
@@ -9184,7 +9442,7 @@ def main() -> int:
                     load_persisted_theme_into_state(st)
                     apply_color_keys_to_state(
                         st,
-                        {"accent": "white", "ui": "red", "button": "black"},
+                        {"accent": "white", "ui": "blue", "button": "black"},
                         persist=False,
                     )
                 except Exception:
@@ -11017,14 +11275,16 @@ def main() -> int:
                 skip_cache = None
 
         def _sync_status_bar_visibility_for_playback(metadata: dict[str, object] | None) -> None:
-            """Hide now-playing bar + TRT pills when no Apple TV or idle (nothing queued); show when content is active."""
+            """Hide now-playing bar + TRT pills when idle; show when content / AVR is live."""
             nonlocal skip_cache
             if status_bar_widget is None:
                 return
-            if (
-                _effective_display_view() == DisplayView.ONE
-            ):
-                show = True
+            if _effective_display_view() == DisplayView.ONE:
+                try:
+                    inc, cfg, _vol = _resolve_receiver_lines_for_now_playing()
+                except Exception:
+                    inc, cfg = "", ""
+                show = _np_widgets_content_active(incoming=inc, config=cfg)
             elif not current_apple_tv.get("identifier"):
                 show = False
             elif metadata is not None:
