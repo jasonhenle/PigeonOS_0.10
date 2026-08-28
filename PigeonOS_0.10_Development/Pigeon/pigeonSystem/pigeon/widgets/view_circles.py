@@ -2,8 +2,10 @@
 PigeonOS 0.10 zoned now-playing skin (1280×800).
 
 Portrait widgets live in ``pigeonAssets/nowPlaying/widget_np_01-02-03_*.svg``
-and are placed into zones 1–3. Dynamic layers (cast, clock digital, volume pie,
-poster/album art, pause play) are drawn on top with Pillow / OpenCV.
+and are placed into zones 1–3. 16×9 poster art uses ``widget_np_06_16x9`` /
+``widget_np_07_16x9`` across zones 6 (1+2) or 7 (2+3). Dynamic layers (cast,
+clock digital, volume pie, poster/album art, pause play) are drawn on top
+with Pillow / OpenCV.
 """
 
 from __future__ import annotations
@@ -44,9 +46,13 @@ from pigeon.np_layout import (
     CLOCK_MONTH_DATE_LOCAL,
     CLOCK_VIEW_H,
     CLOCK_VIEW_W,
+    DEFAULT_16X9_POSTER_ZONE,
     NOW_PLAYING_ZONES,
     NowPlayingZone,
     POSTER_1X1_LOCAL,
+    POSTER_16X9_LOCAL,
+    POSTER_16X9_VIEW_H,
+    POSTER_16X9_VIEW_W,
     POSTER_2X3_LOCAL,
     STATUS_BAR_ELAPSED_LOCAL,
     STATUS_BAR_PAUSED_LOCAL,
@@ -73,6 +79,7 @@ from pigeon.np_layout import (
     VOLUME_VIEW_H,
     VOLUME_VIEW_W,
     WIDGET_FILENAMES,
+    apply_16x9_poster_override,
     canonical_zone_widget,
     cast_names_for_zone,
     design_rect_from_local,
@@ -80,6 +87,7 @@ from pigeon.np_layout import (
     is_status_bar_widget,
     strip_cast_columns,
     volume_readout_y_shift,
+    wants_16x9_poster,
     widget_filename,
 )
 from pigeon.font_paths import (
@@ -492,6 +500,13 @@ def _poster_geometry(
     zone: int = 2,
 ) -> tuple[int, int, int, int, int]:
     z = _zone_spec(zone)
+    if int(zone) in (6, 7):
+        return design_rect_from_local(
+            z,
+            POSTER_16X9_LOCAL,
+            view_w=POSTER_16X9_VIEW_W,
+            view_h=POSTER_16X9_VIEW_H,
+        )
     local = (
         POSTER_1X1_LOCAL
         if _normalize_content_mode(content_mode) == _CONTENT_MODE_MUSIC
@@ -788,21 +803,39 @@ def _default_zone_widget_assignments() -> tuple[str, str, str, str, str]:
 _CAST_NAMES_PER_ZONE = CAST_NAMES_PER_ZONE
 
 
+def _layout_is_fullscreen_clock(
+    assignments: tuple[str, ...] | list[str],
+) -> bool:
+    """True when no populated NP boxes remain — clock should fill the frame."""
+    keys = [str(z or "").strip() for z in assignments]
+    filled = [k for k in keys if k]
+    return not filled or all(k == "clock" for k in filled)
+
+
 def _effective_zone_widgets(
     *,
     has_position: bool,
     cast_count: int = 0,
     content_active: bool = True,
     zone_widgets: tuple[str, str, str, str, str] | None = None,
+    poster_16x9: bool = False,
+    poster_16x9_zone: int = DEFAULT_16X9_POSTER_ZONE,
+    has_poster: bool = True,
 ) -> tuple[str, str, str, str, str]:
     """Show only widgets we have content for; never two copies of the same one.
 
     When ``content_active`` is False (no title / playback / receiver broadcast),
     keep the clock only so empty poster/volume/cast/bar shells do not look broken.
+    The renderer then expands that clock-only layout to fill the screen.
 
     Status bar needs a live position. Without it, that zone can show the next
     unused cast names. A second cast strip is kept only when more names remain.
     Any other repeated widget is dropped so the layout does not duplicate.
+
+    When ``poster_16x9`` is True and a poster is actually available, user poster
+    placement is overridden: the landscape widget occupies zone 7 (default) or
+    zone 6 and the conflicting portrait columns are cleared. A missing poster
+    never occupies a slot (no empty 16×9 shell).
     """
     zones = list(zone_widgets or _default_zone_widget_assignments())
     if len(zones) < 5:
@@ -822,6 +855,9 @@ def _effective_zone_widgets(
         if not key:
             zones[i] = ""
             continue
+        if key == "poster" and not has_poster:
+            zones[i] = ""
+            continue
         if key == "cast_info":
             remaining = named - cast_used
             if remaining <= 0:
@@ -833,7 +869,10 @@ def _effective_zone_widgets(
             zones[i] = ""
             continue
         seen.add(key)
-    return (zones[0], zones[1], zones[2], zones[3], zones[4])
+    result = (zones[0], zones[1], zones[2], zones[3], zones[4])
+    if poster_16x9 and has_poster:
+        return apply_16x9_poster_override(result, zone=int(poster_16x9_zone))
+    return result
 
 
 def configured_status_bar_zone(
@@ -1617,6 +1656,7 @@ def _rasterize_named_widget(
     now: datetime,
     theme: _NpTheme,
     zone: int | None = None,
+    include_play_overlay: bool = True,
 ) -> np.ndarray | None:
     path = _now_playing_widget_path(assets_dir, widget_key, zone)
     if not path.is_file():
@@ -1639,6 +1679,11 @@ def _rasterize_named_widget(
         _prepare_cast_svg(root)
     elif widget_key in ("now_playing", "status_bar"):
         _prepare_status_bar_svg(root)
+    elif widget_key == "play" and not include_play_overlay:
+        overlay = _find_by_key(root, "50_percent_overlay")
+        if overlay is None:
+            overlay = _find_by_id(root, "_50_percent_overlay")
+        _detach_element(root, overlay)
     bgra = _rasterize_svg_tree(root, dest_w=dest_w, dest_h=dest_h)
     bgra = _decanvas_white_bgra(bgra)
     if widget_key == "clock":
@@ -3259,13 +3304,37 @@ class ViewCirclesWidget:
         self._search_frames = build_search_spinner_frames(self._assets_dir)
         return self._search_frames
 
+    def _wants_16x9_poster(self) -> bool:
+        return wants_16x9_poster(
+            service_name=self._state.service_name,
+            poster_bgra=self._poster_bgra,
+            content_mode=self.content_mode,
+        )
+
+    def _has_drawable_poster(self) -> bool:
+        """True when the poster slot has art or an in-flight search spinner."""
+        if self._state.searching:
+            return True
+        src = self._poster_bgra
+        return src is not None and src.size > 0
+
     def _assignments(self) -> tuple[str, str, str, str, str]:
         named = sum(1 for actor, _role in (self._state.cast or []) if str(actor or "").strip())
+        has_poster = self._has_drawable_poster()
         return _effective_zone_widgets(
             has_position=bool(self._state.has_position),
             cast_count=named,
             content_active=bool(self._state.content_active),
+            poster_16x9=self._wants_16x9_poster() and has_poster,
+            has_poster=has_poster,
         )
+
+    def _poster_zone(self) -> int | None:
+        if not self._has_drawable_poster():
+            return None
+        if self._wants_16x9_poster() and self._state.content_active:
+            return int(DEFAULT_16X9_POSTER_ZONE)
+        return _zone_for_widget(self._assignments(), "poster")
 
     def _cache_sig(self) -> tuple[object, ...]:
         st = self._state
@@ -3282,7 +3351,7 @@ class ViewCirclesWidget:
         zone_widgets = self._assignments()
         theme_key = np_theme_from_settings().cache_key
         return (
-            41,  # cache schema — poster slot restored; TT lives in settings zone 2
+            42,  # cache schema — 16x9 poster slot (zone 7 default)
             st.content_mode,
             st.has_position,
             st.content_active,
@@ -3423,8 +3492,7 @@ class ViewCirclesWidget:
         )
 
     def _draw_poster(self, out: np.ndarray) -> None:
-        assignments = self._assignments()
-        poster_zone = _zone_for_widget(assignments, "poster")
+        poster_zone = self._poster_zone()
         if poster_zone is None:
             return
         px, py, pw, ph, prx = _poster_geometry(
@@ -3455,12 +3523,6 @@ class ViewCirclesWidget:
                     patch = cv2.cvtColor(patch, cv2.COLOR_BGR2BGRA)
                 patch[:, :, 3] = np.minimum(patch[:, :, 3], mask)
                 _paste_patch_bgra(out, patch, px, py)
-        elif (
-            self._state.missing_art
-            and not self._state.searching
-            and self._state.content_mode != _CONTENT_MODE_MUSIC
-        ):
-            self._draw_missing_art_placeholder(out, px, py, pw, ph, prx)
         if self._state.searching:
             frames = self._ensure_search_frames()
             if frames:
@@ -3563,9 +3625,39 @@ class ViewCirclesWidget:
     def _draw_play_overlay(self, out: np.ndarray) -> None:
         if not self._state.paused:
             return
-        assignments = self._assignments()
-        poster_zone = _zone_for_widget(assignments, "poster")
+        poster_zone = self._poster_zone()
         if poster_zone is None:
+            return
+        px, py, pw, ph, prx = _poster_geometry(
+            self.content_mode, zone=int(poster_zone)
+        )
+        if int(poster_zone) in (6, 7):
+            mask = _rounded_rect_mask(pw, ph, prx)
+            dim = np.zeros((ph, pw, 4), dtype=np.uint8)
+            dim[:, :, 3] = (mask.astype(np.float32) * 127.0).astype(np.uint8)
+            _paste_patch_bgra(out, dim, px, py)
+            dest_h = max(1, int(ph))
+            dest_w = max(
+                1,
+                int(round(dest_h * float(NOW_PLAYING_ZONES[1].w) / float(NOW_PLAYING_ZONES[1].h))),
+            )
+            try:
+                patch = _rasterize_named_widget(
+                    assets_dir=self._assets_dir,
+                    widget_key="play",
+                    dest_w=dest_w,
+                    dest_h=dest_h,
+                    now=self._clock_now_for_display(),
+                    theme=np_theme_from_settings(),
+                    include_play_overlay=False,
+                )
+            except Exception:
+                patch = None
+            if patch is None or patch.size == 0:
+                return
+            ox = int(round(px + (pw - dest_w) / 2.0))
+            oy = int(round(py + (ph - dest_h) / 2.0))
+            _paste_patch_bgra(out, patch, ox, oy)
             return
         zone = _zone_spec(int(poster_zone))
         zx, zy, zw, zh = zone.xywh
@@ -3826,8 +3918,16 @@ class ViewCirclesWidget:
 
     def _render_static_bgra(self) -> np.ndarray:
         now = self._clock_now_for_display()
-        out = _fallback_base_bgra()
         assignments = self._assignments()
+        if _layout_is_fullscreen_clock(assignments):
+            out = _fallback_base_bgra()
+            clock = render_centered_clock_widget_bgra(
+                assets_dir=self._assets_dir,
+                now=now,
+            )
+            _paste_patch_bgra(out, clock, 0, 0)
+            return out
+        out = _fallback_base_bgra()
         theme = np_theme_from_settings()
         if (
             self._state.content_active

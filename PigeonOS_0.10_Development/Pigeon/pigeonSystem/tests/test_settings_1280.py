@@ -1150,10 +1150,134 @@ class SettingsKeyboard1280Tests(unittest.TestCase):
 
         ip = open_keyboard(target="device_ip", assets_dir=assets)
         self.assertEqual(ip.mode, KeyboardMode.NUMERIC_IP)
-        self.assertTrue(ip.include_bottom_row)
+        self.assertFalse(ip.include_bottom_row)
         chars = {k.char for k in ip.focus_ring if k.action == KeyAction.CHAR}
         self.assertTrue(set("0123456789.").issubset(chars))
         self.assertTrue(any(k.action == KeyAction.GO for k in ip.focus_ring))
+        self.assertTrue(any(k.action == KeyAction.CANCEL for k in ip.focus_ring))
+        self.assertTrue(any(k.action == KeyAction.DELETE for k in ip.focus_ring))
+        digit_keys = {
+            k.char: k.button_id
+            for k in ip.focus_ring
+            if k.action == KeyAction.CHAR and k.char.isdigit()
+        }
+        self.assertEqual(set(digit_keys), set("0123456789"))
+        self.assertNotEqual(digit_keys["8"], digit_keys["9"])
+
+    def test_ip_keyboard_keeps_8_and_9_apart(self) -> None:
+        import xml.etree.ElementTree as ET
+
+        from pigeon.widgets.main_settings import _find_by_logical_id, keyboard_svg_path
+        from pigeon.widgets.settings_keyboard import (
+            _center_integrated_pad_labels,
+            open_keyboard,
+            render_keyboard_bgra,
+        )
+
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        root = ET.parse(keyboard_svg_path("keyboard_ip.svg", assets_dir=assets)).getroot()
+        eight = _find_by_logical_id(root, "numeric_8")
+        nine = _find_by_logical_id(root, "numeric_9")
+        self.assertIsNotNone(eight)
+        self.assertIsNotNone(nine)
+        assert eight is not None and nine is not None
+        self.assertIn("8", "".join(eight.itertext()))
+        self.assertIn("9", "".join(nine.itertext()))
+        self.assertNotIn("9", "".join(eight.itertext()))
+        self.assertNotIn("8", "".join(nine.itertext()))
+        _center_integrated_pad_labels(root)
+        self.assertIn("8", "".join(eight.itertext()))
+        self.assertIn("9", "".join(nine.itertext()))
+        eight_icon = _find_by_logical_id(root, "numeric_8_icon")
+        nine_icon = _find_by_logical_id(root, "numeric_9_icon")
+        self.assertIsNotNone(eight_icon)
+        self.assertIsNotNone(nine_icon)
+        assert eight_icon is not None and nine_icon is not None
+        self.assertNotEqual(eight_icon.get("transform"), nine_icon.get("transform"))
+
+        state = open_keyboard(target="device_ip", assets_dir=assets)
+        frame = render_keyboard_bgra(state, assets_dir=assets)
+        self.assertGreater(int((frame[:, :, 3] > 10).sum()), 4000)
+
+    def test_upper_and_lower_qwerty_share_key_origin(self) -> None:
+        from pigeon.widgets.settings_keyboard import (
+            KeyboardMode,
+            _CLUSTER_KEY_ROW_Y,
+            _CLUSTER_SCALE,
+            _cluster_xy,
+            open_keyboard,
+            render_keyboard_bgra,
+        )
+
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        lower = open_keyboard(target="network", assets_dir=assets)
+        self.assertEqual(lower.mode, KeyboardMode.QWERTY_LOWER)
+        upper = open_keyboard(target="network", assets_dir=assets)
+        upper.set_mode(KeyboardMode.QWERTY_UPPER, assets_dir=assets)
+        lf = render_keyboard_bgra(lower, assets_dir=assets)
+        uf = render_keyboard_bgra(upper, assets_dir=assets)
+        _cx, cy = _cluster_xy()
+        row_h = int(round(_CLUSTER_KEY_ROW_Y * _CLUSTER_SCALE))
+        lower_mask = lf[cy : cy + row_h, :, 3] > 10
+        upper_mask = uf[cy : cy + row_h, :, 3] > 10
+        self.assertTrue(lower_mask.any())
+        self.assertTrue(upper_mask.any())
+        lx = int(np.where(lower_mask.any(axis=0))[0][0])
+        ux = int(np.where(upper_mask.any(axis=0))[0][0])
+        ly = int(np.where(lower_mask.any(axis=1))[0][0])
+        uy = int(np.where(upper_mask.any(axis=1))[0][0])
+        self.assertLessEqual(abs(lx - ux), 2)
+        self.assertLessEqual(abs(ly - uy), 2)
+
+    def test_shift_glyph_shapes_stay_visible(self) -> None:
+        import xml.etree.ElementTree as ET
+
+        from pigeon.widgets.main_settings import (
+            SettingsTheme,
+            _find_by_logical_id,
+            keyboard_svg_path,
+        )
+        from pigeon.widgets.settings_keyboard import (
+            KeyAction,
+            apply_keyboard_selection,
+            open_keyboard,
+            render_keyboard_bgra,
+        )
+
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        root = ET.parse(keyboard_svg_path("keyboard_lower.svg", assets_dir=assets)).getroot()
+        shift = _find_by_logical_id(root, "lower_shift")
+        self.assertIsNotNone(shift)
+        assert shift is not None
+        apply_keyboard_selection(
+            root,
+            focused_button_id="lower_q",
+            theme=SettingsTheme(),
+            button_ids={"lower_shift", "lower_q"},
+        )
+        polys = [n for n in shift.iter() if n.tag.endswith("polygon")]
+        stems = [
+            n
+            for n in shift.iter()
+            if n.tag.endswith("rect") and float(n.get("rx") or 0) < 8.0
+        ]
+        self.assertTrue(polys)
+        self.assertTrue(stems)
+        for node in polys + stems:
+            fill = (node.get("fill") or "").lower()
+            self.assertIn(fill, ("#fff", "#ffffff", "white"))
+
+        state = open_keyboard(target="network", assets_dir=assets)
+        self.assertTrue(any(k.action == KeyAction.SHIFT for k in state.focus_ring))
+        frame = render_keyboard_bgra(state, assets_dir=assets)
+        from pigeon.widgets.settings_keyboard import _CLUSTER_SCALE, _cluster_xy
+
+        cx, cy = _cluster_xy()
+        sx = cx + int(round(112 * _CLUSTER_SCALE))
+        sy = cy + int(round(152 * _CLUSTER_SCALE))
+        roi = frame[sy + 8 : sy + 58, sx + 20 : sx + 140, :3]
+        luma = roi.mean(axis=2)
+        self.assertGreater(float(luma.max() - luma.min()), 40)
 
     def test_bottom_row_mode_defaults(self) -> None:
         from pigeon.widgets.settings_keyboard import (
@@ -1203,20 +1327,81 @@ class SettingsKeyboard1280Tests(unittest.TestCase):
         roi = frame[y : y + h, x : x + w, :3]
         self.assertGreater(int(np.count_nonzero(roi.max(axis=2) > 180)), 80)
 
-    def test_keyboard_sits_in_column_band_inside_plate(self) -> None:
-        from pigeon.settings_layout import SETTINGS_MAIN_ZONES, menu_plate_chrome_bottom
+    def test_keyboard_sits_between_box1_and_status_bar(self) -> None:
+        from pigeon.np_layout import NOW_PLAYING_ZONES, STATUS_BAR_TRACK
+        from pigeon.settings_layout import DUAL_SLOT_A, MENU_PLATE_XYWH, dual_slot_design
         from pigeon.widgets.settings_keyboard import (
-            _CLUSTER_MARGIN_BOTTOM,
+            _CLUSTER_GAP_ABOVE_STATUS,
+            _CLUSTER_GAP_AFTER_BOX1,
+            _CLUSTER_NARROW_PX,
+            _CLUSTER_SCALE,
             _CLUSTER_VB,
+            _cluster_wh,
             _cluster_xy,
+            KeyboardMode,
+            open_keyboard,
+            render_keyboard_bgra,
         )
 
         x, y = _cluster_xy()
-        bottom = y + _CLUSTER_VB[3]
-        plate_bottom = menu_plate_chrome_bottom()
-        self.assertGreaterEqual(y, SETTINGS_MAIN_ZONES[2].y - 1)
-        self.assertLessEqual(bottom, plate_bottom - 8)
-        self.assertGreaterEqual(bottom, plate_bottom - _CLUSTER_MARGIN_BOTTOM - 2)
+        _cw, ch = _cluster_wh()
+        box = dual_slot_design(DUAL_SLOT_A)
+        box1_bottom = box[1] + box[3]
+        track_top = NOW_PLAYING_ZONES[5].y + STATUS_BAR_TRACK[1]
+        band_top = box1_bottom + _CLUSTER_GAP_AFTER_BOX1
+        band_bottom = track_top - _CLUSTER_GAP_ABOVE_STATUS
+        mid = band_top + (band_bottom - band_top - ch) * 0.5
+        self.assertAlmostEqual(y, mid, delta=2)
+        self.assertGreater(y, box1_bottom)
+        bottom = y + ch
+        self.assertLessEqual(bottom, track_top - 4)
+        self.assertAlmostEqual(_CLUSTER_VB[2] * _CLUSTER_SCALE, _CLUSTER_VB[2] - _CLUSTER_NARROW_PX, delta=0.5)
+
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        kb = open_keyboard(target="location", assets_dir=assets)
+        self.assertEqual(kb.mode, KeyboardMode.QWERTY_UPPER)
+        frame = render_keyboard_bgra(kb, assets_dir=assets)
+        zx, zy, zw, zh = (
+            int(round(NOW_PLAYING_ZONES[5].x)),
+            int(round(track_top)),
+            int(round(NOW_PLAYING_ZONES[5].w)),
+            int(round(STATUS_BAR_TRACK[3])),
+        )
+        self.assertEqual(int(frame[zy : zy + zh, zx : zx + zw, 3].max()), 0)
+        lit = np.where(frame[:, :, 3] > 10)
+        self.assertGreater(int(lit[1].size), 0)
+        plate_l = int(round(MENU_PLATE_XYWH[0]))
+        plate_r = int(round(MENU_PLATE_XYWH[0] + MENU_PLATE_XYWH[2]))
+        self.assertGreaterEqual(int(lit[1].min()) - plate_l, 6)
+        self.assertGreaterEqual(plate_r - int(lit[1].max()), 6)
+
+    def test_keyboard_focus_reuse_matches_full_raster(self) -> None:
+        from pigeon.widgets.settings_keyboard import (
+            KeyboardMode,
+            clear_keyboard_render_caches,
+            keyboard_overlay_cached,
+            open_keyboard,
+            render_keyboard_bgra,
+            warm_keyboard_idle,
+        )
+
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        clear_keyboard_render_caches()
+        kb = open_keyboard(target="network", assets_dir=assets)
+        self.assertEqual(kb.mode, KeyboardMode.QWERTY_LOWER)
+        first = render_keyboard_bgra(kb, assets_dir=assets)
+        again = render_keyboard_bgra(kb, assets_dir=assets)
+        self.assertTrue(np.array_equal(first, again))
+        warm_keyboard_idle(kb, assets_dir=assets)
+        kb.navigate(forward=True)
+        neighbor = render_keyboard_bgra(kb, assets_dir=assets)
+        self.assertFalse(np.array_equal(first, neighbor))
+        neighbor_again = render_keyboard_bgra(kb, assets_dir=assets)
+        self.assertTrue(np.array_equal(neighbor, neighbor_again))
+        self.assertTrue(keyboard_overlay_cached(kb, assets_dir=assets))
+        kb.navigate(forward=False)
+        back = render_keyboard_bgra(kb, assets_dir=assets)
+        self.assertTrue(np.array_equal(first, back))
 
     def test_keyboard_hides_zones_2_to_4(self) -> None:
         from pigeon.widgets.main_settings import MainSettingsState

@@ -55,6 +55,18 @@ class ZoneGeometryTests(unittest.TestCase):
         self.assertNotIn(6, enabled)
         self.assertNotIn(8, enabled)
 
+    def test_zone6_and_zone7_span_portrait_pairs(self) -> None:
+        z6 = NOW_PLAYING_ZONES[6]
+        z7 = NOW_PLAYING_ZONES[7]
+        self.assertAlmostEqual(z6.x, NOW_PLAYING_ZONES[1].x)
+        self.assertAlmostEqual(z6.w, 793.0)
+        self.assertEqual(z6.restrictions, (1, 2, 8))
+        self.assertAlmostEqual(z7.x, NOW_PLAYING_ZONES[2].x)
+        self.assertAlmostEqual(z7.w, 793.0)
+        self.assertEqual(z7.restrictions, (2, 3, 8))
+        self.assertEqual(z6.h, NOW_PLAYING_ZONES[1].h)
+        self.assertEqual(z7.h, NOW_PLAYING_ZONES[1].h)
+
 
 class DisplayFitTests(unittest.TestCase):
     def test_wider_display_scales_by_height(self) -> None:
@@ -413,6 +425,48 @@ class NowPlayingFrameTests(unittest.TestCase):
         green = (roi[:, :, 1] > 200) & (roi[:, :, 0] < 40) & (roi[:, :, 2] < 40)
         self.assertGreater(int(green.sum()), 80)
 
+    def test_16x9_poster_overrides_prefs_into_zone7(self) -> None:
+        from pigeon.np_layout import DEFAULT_16X9_POSTER_ZONE
+        from pigeon.widgets.view_circles import ViewCirclesWidget, _poster_geometry
+
+        _force_default_np_zones()
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        widget = ViewCirclesWidget(assets_dir=assets)
+        landscape = np.full((90, 160, 3), (0, 255, 0), dtype=np.uint8)
+        widget.update_state(
+            progress=0.2,
+            elapsed_text="0:10",
+            remaining_text="-1:00",
+            volume_text="",
+            has_now_playing=True,
+            has_position=True,
+            content_active=True,
+            content_mode="video",
+            service_name="YouTube",
+            poster_bgra=landscape,
+        )
+        self.assertEqual(DEFAULT_16X9_POSTER_ZONE, 7)
+        self.assertEqual(widget._poster_zone(), 7)
+        self.assertEqual(
+            widget._assignments(),
+            ("clock", "", "", "", "status_bar"),
+        )
+        frame = widget.bgra_frame()
+        self.assertIsNotNone(frame)
+        assert frame is not None
+        px, py, pw, ph, _prx = _poster_geometry("video", zone=7)
+        self.assertAlmostEqual(pw / float(ph), 16.0 / 9.0, places=2)
+        roi = frame[
+            py + ph // 3 : py + 2 * ph // 3,
+            px + pw // 3 : px + 2 * pw // 3,
+        ]
+        green = (roi[:, :, 1] > 200) & (roi[:, :, 0] < 40) & (roi[:, :, 2] < 40)
+        self.assertGreater(int(green.sum()), 80)
+        portrait = _poster_geometry("video", zone=2)
+        # Default zone-2 2×3 slot is inside zone 7, but the 16×9 frame is
+        # shorter; the 2×3 top inset should not be the 16×9 home.
+        self.assertNotEqual((px, py, pw, ph), portrait[:4])
+
     def test_settings_main_keeps_np_status_bar_gate(self) -> None:
         from pigeon.widgets.view_circles import settings_main_keeps_np_status_bar
 
@@ -494,6 +548,11 @@ class ZoneWidgetAssetTests(unittest.TestCase):
         self.assertTrue((assets / "widget_np_04_cast_info.svg").is_file())
         self.assertTrue((assets / "widget_np_05_cast_info.svg").is_file())
         self.assertTrue((assets / "widget_np_05_status_bar.svg").is_file())
+        self.assertEqual(widget_filename("poster_16x9", 6), "widget_np_06_16x9.svg")
+        self.assertEqual(widget_filename("poster_16x9", 7), "widget_np_07_16x9.svg")
+        self.assertEqual(widget_filename("poster_16x9"), "widget_np_07_16x9.svg")
+        self.assertTrue((assets / "widget_np_06_16x9.svg").is_file())
+        self.assertTrue((assets / "widget_np_07_16x9.svg").is_file())
 
 
 class DefaultZoneWidgetTests(unittest.TestCase):
@@ -552,6 +611,178 @@ class VolumeReadoutShiftTests(unittest.TestCase):
             (VOLUME_SCALE_LOCAL[1] + dy) - (VOLUME_VALUE_LOCAL[1] + dy),
             VOLUME_SCALE_LOCAL[1] - VOLUME_VALUE_LOCAL[1],
         )
+
+
+class SixteenByNinePosterTests(unittest.TestCase):
+    def test_youtube_and_landscape_art_request_16x9(self) -> None:
+        from pigeon.np_layout import wants_16x9_poster
+
+        portrait = np.zeros((80, 54, 3), dtype=np.uint8)
+        landscape = np.zeros((90, 160, 3), dtype=np.uint8)
+        self.assertTrue(wants_16x9_poster(service_name="YouTube"))
+        self.assertTrue(wants_16x9_poster(poster_bgra=landscape))
+        self.assertFalse(wants_16x9_poster(service_name="Peacock", poster_bgra=portrait))
+        self.assertFalse(
+            wants_16x9_poster(service_name="YouTube", content_mode="music")
+        )
+
+    def test_zone7_override_keeps_clock_drops_volume(self) -> None:
+        from pigeon.np_layout import apply_16x9_poster_override
+
+        self.assertEqual(
+            apply_16x9_poster_override(
+                ("clock", "poster", "volume", "cast_info", "status_bar")
+            ),
+            ("clock", "", "", "cast_info", "status_bar"),
+        )
+
+    def test_zone7_override_relocates_clock_from_zone3(self) -> None:
+        from pigeon.np_layout import apply_16x9_poster_override
+
+        self.assertEqual(
+            apply_16x9_poster_override(
+                ("poster", "volume", "clock", "cast_info", "status_bar")
+            ),
+            ("clock", "", "", "cast_info", "status_bar"),
+        )
+
+    def test_landscape_art_uses_zone7_without_youtube(self) -> None:
+        from pigeon.widgets.view_circles import ViewCirclesWidget
+
+        _force_default_np_zones()
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        widget = ViewCirclesWidget(assets_dir=assets)
+        landscape = np.full((90, 160, 3), (0, 255, 0), dtype=np.uint8)
+        widget.update_state(
+            progress=0.2,
+            elapsed_text="0:10",
+            remaining_text="-1:00",
+            volume_text="",
+            has_now_playing=True,
+            has_position=True,
+            content_active=True,
+            content_mode="video",
+            service_name="Peacock",
+            poster_bgra=landscape,
+        )
+        self.assertEqual(widget._poster_zone(), 7)
+
+    def test_youtube_forces_zone7_even_with_portrait_art(self) -> None:
+        from pigeon.widgets.view_circles import ViewCirclesWidget
+
+        _force_default_np_zones()
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        widget = ViewCirclesWidget(assets_dir=assets)
+        portrait = np.full((80, 54, 3), (0, 255, 0), dtype=np.uint8)
+        widget.update_state(
+            progress=0.2,
+            elapsed_text="0:10",
+            remaining_text="-1:00",
+            volume_text="",
+            has_now_playing=True,
+            has_position=True,
+            content_active=True,
+            content_mode="video",
+            service_name="YouTube",
+            poster_bgra=portrait,
+        )
+        self.assertEqual(widget._poster_zone(), 7)
+
+    def test_16x9_slot_is_sixteen_by_nine(self) -> None:
+        from pigeon.np_layout import POSTER_16X9_LOCAL
+
+        _w, _h = POSTER_16X9_LOCAL[2], POSTER_16X9_LOCAL[3]
+        self.assertAlmostEqual(_w / _h, 16.0 / 9.0, places=4)
+
+
+class EmptyWidgetTests(unittest.TestCase):
+    def test_idle_now_playing_fills_screen_with_clock(self) -> None:
+        from datetime import datetime
+
+        from pigeon.widgets.view_circles import (
+            ViewCirclesWidget,
+            _fallback_base_bgra,
+            _layout_is_fullscreen_clock,
+            _paste_patch_bgra,
+            render_centered_clock_widget_bgra,
+        )
+
+        _force_default_np_zones()
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        widget = ViewCirclesWidget(assets_dir=assets)
+        widget.update_state(
+            progress=0.0,
+            elapsed_text="",
+            remaining_text="",
+            volume_text="",
+            has_now_playing=True,
+            has_position=False,
+            content_active=False,
+            content_mode="video",
+            missing_art=True,
+        )
+        self.assertTrue(_layout_is_fullscreen_clock(widget._assignments()))
+        frozen = datetime(2026, 8, 28, 17, 14, 32)
+        widget._clock_now_for_display = lambda: frozen  # type: ignore[method-assign]
+        widget.clear_cache()
+        got = widget.bgra_frame()
+        self.assertIsNotNone(got)
+        clock = render_centered_clock_widget_bgra(assets_dir=assets, now=frozen)
+        expected = _fallback_base_bgra()
+        _paste_patch_bgra(expected, clock, 0, 0)
+        self.assertEqual(got.shape, expected.shape)
+        self.assertTrue(np.array_equal(got, expected))
+
+    def test_missing_poster_does_not_occupy_a_zone(self) -> None:
+        from pigeon.widgets.view_circles import (
+            ViewCirclesWidget,
+            _layout_is_fullscreen_clock,
+        )
+
+        _force_default_np_zones()
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        widget = ViewCirclesWidget(assets_dir=assets)
+        widget.update_state(
+            progress=0.2,
+            elapsed_text="0:10",
+            remaining_text="-1:00",
+            volume_text="-22.5 dB",
+            has_now_playing=True,
+            has_position=True,
+            content_active=True,
+            content_mode="video",
+            missing_art=True,
+            service_name="YouTube",
+        )
+        self.assertIsNone(widget._poster_zone())
+        self.assertNotIn("poster", widget._assignments())
+        self.assertFalse(_layout_is_fullscreen_clock(widget._assignments()))
+
+    def test_populated_poster_keeps_zoned_clock(self) -> None:
+        from pigeon.widgets.view_circles import (
+            ViewCirclesWidget,
+            _layout_is_fullscreen_clock,
+        )
+
+        _force_default_np_zones()
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        widget = ViewCirclesWidget(assets_dir=assets)
+        poster = np.full((80, 54, 3), 40, dtype=np.uint8)
+        widget.update_state(
+            progress=0.2,
+            elapsed_text="0:10",
+            remaining_text="-1:00",
+            volume_text="-22.5 dB",
+            has_now_playing=True,
+            has_position=True,
+            content_active=True,
+            content_mode="video",
+            poster_bgra=poster,
+            service_name="Peacock",
+        )
+        self.assertFalse(_layout_is_fullscreen_clock(widget._assignments()))
+        self.assertEqual(widget._assignments()[0], "clock")
+        self.assertEqual(widget._poster_zone(), 2)
 
 
 if __name__ == "__main__":

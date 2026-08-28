@@ -71,6 +71,29 @@ POSTER_2X3_LOCAL = (42.68, 6.34, 315.26, 472.90, 15.98)
 # 1×1 album mask.
 POSTER_1X1_LOCAL = (42.69, 85.16, 315.26, 315.26, 26.47)
 
+# 16×9 poster across zone 6 (zones 1+2) or zone 7 (zones 2+3). Default live
+# placement is zone 7. Side insets match 2×3 so the landscape frame clears a
+# surviving portrait clock in zone 1. Corner radius follows widget_np_0*_16x9.
+DEFAULT_16X9_POSTER_ZONE = 7
+POSTER_16X9_ASPECT_MIN = 1.4  # wider than 4:3 → treat as landscape/16×9
+_POSTER_16X9_INSET_L = POSTER_2X3_LOCAL[0]
+_POSTER_16X9_INSET_R = _ZONE_PORTRAIT_W - POSTER_2X3_LOCAL[0] - POSTER_2X3_LOCAL[2]
+POSTER_16X9_VIEW_W = float(NOW_PLAYING_ZONES[6].w)
+POSTER_16X9_VIEW_H = float(NOW_PLAYING_ZONES[6].h)
+_POSTER_16X9_W = POSTER_16X9_VIEW_W - _POSTER_16X9_INSET_L - _POSTER_16X9_INSET_R
+_POSTER_16X9_H = _POSTER_16X9_W * 9.0 / 16.0
+_POSTER_16X9_Y = (POSTER_16X9_VIEW_H - _POSTER_16X9_H) / 2.0
+# 8px radius on the 267×150 widget art → ~21.3px at the 16×9 slot width.
+_POSTER_16X9_RX = 8.0 * (_POSTER_16X9_W / 267.0)
+POSTER_16X9_LOCAL = (
+    _POSTER_16X9_INSET_L,
+    _POSTER_16X9_Y,
+    _POSTER_16X9_W,
+    _POSTER_16X9_H,
+    _POSTER_16X9_RX,
+)
+_16X9_RELOCATE_PRIORITY = ("clock", "volume", "audio_levels", "now_playing", "cast_info")
+
 # Cast text baselines in 399×488 viewBox (actor then character, rows 1–5).
 CAST_LOCAL_ROWS: tuple[tuple[float, float, float], ...] = (
     (93.5, 42.34, 75.82),
@@ -182,6 +205,9 @@ WIDGET_FILENAMES: dict[str, str] = {
     "play": "widget_np_01-02-03_play.svg",
     "poster_2x3": "widget_np_01-02-03_poster_2x3.svg",
     "poster_1x1": "widget_np_01-02-03_poster_1x1.svg",
+    "poster_16x9": "widget_np_07_16x9.svg",
+    "poster_16x9_z6": "widget_np_06_16x9.svg",
+    "poster_16x9_z7": "widget_np_07_16x9.svg",
 }
 
 
@@ -208,6 +234,10 @@ def widget_filename(widget_key: str, zone: int | None = None) -> str:
         return WIDGET_FILENAMES["cast_info_z5"]
     if key in ("status_bar", "now_playing"):
         return WIDGET_FILENAMES["status_bar"]
+    if key == "poster_16x9":
+        if z == 6:
+            return WIDGET_FILENAMES["poster_16x9_z6"]
+        return WIDGET_FILENAMES["poster_16x9_z7"]
     return WIDGET_FILENAMES.get(key, "")
 
 
@@ -246,6 +276,90 @@ def occupied_zone_indexes(assignments: tuple[str, ...] | list[str]) -> set[int]:
         if str(name or "").strip():
             out.add(i + 1)
     return out
+
+
+def service_requests_16x9_poster(service_name: str | None) -> bool:
+    """True when the foreground app should show landscape/16×9 poster art (YouTube)."""
+    return "youtube" in str(service_name or "").strip().lower()
+
+
+def poster_image_is_16x9(poster_bgra: np.ndarray | None) -> bool:
+    """True when artwork is landscape (wider than ``POSTER_16X9_ASPECT_MIN``)."""
+    if poster_bgra is None:
+        return False
+    arr = np.asarray(poster_bgra)
+    if arr.ndim < 2 or arr.size == 0:
+        return False
+    h, w = int(arr.shape[0]), int(arr.shape[1])
+    if h < 1 or w < 1:
+        return False
+    return (w / float(h)) >= float(POSTER_16X9_ASPECT_MIN)
+
+
+def wants_16x9_poster(
+    *,
+    service_name: str | None = None,
+    poster_bgra: np.ndarray | None = None,
+    content_mode: str | None = None,
+) -> bool:
+    """Whether live now-playing should use the zone 6/7 16×9 poster widget."""
+    mode = str(content_mode or "video").strip().lower()
+    if mode == "music":
+        return False
+    return service_requests_16x9_poster(service_name) or poster_image_is_16x9(
+        poster_bgra
+    )
+
+
+def apply_16x9_poster_override(
+    assignments: tuple[str, ...] | list[str],
+    *,
+    zone: int = DEFAULT_16X9_POSTER_ZONE,
+) -> tuple[str, str, str, str, str]:
+    """Runtime layout: 16×9 poster occupies zone 6 or 7; prefs are not persisted.
+
+    Zone 7 (default) spans portrait slots 2+3. Zone 6 spans 1+2. The portrait
+    ``poster`` assignment is removed. Other widgets displaced by the wide slot
+    move into remaining empty portrait columns (clock before volume).
+    """
+    z = int(zone)
+    if z not in (6, 7):
+        z = DEFAULT_16X9_POSTER_ZONE
+    zones = [str(n or "").strip() for n in list(assignments)[:5]]
+    while len(zones) < 5:
+        zones.append("")
+    spec = NOW_PLAYING_ZONES.get(z)
+    blocked_portrait = {
+        int(i) for i in (spec.restrictions if spec is not None else ()) if 1 <= int(i) <= 3
+    }
+    displaced: list[str] = []
+    for i, name in enumerate(zones):
+        if not name:
+            continue
+        if name == "poster":
+            zones[i] = ""
+            continue
+        if (i + 1) in blocked_portrait:
+            displaced.append(name)
+            zones[i] = ""
+    empty_portrait = [
+        i for i in range(3) if not zones[i] and (i + 1) not in blocked_portrait
+    ]
+    seen = {n for n in zones if n}
+
+    def _prio(name: str) -> int:
+        try:
+            return _16X9_RELOCATE_PRIORITY.index(name)
+        except ValueError:
+            return len(_16X9_RELOCATE_PRIORITY)
+
+    for name in sorted(displaced, key=_prio):
+        if name in seen or not empty_portrait:
+            continue
+        i = empty_portrait.pop(0)
+        zones[i] = name
+        seen.add(name)
+    return (zones[0], zones[1], zones[2], zones[3], zones[4])
 
 
 def apply_zone_restrictions(occupied: set[int]) -> set[int]:

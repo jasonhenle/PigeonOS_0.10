@@ -405,20 +405,43 @@ def _media_type_is_music(media_type: object) -> bool:
     return mt == "music" or mt.endswith(".music")
 
 
+def _metadata_is_youtube(metadata: dict[str, object] | None) -> bool:
+    """True when now-playing metadata is the YouTube app (16×9 thumbnails)."""
+    if not isinstance(metadata, dict):
+        return False
+    try:
+        from pigeon.streaming_service_badges import is_youtube_streaming_service
+
+        return bool(
+            is_youtube_streaming_service(
+                app_name=str(metadata.get("app_name") or ""),
+                app_id=str(metadata.get("app_id") or ""),
+            )
+        )
+    except Exception:
+        blob = f"{metadata.get('app_name') or ''} {metadata.get('app_id') or ''}".lower()
+        return "youtube" in blob
+
+
 async def _attach_music_artwork_bytes(atv, metadata: dict[str, object]) -> dict[str, object]:
-    """Best-effort: attach ``artwork_bytes`` when metadata is Music.
+    """Best-effort: attach ``artwork_bytes`` for Music covers or YouTube 16×9 thumbs.
 
     Uses ``await atv.metadata.artwork()``. Failures are swallowed — caller still
     gets title/artist/album. Artwork bytes are JPEG/PNG raw; decode at the host.
     """
     if not isinstance(metadata, dict):
         return metadata
-    if not _media_type_is_music(metadata.get("media_type")):
+    is_music = _media_type_is_music(metadata.get("media_type"))
+    is_youtube = _metadata_is_youtube(metadata)
+    if not is_music and not is_youtube:
         return metadata
     if metadata.get("artwork_bytes"):
         return metadata
     try:
-        art = await atv.metadata.artwork(width=400, height=400)
+        if is_youtube and not is_music:
+            art = await atv.metadata.artwork(width=1280, height=720)
+        else:
+            art = await atv.metadata.artwork(width=400, height=400)
     except Exception:
         return metadata
     if art is None:

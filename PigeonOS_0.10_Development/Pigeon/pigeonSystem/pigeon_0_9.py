@@ -2137,6 +2137,9 @@ def main() -> int:
             # Music album art from pyatv ``metadata.artwork()`` (BGRA + track key).
             "music_artwork_bgra": None,
             "music_artwork_key": None,
+            # YouTube (and other 16×9) thumbs from pyatv ``metadata.artwork()``.
+            "video_artwork_bgra": None,
+            "video_artwork_key": None,
             # After no-match / exhausted error-flag retries: stop empty-display poll respawn
             # and show "?" in the circles 2×3 poster slot.
             "tmdb_missing_art": False,
@@ -3640,6 +3643,9 @@ def main() -> int:
                     or apple_tv_auto_state.get("pending_tmdb")
                 )
                 missing_art = bool(apple_tv_auto_state.get("tmdb_missing_art"))
+                if _vv_is_youtube():
+                    fetch_busy = False
+                    missing_art = circles_poster_bgra is None
                 if view_circles_widget.update_state(
                     progress=progress,
                     elapsed_text=played_text,
@@ -4298,6 +4304,20 @@ def main() -> int:
             apple_tv_auto_state["music_artwork_bgra"] = None
             apple_tv_auto_state["music_artwork_key"] = None
 
+        def _clear_video_artwork_cache() -> None:
+            """Drop cached pyatv YouTube / 16×9 artwork."""
+            if (
+                apple_tv_auto_state.get("video_artwork_bgra") is None
+                and apple_tv_auto_state.get("video_artwork_key") is None
+            ):
+                return
+            apple_tv_auto_state["video_artwork_bgra"] = None
+            apple_tv_auto_state["video_artwork_key"] = None
+
+        def _clear_playback_artwork_caches() -> None:
+            _clear_music_artwork_cache()
+            _clear_video_artwork_cache()
+
         def _music_artwork_track_key(md: dict[str, object]) -> str:
             return "|".join(
                 (
@@ -4328,32 +4348,61 @@ def main() -> int:
             return None
 
         def _store_music_artwork_from_metadata(md: dict[str, object] | None) -> None:
-            """Decode/store pyatv artwork bytes for Music; clear when not music."""
-            if not isinstance(md, dict):
-                _clear_music_artwork_cache()
+            """Decode/store pyatv artwork for Music covers or YouTube 16×9 thumbs."""
+            if not isinstance(md, dict) or _atv_metadata_is_content_idle(md):
+                _clear_playback_artwork_caches()
                 return
             mt = str(md.get("media_type") or "").strip().lower()
             is_music = mt == "music" or mt.endswith(".music")
-            if not is_music or _atv_metadata_is_content_idle(md):
-                _clear_music_artwork_cache()
-                return
+            is_youtube = False
+            try:
+                from pigeon.streaming_service_badges import is_youtube_streaming_service
+
+                is_youtube = bool(
+                    is_youtube_streaming_service(
+                        app_name=str(md.get("app_name") or ""),
+                        app_id=str(md.get("app_id") or ""),
+                    )
+                )
+            except Exception:
+                blob = f"{md.get('app_name') or ''} {md.get('app_id') or ''}".lower()
+                is_youtube = "youtube" in blob
             track_key = _music_artwork_track_key(md)
             art_bytes = md.get("artwork_bytes")
             bgra = _decode_artwork_bytes_bgra(art_bytes)
-            prev_key = apple_tv_auto_state.get("music_artwork_key")
-            if bgra is not None:
-                apple_tv_auto_state["music_artwork_bgra"] = bgra
-                apple_tv_auto_state["music_artwork_key"] = track_key
+            if is_music:
+                _clear_video_artwork_cache()
+                prev_key = apple_tv_auto_state.get("music_artwork_key")
+                if bgra is not None:
+                    apple_tv_auto_state["music_artwork_bgra"] = bgra
+                    apple_tv_auto_state["music_artwork_key"] = track_key
+                    return
+                if track_key != prev_key:
+                    apple_tv_auto_state["music_artwork_bgra"] = None
+                    apple_tv_auto_state["music_artwork_key"] = track_key
                 return
-            # Track changed without artwork this poll — drop stale cover.
-            if track_key != prev_key:
-                apple_tv_auto_state["music_artwork_bgra"] = None
-                apple_tv_auto_state["music_artwork_key"] = track_key
+            if is_youtube:
+                _clear_music_artwork_cache()
+                prev_key = apple_tv_auto_state.get("video_artwork_key")
+                if bgra is not None:
+                    apple_tv_auto_state["video_artwork_bgra"] = bgra
+                    apple_tv_auto_state["video_artwork_key"] = track_key
+                    return
+                if track_key != prev_key:
+                    apple_tv_auto_state["video_artwork_bgra"] = None
+                    apple_tv_auto_state["video_artwork_key"] = track_key
+                return
+            _clear_playback_artwork_caches()
 
         def _circles_poster_bgra() -> np.ndarray | None:
             """Poster slot for view_circles — poster art only (no backdrop fill)."""
             if _vv_is_music():
                 bgra = apple_tv_auto_state.get("music_artwork_bgra")
+                if isinstance(bgra, np.ndarray) and bgra.size > 0:
+                    return bgra
+                return None
+            if _vv_is_youtube():
+                bgra = apple_tv_auto_state.get("video_artwork_bgra")
                 if isinstance(bgra, np.ndarray) and bgra.size > 0:
                     return bgra
                 return None
@@ -4507,6 +4556,29 @@ def main() -> int:
             if not mt:
                 return False
             return mt == "music" or mt.endswith(".music")
+
+        def _vv_is_youtube() -> bool:
+            """True when the foreground streaming app is YouTube."""
+            try:
+                from pigeon.streaming_service_badges import is_youtube_streaming_service
+            except Exception:
+                is_youtube_streaming_service = None  # type: ignore[assignment]
+            sb = streaming_badge_state
+            label = str(sb.get("label") or "").strip()
+            app_name = ""
+            app_id = ""
+            lm = apple_tv_auto_state.get("last_metadata")
+            if isinstance(lm, dict):
+                app_name = str(lm.get("app_name") or "")
+                app_id = str(lm.get("app_id") or "")
+            if is_youtube_streaming_service is not None:
+                return bool(
+                    is_youtube_streaming_service(
+                        app_name=app_name, app_id=app_id, label=label
+                    )
+                )
+            blob = f"{label} {app_name} {app_id}".lower()
+            return "youtube" in blob
 
         def _vv_music_track_title() -> str:
             """Return the preferred Music track title for text rendering.
@@ -7225,13 +7297,11 @@ def main() -> int:
         ) -> None:
             """TMDb search + download + poster pipeline on a worker thread.
 
-            Short-circuits for MediaType.Music: on viewOne.audioContent the
-            only TT-rect substitute we render is the two-line text patch
-            (track title + "Artist – Album"), so there is no consumer for a
-            TMDb movie/TV backdrop or title treatment. Skipping the fetch
-            here also avoids ~1–3 s of background network work per track
-            change plus the misleading retry-log entries that a music title
-            would otherwise generate against a TV/movie-only index.
+            Short-circuits for MediaType.Music and YouTube. Music uses the
+            two-line text patch (track title + "Artist – Album") instead of
+            TMDb. YouTube uses pyatv 16×9 thumbnail art in ``widget_np_07_16x9``.
+            Skipping the fetch also avoids ~1–3 s of background network work
+            plus misleading retry-log entries against a TV/movie-only index.
 
             Only one worker runs at a time. If a fetch is already in flight,
             the latest request is stored in ``pending_tmdb`` and started when
@@ -7244,13 +7314,15 @@ def main() -> int:
 
             del force  # kept for call-site compat; queueing replaces concurrent force
 
-            if _vv_is_music():
+            if _vv_is_music() or _vv_is_youtube():
                 # Clear any prior fetch breadcrumbs so the debug view doesn't
                 # show stale values carried over from the previous track/video.
                 apple_tv_auto_state["last_tmdb_fetch_input"] = None
                 apple_tv_auto_state["last_tmdb_fetch_refined"] = None
                 apple_tv_auto_state["last_tmdb_fetch_prefer"] = None
                 apple_tv_auto_state["pending_tmdb"] = None
+                if _vv_is_youtube():
+                    _clear_tmdb_missing_art()
                 return
 
             try:
@@ -11382,7 +11454,7 @@ def main() -> int:
                 # identity so the next title is not suppressed as "same tmdb_key".
                 apple_tv_auto_state["tmdb_key"] = None
                 apple_tv_auto_state["pending_tmdb"] = None
-                _clear_music_artwork_cache()
+                _clear_playback_artwork_caches()
                 clk = apple_tv_playback_clock
                 clk["has_sync"] = False
                 clk["playing"] = False
@@ -11406,7 +11478,7 @@ def main() -> int:
             apple_tv_auto_state["last_tmdb_fetch_input"] = None
             apple_tv_auto_state["last_tmdb_fetch_refined"] = None
             apple_tv_auto_state["last_tmdb_fetch_prefer"] = None
-            _clear_music_artwork_cache()
+            _clear_playback_artwork_caches()
             lm = apple_tv_auto_state.get("last_metadata")
             if isinstance(lm, dict):
                 lm["query"] = ""

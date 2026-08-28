@@ -128,5 +128,15 @@ class WatchProviderRankingTests(unittest.TestCase):
         )
 
 
+class YoutubeServiceTests(unittest.TestCase):
+    def test_youtube_app_and_bundle_match(self) -> None:
+        from pigeon.streaming_service_badges import is_youtube_streaming_service
+
+        self.assertTrue(is_youtube_streaming_service(app_name="YouTube"))
+        self.assertTrue(is_youtube_streaming_service(app_id="google.ios.youtube"))
+        self.assertTrue(is_youtube_streaming_service(label="YouTube"))
+        self.assertFalse(is_youtube_streaming_service(app_name="Netflix"))
+
+
 if __name__ == "__main__":
     unittest.main()

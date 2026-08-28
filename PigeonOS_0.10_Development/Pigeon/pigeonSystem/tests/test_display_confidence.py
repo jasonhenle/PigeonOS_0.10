@@ -12,7 +12,10 @@ if _SYS_ROOT not in sys.path:
 
 from pigeon import display_confidence as dc  # noqa: E402
 from pigeon import hdmi_ocr as ho  # noqa: E402
-from pigeon.widgets.view_circles import _effective_zone_widgets  # noqa: E402
+from pigeon.widgets.view_circles import (  # noqa: E402
+    _effective_zone_widgets,
+    _layout_is_fullscreen_clock,
+)
 
 
 class PlayerMetadataTests(unittest.TestCase):
@@ -223,6 +226,35 @@ class ZoneAdaptTests(unittest.TestCase):
             zone_widgets=("clock", "poster", "volume", "cast_info", "status_bar"),
         )
         self.assertEqual(zones, ("clock", "", "", "", ""))
+        self.assertTrue(_layout_is_fullscreen_clock(zones))
+
+    def test_missing_poster_does_not_leave_an_empty_slot(self) -> None:
+        zones = _effective_zone_widgets(
+            has_position=True,
+            cast_count=0,
+            has_poster=False,
+            poster_16x9=True,
+            zone_widgets=("clock", "poster", "volume", "cast_info", "status_bar"),
+        )
+        self.assertEqual(zones, ("clock", "", "volume", "", "status_bar"))
+        self.assertFalse(_layout_is_fullscreen_clock(zones))
+
+    def test_populated_layout_is_not_fullscreen_clock(self) -> None:
+        zones = _effective_zone_widgets(
+            has_position=True,
+            cast_count=3,
+            zone_widgets=("clock", "poster", "volume", "cast_info", "status_bar"),
+        )
+        self.assertFalse(_layout_is_fullscreen_clock(zones))
+
+    def test_16x9_override_clears_zones_2_and_3(self) -> None:
+        zones = _effective_zone_widgets(
+            has_position=True,
+            cast_count=3,
+            zone_widgets=("clock", "poster", "volume", "cast_info", "status_bar"),
+            poster_16x9=True,
+        )
+        self.assertEqual(zones, ("clock", "", "", "cast_info", "status_bar"))
 
 
 if __name__ == "__main__":
