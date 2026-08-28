@@ -529,6 +529,197 @@ class StatusBarTimecodeTests(unittest.TestCase):
         self.assertEqual(format_status_bar_timecode("LIVE", remaining=True), "LIVE")
 
 
+class StatusBarElapsedTravelTests(unittest.TestCase):
+    def test_elapsed_parks_left_then_rides_the_fill(self) -> None:
+        from pigeon.np_layout import status_bar_elapsed_left_x
+
+        park = 10.0
+        early = status_bar_elapsed_left_x(
+            track_x=70.0,
+            track_w=1000.0,
+            progress=0.0,
+            elapsed_w=80.0,
+            park_x=park,
+        )
+        later = status_bar_elapsed_left_x(
+            track_x=70.0,
+            track_w=1000.0,
+            progress=0.5,
+            elapsed_w=80.0,
+            park_x=park,
+        )
+        self.assertEqual(early, park)
+        self.assertGreater(later, early)
+        self.assertAlmostEqual(later, 70.0 + 500.0 - 80.0)
+
+    def test_service_waits_until_elapsed_clears_it(self) -> None:
+        from pigeon.np_layout import status_bar_service_has_room
+
+        self.assertFalse(
+            status_bar_service_has_room(
+                service_x=10.0, service_w=80.0, elapsed_x=10.0
+            )
+        )
+        self.assertFalse(
+            status_bar_service_has_room(
+                service_x=10.0, service_w=80.0, elapsed_x=100.0
+            )
+        )
+        self.assertTrue(
+            status_bar_service_has_room(
+                service_x=10.0, service_w=80.0, elapsed_x=130.0
+            )
+        )
+
+    def test_early_progress_hides_service_name(self) -> None:
+        from pigeon.np_layout import NOW_PLAYING_ZONES
+        from pigeon.widgets.view_circles import ViewCirclesWidget
+
+        _force_default_np_zones()
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+
+        def _bar(progress: float, service: str) -> np.ndarray:
+            widget = ViewCirclesWidget(assets_dir=assets)
+            widget.update_state(
+                progress=progress,
+                elapsed_text="0:12",
+                remaining_text="-1:00",
+                volume_text="",
+                has_now_playing=True,
+                has_position=True,
+                content_active=True,
+                content_mode="video",
+                service_name=service,
+            )
+            canvas = np.zeros((DESIGN_H, DESIGN_W, 3), dtype=np.uint8)
+            widget.overlay_status_bar(canvas)
+            zx, zy, zw, zh = NOW_PLAYING_ZONES[5].xywh
+            return canvas[zy : zy + zh, zx : zx + zw]
+
+        early_named = _bar(0.0, "peacock")
+        early_blank = _bar(0.0, "")
+        self.assertLess(
+            int(np.abs(early_named.astype(int) - early_blank.astype(int)).max()),
+            8,
+        )
+
+        late_named = _bar(0.85, "peacock")
+        late_blank = _bar(0.85, "")
+        self.assertGreater(
+            int(np.abs(late_named.astype(int) - late_blank.astype(int)).max()),
+            40,
+        )
+
+    def test_elapsed_shifts_right_as_progress_grows(self) -> None:
+        from pigeon.np_layout import NOW_PLAYING_ZONES, STATUS_BAR_SERVICE_LOCAL
+        from pigeon.widgets.view_circles import ViewCirclesWidget
+
+        _force_default_np_zones()
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+
+        def _elapsed_center_x(progress: float) -> float:
+            widget = ViewCirclesWidget(assets_dir=assets)
+            widget.update_state(
+                progress=progress,
+                elapsed_text="12:12",
+                remaining_text="-1:00",
+                volume_text="",
+                has_now_playing=True,
+                has_position=True,
+                content_active=True,
+                content_mode="video",
+                service_name="",
+            )
+            canvas = np.zeros((DESIGN_H, DESIGN_W, 3), dtype=np.uint8)
+            widget.overlay_status_bar(canvas)
+            zx, zy, zw, zh = NOW_PLAYING_ZONES[5].xywh
+            # Time row sits below the track; ignore the grey bar itself.
+            y0 = int(round(STATUS_BAR_SERVICE_LOCAL[1])) - 45
+            band = canvas[zy + y0 : zy + zh, zx : zx + zw]
+            vis = np.any(band > 40, axis=2)
+            xs = np.where(vis.any(axis=0))[0]
+            self.assertGreater(int(xs.size), 0)
+            return float(xs[0])
+
+        self.assertGreater(_elapsed_center_x(0.7), _elapsed_center_x(0.15))
+
+    def test_handoff_alphas_crossfade(self) -> None:
+        from pigeon.np_layout import status_bar_handoff_alphas
+
+        self.assertEqual(status_bar_handoff_alphas(0.0), (1.0, 0.0, 0.0))
+        self.assertEqual(status_bar_handoff_alphas(1.0), (0.0, 1.0, 1.0))
+        parked, service, traveling = status_bar_handoff_alphas(0.4)
+        self.assertAlmostEqual(parked, 0.6)
+        self.assertAlmostEqual(service, 0.4)
+        self.assertAlmostEqual(traveling, 0.4)
+
+    def test_travel_x_is_not_clamped_to_park(self) -> None:
+        from pigeon.np_layout import (
+            status_bar_elapsed_left_x,
+            status_bar_elapsed_travel_x,
+        )
+
+        travel = status_bar_elapsed_travel_x(
+            track_x=70.0, track_w=1000.0, progress=0.0, elapsed_w=80.0
+        )
+        parked = status_bar_elapsed_left_x(
+            track_x=70.0,
+            track_w=1000.0,
+            progress=0.0,
+            elapsed_w=80.0,
+            park_x=10.0,
+        )
+        self.assertLess(travel, parked)
+        self.assertEqual(parked, 10.0)
+
+    def test_handoff_fades_parked_out_and_traveling_in(self) -> None:
+        from pigeon.np_layout import NOW_PLAYING_ZONES, STATUS_BAR_SERVICE_LOCAL
+        from pigeon.widgets.view_circles import ViewCirclesWidget
+
+        _force_default_np_zones()
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+
+        def _time_row(*, handoff: float) -> np.ndarray:
+            widget = ViewCirclesWidget(assets_dir=assets)
+            widget.update_state(
+                progress=0.85,
+                elapsed_text="12:12",
+                remaining_text="-1:00",
+                volume_text="",
+                has_now_playing=True,
+                has_position=True,
+                content_active=True,
+                content_mode="video",
+                service_name="peacock",
+            )
+            widget._bar_handoff_inited = True
+            widget._bar_handoff = float(handoff)
+            widget._bar_handoff_want = float(handoff)
+            canvas = np.zeros((DESIGN_H, DESIGN_W, 3), dtype=np.uint8)
+            widget.overlay_status_bar(canvas)
+            zx, zy, zw, zh = NOW_PLAYING_ZONES[5].xywh
+            y0 = int(round(STATUS_BAR_SERVICE_LOCAL[1])) - 45
+            return canvas[zy + y0 : zy + zh, zx : zx + zw]
+
+        parked = _time_row(handoff=0.0)
+        mid = _time_row(handoff=0.5)
+        done = _time_row(handoff=1.0)
+        # Mid-bar (past the service slot, before remaining) only has the
+        # traveling elapsed once the handoff starts.
+        travel_band_parked = parked[:, 820:980]
+        travel_band_mid = mid[:, 820:980]
+        travel_band_done = done[:, 820:980]
+        self.assertLess(int(travel_band_parked.max()), 20)
+        self.assertGreater(int(travel_band_done.max()), 80)
+        self.assertGreater(int(travel_band_mid.max()), 20)
+        self.assertLess(int(travel_band_mid.max()), int(travel_band_done.max()))
+        # Left slot changes from elapsed to the service name.
+        self.assertGreater(
+            int(np.abs(parked[:, :220].astype(int) - done[:, :220].astype(int)).max()),
+            40,
+        )
+
+
 class ZoneWidgetAssetTests(unittest.TestCase):
     def test_cast_capacity_by_zone(self) -> None:
         from pigeon.np_layout import cast_names_for_zone

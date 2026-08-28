@@ -133,11 +133,16 @@ STATUS_BAR_VIEW_Y0 = 36.5
 # remaining_icon rounded rect in full artboard space, then shifted by VIEW_Y0.
 STATUS_BAR_TRACK = (68.62, 10.16, 1066.81, 65.49, 13.07)
 STATUS_BAR_SERVICE_LOCAL = (3.1, 122.01)
+# Authored mid-bar X is unused: elapsed parks at SERVICE_LOCAL and rides the fill.
 STATUS_BAR_ELAPSED_LOCAL = (574.31, 122.01)
 STATUS_BAR_REMAINING_LOCAL = (1067.28, 122.01)
 STATUS_BAR_PAUSED_LOCAL = (489.05, 58.29)
 STATUS_BAR_TIME_SIZE_PX = 39
 STATUS_BAR_PAUSED_SIZE_PX = 58
+# Gap between the service name and the traveling elapsed readout.
+STATUS_BAR_LABEL_GAP_PX = 24.0
+# Crossfade parked elapsed → service + traveling elapsed.
+STATUS_BAR_HANDOFF_S = 0.45
 
 # Clock widget viewBox + header / digital baselines (widget-local).
 CLOCK_VIEW_W = 400.0
@@ -433,6 +438,68 @@ def design_rect_from_local(
         max(1, int(round(y1 - y0))),
         max(1, int(round(rx * sx))),
     )
+
+
+def status_bar_elapsed_travel_x(
+    *,
+    track_x: float,
+    track_w: float,
+    progress: float,
+    elapsed_w: float,
+    remaining_left_x: float | None = None,
+    gap: float = STATUS_BAR_LABEL_GAP_PX,
+) -> float:
+    """Left edge of elapsed right-aligned to the played leading edge (not parked)."""
+    vis = max(0.0, min(float(track_w), float(progress) * float(track_w)))
+    w = max(0.0, float(elapsed_w))
+    x = float(track_x) + vis - w
+    if remaining_left_x is not None and w > 0.0:
+        x = min(x, float(remaining_left_x) - float(gap) - w)
+    return x
+
+
+def status_bar_elapsed_left_x(
+    *,
+    track_x: float,
+    track_w: float,
+    progress: float,
+    elapsed_w: float,
+    park_x: float,
+    remaining_left_x: float | None = None,
+    gap: float = STATUS_BAR_LABEL_GAP_PX,
+) -> float:
+    """Left edge of elapsed: parked at ``park_x`` until the fill carries it right.
+
+    Elapsed is right-aligned to the played leading edge so it travels with the bar.
+    """
+    x = status_bar_elapsed_travel_x(
+        track_x=track_x,
+        track_w=track_w,
+        progress=progress,
+        elapsed_w=elapsed_w,
+        remaining_left_x=remaining_left_x,
+        gap=gap,
+    )
+    return max(float(park_x), x)
+
+
+def status_bar_service_has_room(
+    *,
+    service_x: float,
+    service_w: float,
+    elapsed_x: float,
+    gap: float = STATUS_BAR_LABEL_GAP_PX,
+) -> bool:
+    """True when traveling elapsed is far enough right for the service name to fit."""
+    if service_w <= 0:
+        return False
+    return float(elapsed_x) >= float(service_x) + float(service_w) + float(gap)
+
+
+def status_bar_handoff_alphas(t: float) -> tuple[float, float, float]:
+    """Opacities for (parked elapsed, service, traveling elapsed). ``t`` is 0..1."""
+    u = max(0.0, min(1.0, float(t)))
+    return (1.0 - u, u, u)
 
 
 def display_fit_scale(display_w: int, display_h: int) -> float:

@@ -55,6 +55,7 @@ from pigeon.np_layout import (
     POSTER_16X9_VIEW_W,
     POSTER_2X3_LOCAL,
     STATUS_BAR_ELAPSED_LOCAL,
+    STATUS_BAR_HANDOFF_S,
     STATUS_BAR_PAUSED_LOCAL,
     STATUS_BAR_PAUSED_SIZE_PX,
     STATUS_BAR_REMAINING_LOCAL,
@@ -85,6 +86,10 @@ from pigeon.np_layout import (
     design_rect_from_local,
     design_xy_from_local,
     is_status_bar_widget,
+    status_bar_elapsed_left_x,
+    status_bar_elapsed_travel_x,
+    status_bar_handoff_alphas,
+    status_bar_service_has_room,
     strip_cast_columns,
     volume_readout_y_shift,
     wants_16x9_poster,
@@ -2131,6 +2136,20 @@ def _text_patch_font(
     return cv2.cvtColor(arr, cv2.COLOR_RGBA2BGRA), tw + pad * 2, th + pad * 2
 
 
+def _fade_bgra(patch: np.ndarray, opacity: float) -> np.ndarray:
+    """Return a copy with alpha multiplied by ``opacity`` (clamped to 0..1)."""
+    if patch is None or patch.size == 0 or patch.ndim < 3 or patch.shape[2] < 4:
+        return patch
+    o = max(0.0, min(1.0, float(opacity)))
+    if o >= 0.999:
+        return patch
+    out = patch.copy()
+    out[:, :, 3] = np.clip(
+        out[:, :, 3].astype(np.float32) * o, 0.0, 255.0
+    ).astype(np.uint8)
+    return out
+
+
 def _paste_patch_bgra(canvas: np.ndarray, patch: np.ndarray, x: int, y: int) -> None:
     if patch is None or patch.size == 0 or canvas is None or canvas.size == 0:
         return
@@ -3048,6 +3067,10 @@ class ViewCirclesWidget:
         self._search_frames: tuple[np.ndarray, ...] | None = None
         self._search_frames_tried = False
         self._last_tick_mono: float | None = None
+        self._bar_handoff = 0.0
+        self._bar_handoff_want = 0.0
+        self._bar_handoff_inited = False
+        self._bar_handoff_mono: float | None = None
         self._spin_sec_phase = 0.0
         self._spin_min_phase = 0.0
         self._spin_hour_phase = 0.0
@@ -3276,13 +3299,41 @@ class ViewCirclesWidget:
             self.clear_cache()
         return changed
 
+    def _advance_status_bar_handoff(self, now: float | None = None) -> bool:
+        """Lerp parked-elapsed → service + traveling elapsed. True if ``t`` changed."""
+        if now is None:
+            now = time.monotonic()
+        want = float(self._bar_handoff_want)
+        cur = float(self._bar_handoff)
+        if self._bar_handoff_mono is None:
+            self._bar_handoff_mono = now
+            return False
+        dt = max(0.0, now - self._bar_handoff_mono)
+        self._bar_handoff_mono = now
+        if abs(cur - want) <= 1e-4:
+            if cur != want:
+                self._bar_handoff = want
+                return True
+            return False
+        step = dt / max(1e-6, float(STATUS_BAR_HANDOFF_S))
+        if cur < want:
+            self._bar_handoff = min(want, cur + step)
+        else:
+            self._bar_handoff = max(want, cur - step)
+        return True
+
     def tick(self) -> None:
+        now = time.monotonic()
+        faded = self._advance_status_bar_handoff(now)
         if not self._state.searching:
             self._last_tick_mono = None
+            if faded:
+                self.clear_cache()
             return
-        now = time.monotonic()
         if self._last_tick_mono is None:
             self._last_tick_mono = now
+            if faded:
+                self.clear_cache()
             return
         dt = max(0.0, now - self._last_tick_mono)
         self._last_tick_mono = now
@@ -3292,7 +3343,7 @@ class ViewCirclesWidget:
         spun = int(round(prev_angle / 10.0)) != int(
             round(self._state.search_angle_deg / 10.0)
         )
-        if spun:
+        if spun or faded:
             self.clear_cache()
 
     def _ensure_search_frames(self) -> tuple[np.ndarray, ...] | None:
@@ -3380,6 +3431,7 @@ class ViewCirclesWidget:
             _format_zone0_date(datetime.now()),
             zone_widgets,
             theme_key,
+            round(self._bar_handoff, 2),
         )
 
     def _svg_chrome_cache_key(self, now: datetime) -> tuple[object, ...]:
@@ -3585,28 +3637,86 @@ class ViewCirclesWidget:
             svc = ""
 
         sx, sy = _bar_xy(STATUS_BAR_SERVICE_LOCAL)
-        ex, ey = _bar_xy(STATUS_BAR_ELAPSED_LOCAL)
-        rx, ry = _bar_xy(STATUS_BAR_REMAINING_LOCAL)
+        _, ey = _bar_xy(STATUS_BAR_ELAPSED_LOCAL)
+        _, ry = _bar_xy(STATUS_BAR_REMAINING_LOCAL)
         size = STATUS_BAR_TIME_SIZE_PX
 
-        def _paste_time(label: str, x: float, y: float, *, right: bool = False) -> int:
+        def _label_patch(label: str) -> tuple[np.ndarray, int, int]:
             if not label:
-                return 0
+                return np.zeros((1, 1, 4), dtype=np.uint8), 0, 0
             if label.upper() == "LIVE":
                 patch, pw, ph = _text_patch_digital7(label, size_px=size)
             else:
-                patch = _matching_hhmm_patch(label, size_px=size, fill_rgb=_COLOR_CHROME_RGB)
+                patch = _matching_hhmm_patch(
+                    label, size_px=size, fill_rgb=_COLOR_CHROME_RGB
+                )
                 ph, pw = patch.shape[:2]
+            return patch, int(pw), int(ph)
+
+        def _paste_patch(
+            patch: np.ndarray,
+            x: float,
+            y: float,
+            *,
+            right: bool = False,
+            opacity: float = 1.0,
+        ) -> None:
+            if opacity <= 0.01:
+                return
+            if opacity < 0.999:
+                patch = _fade_bgra(patch, opacity)
+            if patch.size == 0 or int(patch[:, :, 3].max()) < 8:
+                return
+            ph, pw = patch.shape[:2]
             paste_x = int(round(x - pw)) if right else int(round(x))
             paste_y = int(round(y - ph))
             _paste_patch_bgra(out, patch, paste_x, paste_y)
-            return pw
 
+        et_patch, et_w, _et_h = _label_patch(et)
+        rt_patch, rt_w, _rt_h = _label_patch(rt)
+        svc_patch, svc_w, _svc_h = _label_patch(svc.lower() if svc else "")
+        remaining_left = float(tx + tw) - float(rt_w) if rt_w > 0 else None
+        travel_x = status_bar_elapsed_travel_x(
+            track_x=float(tx),
+            track_w=float(tw),
+            progress=pf,
+            elapsed_w=float(et_w),
+            remaining_left_x=remaining_left,
+        )
         if svc:
-            _paste_time(svc.lower(), sx, sy)
-        _paste_time(et, ex, ey)
+            ready = status_bar_service_has_room(
+                service_x=float(sx),
+                service_w=float(svc_w),
+                elapsed_x=float(travel_x),
+            )
+            want = 1.0 if ready else 0.0
+            self._bar_handoff_want = want
+            if not self._bar_handoff_inited:
+                self._bar_handoff = want
+                self._bar_handoff_inited = True
+            parked_a, svc_a, travel_a = status_bar_handoff_alphas(self._bar_handoff)
+            if parked_a > 0.01:
+                _paste_patch(et_patch, sx, ey, opacity=parked_a)
+            if svc_a > 0.01:
+                _paste_patch(svc_patch, sx, sy, opacity=svc_a)
+            if travel_a > 0.01:
+                _paste_patch(et_patch, travel_x, ey, opacity=travel_a)
+        else:
+            self._bar_handoff_want = 0.0
+            if not self._bar_handoff_inited:
+                self._bar_handoff = 0.0
+                self._bar_handoff_inited = True
+            ex = status_bar_elapsed_left_x(
+                track_x=float(tx),
+                track_w=float(tw),
+                progress=pf,
+                elapsed_w=float(et_w),
+                park_x=float(sx),
+                remaining_left_x=remaining_left,
+            )
+            _paste_patch(et_patch, ex, ey)
         # Remaining is authored near the right; right-align to the track end.
-        _paste_time(rt, float(tx + tw), ry, right=True)
+        _paste_patch(rt_patch, float(tx + tw), ry, right=True)
 
         if st.paused:
             px, py = _bar_xy(STATUS_BAR_PAUSED_LOCAL)
@@ -3974,6 +4084,7 @@ class ViewCirclesWidget:
         bar_zone = configured_status_bar_zone()
         if bar_zone is None:
             return False
+        self._advance_status_bar_handoff()
         layer = np.zeros((int(DESIGN_H), int(DESIGN_W), 4), dtype=np.uint8)
         self._draw_status_bar(layer, zone=int(bar_zone))
         if int(layer[:, :, 3].max()) < 8:
