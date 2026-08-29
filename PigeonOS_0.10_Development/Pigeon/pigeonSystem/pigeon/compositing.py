@@ -67,7 +67,12 @@ def alpha_blend_bgra_over_bgr(base_bgr: np.ndarray, overlay_bgra: np.ndarray) ->
     if int(alpha_u8.min()) == 255:
         return overlay_bgra[:, :, :3].copy()
     if not np.any(alpha_u8):
-        return base_bgr.copy()
+        return base_bgr
+    # Now-playing is composited onto a black canvas — skip the boolean-index blend.
+    if not np.any(base_bgr):
+        a = alpha_u8.astype(np.uint16)
+        rgb = overlay_bgra[:, :, :3].astype(np.uint16)
+        return ((rgb * a[:, :, None] + 127) // 255).astype(np.uint8)
 
     opaque = alpha_u8 == 255
     partial = (alpha_u8 > 0) & (alpha_u8 < 255)

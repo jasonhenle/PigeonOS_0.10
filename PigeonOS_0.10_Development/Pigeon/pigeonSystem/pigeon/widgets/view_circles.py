@@ -1652,6 +1652,10 @@ def _prepare_status_bar_svg(root: ET.Element) -> None:
             _detach_element(root, el)
 
 
+_NAMED_WIDGET_CACHE: dict[tuple[object, ...], np.ndarray] = {}
+_NAMED_WIDGET_CACHE_MAX = 64
+
+
 def _rasterize_named_widget(
     *,
     assets_dir: Path | str | None,
@@ -1666,6 +1670,22 @@ def _rasterize_named_widget(
     path = _now_playing_widget_path(assets_dir, widget_key, zone)
     if not path.is_file():
         return None
+    analog_clock = widget_key == "clock" and _clock_widget_is_analog()
+    cache_key = (
+        str(path),
+        int(dest_w),
+        int(dest_h),
+        int(zone) if zone is not None else -1,
+        widget_key,
+        theme.cache_key,
+        bool(include_play_overlay),
+        now.hour % 12 if analog_clock else -1,
+        int(now.minute) if analog_clock else -1,
+        int(now.second) if analog_clock else -1,
+    )
+    cached = _NAMED_WIDGET_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
     root = _svg_tree_from_path(path)
     if widget_key == "clock":
         if _clock_widget_is_analog():
@@ -1693,6 +1713,9 @@ def _rasterize_named_widget(
     bgra = _decanvas_white_bgra(bgra)
     if widget_key == "clock":
         bgra = _punch_clock_open_ring_white(bgra)
+    while len(_NAMED_WIDGET_CACHE) >= _NAMED_WIDGET_CACHE_MAX:
+        _NAMED_WIDGET_CACHE.pop(next(iter(_NAMED_WIDGET_CACHE)))
+    _NAMED_WIDGET_CACHE[cache_key] = bgra
     return bgra
 
 
@@ -3062,6 +3085,7 @@ class ViewCirclesWidget:
         self._cached_bgra: np.ndarray | None = None
         self._cached_sig: tuple[object, ...] | None = None
         self._svg_chrome_by_key: dict[tuple[object, ...], np.ndarray] = {}
+        self._bar_overlay_layer: np.ndarray | None = None
         self._artwork_blur_bgra: np.ndarray | None = None
         self._artwork_blur_poster_id: int | None = None
         self._search_frames: tuple[np.ndarray, ...] | None = None
@@ -3453,7 +3477,8 @@ class ViewCirclesWidget:
         if h12 == 0:
             h12 = 12
         zone_widgets = self._assignments()
-        # Reuse rasters across hours/days — ticks only depend on h/m/s + mode/pause.
+        # Ticks live in the per-widget raster cache; do not keep 96 full-frame
+        # 1280×800 copies (that was hundreds of MB and a raster every second).
         return (
             str(path),
             mtime,
@@ -3461,7 +3486,6 @@ class ViewCirclesWidget:
             bool(self._state.paused),
             h12,
             int(now.minute),
-            int(now.second),
             10,  # chrome pipeline — settings theme colors
             zone_widgets,
             np_theme_from_settings().cache_key,
@@ -3471,6 +3495,26 @@ class ViewCirclesWidget:
         key = self._svg_chrome_cache_key(now)
         cached = self._svg_chrome_by_key.get(key)
         if cached is not None:
+            # Clock second ticks are per-widget; restamp them onto the minute chrome.
+            analog = _clock_widget_is_analog()
+            if analog:
+                clock_zone = _zone_for_widget(self._assignments(), "clock")
+                if clock_zone is not None:
+                    out = cached.copy()
+                    z = _zone_spec(int(clock_zone))
+                    zx, zy, zw, zh = z.xywh
+                    patch = _rasterize_named_widget(
+                        assets_dir=self._assets_dir,
+                        widget_key="clock",
+                        dest_w=zw,
+                        dest_h=zh,
+                        now=now,
+                        theme=np_theme_from_settings(),
+                        zone=int(clock_zone),
+                    )
+                    if patch is not None and patch.size:
+                        _paste_patch_bgra(out, patch, zx, zy)
+                    return out
             return cached
         try:
             base = render_view_circles_svg_base_bgra(
@@ -3483,10 +3527,7 @@ class ViewCirclesWidget:
             )
         except Exception:
             base = _fallback_base_bgra()
-        # Keep a full minute of second-states (and a bit more) so the Pi doesn't
-        # re-rasterize every tick — slow rasters were causing the second hand to skip.
-        # Evict oldest instead of wiping: a wipe forced a full minute of re-rasters.
-        while len(self._svg_chrome_by_key) > 96:
+        while len(self._svg_chrome_by_key) > 8:
             self._svg_chrome_by_key.pop(next(iter(self._svg_chrome_by_key)))
         self._svg_chrome_by_key[key] = base
         return base
@@ -4085,14 +4126,28 @@ class ViewCirclesWidget:
         if bar_zone is None:
             return False
         self._advance_status_bar_handoff()
-        layer = np.zeros((int(DESIGN_H), int(DESIGN_W), 4), dtype=np.uint8)
-        self._draw_status_bar(layer, zone=int(bar_zone))
-        if int(layer[:, :, 3].max()) < 8:
+        zone = _zone_spec(int(bar_zone))
+        zx, zy, zw, zh = (int(v) for v in zone.xywh)
+        ch, cw = int(canvas_bgr.shape[0]), int(canvas_bgr.shape[1])
+        y0 = max(0, zy)
+        x0 = max(0, zx)
+        y1 = min(ch, zy + zh)
+        x1 = min(cw, zx + zw)
+        if y1 <= y0 or x1 <= x0:
             return False
-        h = min(int(canvas_bgr.shape[0]), int(layer.shape[0]))
-        w = min(int(canvas_bgr.shape[1]), int(layer.shape[1]))
-        roi = canvas_bgr[:h, :w]
-        roi[:] = alpha_blend_bgra_over_bgr(roi, layer[:h, :w])
+        dh, dw = int(DESIGN_H), int(DESIGN_W)
+        layer = self._bar_overlay_layer
+        if layer is None or layer.shape[0] != dh or layer.shape[1] != dw:
+            layer = np.zeros((dh, dw, 4), dtype=np.uint8)
+            self._bar_overlay_layer = layer
+        else:
+            layer[y0:y1, x0:x1] = 0
+        self._draw_status_bar(layer, zone=int(bar_zone))
+        bar = layer[y0:y1, x0:x1]
+        if int(bar[:, :, 3].max()) < 8:
+            return False
+        roi = canvas_bgr[y0:y1, x0:x1]
+        roi[:] = alpha_blend_bgra_over_bgr(roi, bar)
         return True
 
     def bgra_frame(self) -> np.ndarray | None:

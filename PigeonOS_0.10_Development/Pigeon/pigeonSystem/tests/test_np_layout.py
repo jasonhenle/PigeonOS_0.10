@@ -95,6 +95,32 @@ class DisplayFitTests(unittest.TestCase):
         self.assertAlmostEqual(y, 16.0)
 
 
+class ParCompensationTests(unittest.TestCase):
+    def test_pi7_par_fits_800x480_in_one_scale(self) -> None:
+        from pigeon.display_par import OFFICIAL_PI_7_PAR, apply_par_compensation
+
+        src = np.full((DESIGN_H, DESIGN_W, 3), 200, dtype=np.uint8)
+        out = apply_par_compensation(
+            src, display_w=800, display_h=480, par=OFFICIAL_PI_7_PAR
+        )
+        self.assertEqual(out.shape[0], 480)
+        self.assertEqual(out.shape[1], 800)
+        # Height-limited letterbox after the 1/PAR squeeze → pillarbox bars.
+        self.assertLess(int(out[240, 10].max()), 8)
+        self.assertGreater(int(out[240, 400].min()), 150)
+
+    def test_square_par_matches_uniform_letterbox(self) -> None:
+        from pigeon.compositing import scale_uniform_letterbox
+        from pigeon.display_par import apply_par_compensation
+
+        src = np.full((DESIGN_H, DESIGN_W, 3), 90, dtype=np.uint8)
+        src[100:120, 100:140] = 255
+        a = apply_par_compensation(src, display_w=800, display_h=480, par=1.0)
+        b = scale_uniform_letterbox(src, 800, 480)
+        self.assertEqual(a.shape, b.shape)
+        self.assertLess(int(np.abs(a.astype(int) - b.astype(int)).max()), 2)
+
+
 class LegacyMarkTests(unittest.TestCase):
     def test_red_square_top_left(self) -> None:
         img = np.zeros((DESIGN_H, DESIGN_W, 3), dtype=np.uint8)
@@ -515,6 +541,45 @@ class NowPlayingFrameTests(unittest.TestCase):
             & (np.abs(roi[:, :, 0].astype(int) - roi[:, :, 1].astype(int)) < 20)
         )
         self.assertGreater(int(grey.sum()), 200)
+
+    def test_overlay_status_bar_reuse_does_not_wipe_chrome(self) -> None:
+        from pigeon.np_layout import NOW_PLAYING_ZONES
+        from pigeon.widgets.view_circles import ViewCirclesWidget
+
+        _force_default_np_zones()
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        widget = ViewCirclesWidget(assets_dir=assets)
+        widget.update_state(
+            progress=0.4,
+            elapsed_text="12:12",
+            remaining_text="-1:00",
+            volume_text="-22.5 dB",
+            has_now_playing=True,
+            has_position=True,
+            content_active=True,
+            content_mode="video",
+            service_name="peacock",
+        )
+        canvas = np.full((DESIGN_H, DESIGN_W, 3), 40, dtype=np.uint8)
+        self.assertTrue(widget.overlay_status_bar(canvas))
+        self.assertTrue(widget.overlay_status_bar(canvas))
+        zx, zy, _zw, _zh = NOW_PLAYING_ZONES[5].xywh
+        above = canvas[: max(0, zy - 2), :, :]
+        self.assertTrue(np.all(above == 40))
+
+
+class AlphaBlendTests(unittest.TestCase):
+    def test_black_destination_scales_rgb_by_alpha(self) -> None:
+        from pigeon.compositing import alpha_blend_bgra_over_bgr
+
+        base = np.zeros((4, 4, 3), dtype=np.uint8)
+        over = np.zeros((4, 4, 4), dtype=np.uint8)
+        over[:, :, 2] = 200
+        over[:, :, 3] = 128
+        out = alpha_blend_bgra_over_bgr(base, over)
+        expect = (200 * 128 + 127) // 255
+        self.assertEqual(int(out[0, 0, 2]), expect)
+        self.assertEqual(int(out[0, 0, 0]), 0)
 
 
 class StatusBarTimecodeTests(unittest.TestCase):

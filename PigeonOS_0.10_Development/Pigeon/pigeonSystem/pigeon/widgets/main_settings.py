@@ -6223,6 +6223,8 @@ class MainSettingsWidget:
         self._want_prewarm_after_paint: bool = False
         # Avoid repeated full-frame alpha.min() when the current paste is known opaque.
         self._paste_fully_opaque: bool | None = None
+        # True while Left/Right / rotary ticks are coalesced — skip cursor copy.
+        self._nav_scrub: bool = False
         # Warm LAN IP off the first settings paint (hostname/ipconfig can take tens of ms).
         try:
             from pigeon.local_ip import local_ipv4_address
@@ -6637,7 +6639,6 @@ class MainSettingsWidget:
                 str(st.box_pairing.device_name),
             ),
             self._scan_anim_token(),
-            id(st.zone2_tt_bgra) if st.zone2_tt_bgra is not None else 0,
         )
 
     def _keyboard_overlay_sig(self) -> tuple[object, ...] | None:
@@ -6746,37 +6747,11 @@ class MainSettingsWidget:
                 str(st.box_pairing.session_key),
                 str(st.box_pairing.device_name),
             ),
-            id(st.zone2_tt_bgra) if st.zone2_tt_bgra is not None else 0,
         )
 
     def _focus_cache_key(self) -> tuple[object, ...]:
-        st = self._state
-        return (
-            int(st.focus_index) if not st.keyboard_open else -1,
-            int(st.network_picker_row),
-            int(st.box2_devices.row),
-            str(st.box2_devices.arrow),
-            int(st.box3_devices.row),
-            str(st.box3_devices.arrow),
-            int(st.pigeon_focus_index),
-            int(st.preferences_focus_index) if st.show_preferences else -1,
-            str(st.preferences_nav or "") if st.show_preferences else "",
-            int(st.preferences_active_zone) if st.show_preferences else 0,
-            tuple(st.preferences_zone_widgets) if st.show_preferences else (),
-            int(st.ui_color_focus_index) if st.show_ui_color else -1,
-            str(st.ui_color_nav or "") if st.show_ui_color else "",
-            str(st.ui_color_active_class or "") if st.show_ui_color else "",
-            str(st.ui_color_accent_key or "") if st.show_ui_color else "",
-            str(st.ui_color_ui_key or "") if st.show_ui_color else "",
-            str(st.ui_color_button_key or "") if st.show_ui_color else "",
-            int(st.options_focus_index) if st.show_options else -1,
-            bool(st.show_options),
-            tuple(st.options_values.items()) if st.show_options else (),
-            int(st.update_popup_focus_index) if st.show_update_popup else -1,
-            bool(st.show_update_popup),
-            self._scan_anim_token(),
-            id(st.zone2_tt_bgra) if st.zone2_tt_bgra is not None else 0,
-        )
+        """Must match ``_focus_key_for_state`` so off-thread prewarm can hit."""
+        return self._focus_key_for_state(self._state)
 
     def _store_focus_frame(self, frame: np.ndarray) -> None:
         if self._status_bar_animating():
@@ -8695,7 +8670,7 @@ class MainSettingsWidget:
         frame = self.bgra_frame()
         if frame is None or canvas_bgr is None or canvas_bgr.size == 0:
             return
-        if self._state.keyboard is not None:
+        if self._state.keyboard is not None and not self._nav_scrub:
             frame = frame.copy()
             _draw_text_entry_cursor(frame, self._state)
             self._paste_fully_opaque = None

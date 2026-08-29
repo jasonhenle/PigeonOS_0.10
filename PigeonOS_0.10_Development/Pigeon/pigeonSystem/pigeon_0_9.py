@@ -3319,6 +3319,8 @@ def main() -> int:
             scaled_version = 1
 
         skip_cache: tuple[object, ...] | None = None
+        _nav_coalescer_holder: list[object] = [None]
+        _nav_request: list[object] = [None]
         scene_enabled = _load_persisted_scene_enabled(True)
         dev_phase = DevPhase.OFF
         # Advanced matrix: temporarily show GRID behind the dialog when opened from Settings; restore on close.
@@ -3484,34 +3486,43 @@ def main() -> int:
             )
 
         def _settings_is_native_1280() -> bool:
-            """True when the on-screen settings page is a rebuilt 1280×800 layout."""
+            """True when settings is on screen — all current pages are 1280×800."""
+            return dev_phase == DevPhase.MAIN_SETTINGS and main_settings_widget is not None
+
+        def _settings_menu_is_static() -> bool:
+            """True when settings is up and not running a scan/spinner animation."""
             if dev_phase != DevPhase.MAIN_SETTINGS or main_settings_widget is None:
                 return False
             try:
                 st = main_settings_widget.state
             except Exception:
                 return False
-            if st.keyboard is not None:
-                return False
-            if st.show_metadata_debug or st.show_ui_color or st.show_preferences or st.show_options:
-                return False
-            if st.show_update_popup:
-                return False
-            return True
+            return not (
+                st.wifi_scanning
+                or st.wifi_connecting
+                or st.box2_devices.scanning
+                or st.box3_devices.scanning
+                or st.location_switching
+            )
 
         def _composite_settings_on_canvas(canvas: np.ndarray) -> None:
             """Paint settings, then the NP status bar on settings_main while content is up."""
             if main_settings_widget is None:
                 return
-            try:
-                _sync_preferences_now_playing_progress()
-            except Exception:
-                pass
-            try:
-                _sync_settings_zone2_tt()
-            except Exception:
-                pass
+            coalescer = _nav_coalescer_holder[0]
+            nav_hot = bool(coalescer is not None and coalescer.is_hot())
+            if not nav_hot:
+                try:
+                    _sync_preferences_now_playing_progress()
+                except Exception:
+                    pass
+                try:
+                    _sync_settings_zone2_tt()
+                except Exception:
+                    pass
             main_settings_widget.render(canvas)
+            if nav_hot:
+                return
             try:
                 st_ms = main_settings_widget.state
                 pigeon_page = bool(st_ms.show_pigeon_settings)
@@ -4901,16 +4912,25 @@ def main() -> int:
                     _sync_now_playing_screen_state()
                     if view_circles_widget is not None:
                         view_circles_widget.render(canvas_np)
-                base2 = cv2.resize(
-                    canvas_np,
-                    (cap_w, cap_h),
-                    interpolation=cv_resize_interp(
-                        int(DESIGN_W), int(DESIGN_H), cap_w, cap_h
-                    ),
-                )
+                if (
+                    int(cap_w) == int(DESIGN_W)
+                    and int(cap_h) == int(DESIGN_H)
+                ):
+                    base2 = canvas_np
+                else:
+                    base2 = cv2.resize(
+                        canvas_np,
+                        (cap_w, cap_h),
+                        interpolation=cv_resize_interp(
+                            int(DESIGN_W), int(DESIGN_H), cap_w, cap_h
+                        ),
+                    )
                 if use_cap:
                     return _present_frame_to_display(
-                        base2, dw, dh, native_now_playing=_settings_is_native_1280()
+                        base2,
+                        dw,
+                        dh,
+                        native_now_playing=True,
                     )
                 return base2
             _set_playback_overlay_clock_saver_volume_flag()
@@ -5305,16 +5325,22 @@ def main() -> int:
                 _composite_settings_on_canvas(canvas)
                 dw, dh = display_dims[0], display_dims[1]
                 cap_w, cap_h, use_cap = _composite_cap_dims(dw, dh)
-                base2 = cv2.resize(
-                    canvas,
-                    (cap_w, cap_h),
-                    interpolation=cv_resize_interp(
-                        int(DESIGN_W), int(DESIGN_H), cap_w, cap_h
-                    ),
-                )
+                if (
+                    int(cap_w) == int(DESIGN_W)
+                    and int(cap_h) == int(DESIGN_H)
+                ):
+                    base2 = canvas
+                else:
+                    base2 = cv2.resize(
+                        canvas,
+                        (cap_w, cap_h),
+                        interpolation=cv_resize_interp(
+                            int(DESIGN_W), int(DESIGN_H), cap_w, cap_h
+                        ),
+                    )
                 if use_cap:
                     return _present_frame_to_display(
-                        base2, dw, dh, native_now_playing=_settings_is_native_1280()
+                        base2, dw, dh, native_now_playing=True
                     )
                 return base2
             _set_playback_overlay_clock_saver_volume_flag()
@@ -12850,12 +12876,14 @@ def main() -> int:
                 if ks == "Right":
                     main_settings_widget.navigate(forward=True)
                     skip_cache = None
-                    render_once()
+                    req = _nav_request[0]
+                    req() if req is not None else render_once()
                     return "break"
                 if ks == "Left":
                     main_settings_widget.navigate(forward=False)
                     skip_cache = None
-                    render_once()
+                    req = _nav_request[0]
+                    req() if req is not None else render_once()
                     return "break"
                 return "break"
             from pigeon.player_remote import queue_player_remote_action
@@ -13226,12 +13254,14 @@ def main() -> int:
             if action == "forward":
                 main_settings_widget.navigate(forward=True)
                 skip_cache = None
-                render_once()
+                req = _nav_request[0]
+                req() if req is not None else render_once()
                 return
             if action == "backward":
                 main_settings_widget.navigate(forward=False)
                 skip_cache = None
-                render_once()
+                req = _nav_request[0]
+                req() if req is not None else render_once()
                 return
             if action == "activate":
                 ms_action = main_settings_widget.activate()
@@ -13319,6 +13349,13 @@ def main() -> int:
                 _schedule_render_oneshot(delay)
 
             def _next_render_ms() -> int:
+                # Settings must beat the video cadence. ATV "playing" used to keep
+                # 12 Hz PhotoImage uploads running under the menus.
+                if (
+                    _settings_menu_is_static()
+                    and sys.platform.startswith("linux")
+                ):
+                    return 500
                 if playing:
                     return frame_interval_ms
                 # Post-splash clock fade-up needs a smooth cadence.
@@ -13344,9 +13381,6 @@ def main() -> int:
                     and view_circles_widget.searching
                 ):
                     return 50 if sys.platform.startswith("linux") else 16
-                # Static settings UI: wake often enough for input, but avoid busy PhotoImage paste.
-                if dev_phase == DevPhase.MAIN_SETTINGS and sys.platform.startswith("linux"):
-                    return 500
                 return paused_interval_ms
 
             # With ext + splash, only count this window **after** splash removal.
@@ -13611,7 +13645,7 @@ def main() -> int:
             tmdb_flag_badge_cache_key = 1 if tmdb_flag_badge_on else 0
 
             if (
-                not playing
+                (not playing or _settings_menu_is_static())
                 and not mic_eq_needs_composite
                 and not brightness_animating
                 and not idle_dim_animating
@@ -13682,7 +13716,7 @@ def main() -> int:
                     pass
 
             if (
-                not playing
+                (not playing or _settings_menu_is_static())
                 and not brightness_animating
                 and not idle_dim_animating
                 and not location_toast_animating
@@ -13719,6 +13753,41 @@ def main() -> int:
                 skip_cache = None
 
             _schedule_next_render()
+
+        def _paint_coalesced_settings_nav() -> None:
+            nonlocal skip_cache
+            skip_cache = None
+            coalescer = _nav_coalescer_holder[0]
+            if main_settings_widget is not None and (
+                coalescer is None or not coalescer.is_hot()
+            ):
+                main_settings_widget._nav_scrub = False
+            render_once()
+
+        try:
+            from pigeon.nav_coalesce import NavPaintCoalescer
+
+            _nav_coalescer_holder[0] = NavPaintCoalescer(
+                after_idle=root.after_idle,
+                after=root.after,
+                cancel=root.after_cancel,
+                paint=_paint_coalesced_settings_nav,
+            )
+        except Exception:
+            _nav_coalescer_holder[0] = None
+
+        def _request_settings_nav_paint() -> None:
+            nonlocal skip_cache
+            skip_cache = None
+            if main_settings_widget is not None:
+                main_settings_widget._nav_scrub = True
+            coalescer = _nav_coalescer_holder[0]
+            if coalescer is None:
+                render_once()
+                return
+            coalescer.request()
+
+        _nav_request[0] = _request_settings_nav_paint
 
         def _invoke_render_after() -> None:
             _render_after_id[0] = None

@@ -1382,6 +1382,8 @@ def _place_in_cluster(
 
 _SVG_BYTES: dict[str, bytes] = {}
 _IDLE_KB_CACHE: dict[tuple[object, ...], np.ndarray] = {}
+_IDLE_CHARS_CACHE: dict[tuple[object, ...], np.ndarray] = {}
+_IDLE_ROW_CACHE: dict[tuple[object, ...], np.ndarray | None] = {}
 _FOCUS_PATCH_CACHE: dict[tuple[object, ...], tuple[int, int, np.ndarray]] = {}
 _LAST_FULL_CACHE: dict[tuple[object, ...], np.ndarray] = {}
 _IDLE_KB_CACHE_MAX = 12
@@ -1417,6 +1419,54 @@ def _keyboard_layout_key(
         bool(state.include_bottom_row),
         str(state.target or ""),
     )
+
+
+def _bottom_button_ids(state: KeyboardState) -> set[str]:
+    if not state.include_bottom_row:
+        return set()
+    return {k.button_id for k in _bottom_row_keys(state.mode)}
+
+
+def _blit_row_on_canvas(canvas: np.ndarray, row: np.ndarray | None) -> None:
+    if row is None or not row.size:
+        return
+    cx, cy = _cluster_xy()
+    cw, _ch = _cluster_wh()
+    dest_x = cx + int(round((cw - row.shape[1]) * 0.5))
+    _blit_bottom_row(canvas, row, dest_x=dest_x, dest_y=cy)
+
+
+def _compose_adjacent_from_idle(
+    state: KeyboardState,
+    *,
+    assets_dir: Path | str | None,
+    layout: tuple[object, ...],
+    idle: np.ndarray,
+    focused_id: str,
+) -> np.ndarray | None:
+    """Redraw only the chars layer or the bottom-row layer that contains focus."""
+    if not focused_id:
+        return idle
+    bottom_ids = _bottom_button_ids(state)
+    if focused_id in bottom_ids:
+        chars = _IDLE_CHARS_CACHE.get(layout)
+        if chars is None:
+            return None
+        row = _rasterize_bottom_row(
+            state, assets_dir=assets_dir, focused_button_id=focused_id
+        )
+        out = chars.copy()
+        _blit_row_on_canvas(out, row)
+        return out
+    chars = _rasterize_keyboard_chars(
+        state, assets_dir=assets_dir, focused_button_id=focused_id
+    )
+    row = _IDLE_ROW_CACHE.get(layout)
+    if row is None and layout not in _IDLE_ROW_CACHE:
+        return None
+    out = chars
+    _blit_row_on_canvas(out, row)
+    return out
 
 
 def _store_idle_keyboard(key: tuple[object, ...], frame: np.ndarray) -> None:
@@ -1483,6 +1533,8 @@ def _store_last_full(key: tuple[object, ...], frame: np.ndarray) -> None:
 def clear_keyboard_render_caches() -> None:
     """Drop idle/focus bitmaps (tests / theme reloads). SVG bytes stay cached."""
     _IDLE_KB_CACHE.clear()
+    _IDLE_CHARS_CACHE.clear()
+    _IDLE_ROW_CACHE.clear()
     _FOCUS_PATCH_CACHE.clear()
     _LAST_FULL_CACHE.clear()
 
@@ -1641,7 +1693,16 @@ def warm_keyboard_idle(
     layout = _keyboard_layout_key(state, assets_dir=assets_dir)
     idle = _IDLE_KB_CACHE.get(layout)
     if idle is None:
-        idle = _composite_keyboard_layers(state, assets_dir=assets_dir, focused_button_id="")
+        chars = _rasterize_keyboard_chars(
+            state, assets_dir=assets_dir, focused_button_id=""
+        )
+        row = _rasterize_bottom_row(
+            state, assets_dir=assets_dir, focused_button_id=""
+        )
+        _IDLE_CHARS_CACHE[layout] = chars
+        _IDLE_ROW_CACHE[layout] = row
+        idle = chars if row is None else chars.copy()
+        _blit_row_on_canvas(idle, row)
         _store_idle_keyboard(layout, idle)
     return idle
 
@@ -1685,16 +1746,28 @@ def render_keyboard_bgra(
         if idle is not None and focused_id and full_key not in _FOCUS_PATCH_CACHE:
             y, x, patch = _diff_focus_patch(idle, cached_full)
             _store_focus_patch(full_key, y, x, patch)
-        return cached_full.copy()
+        return cached_full
     if idle is not None:
         if not focused_id:
-            return idle.copy()
+            return idle
         hit = _FOCUS_PATCH_CACHE.get(full_key)
         if hit is not None:
             y, x, patch = hit
             out = _stamp_focus_patch(idle, y, x, patch)
             _store_last_full(full_key, out)
             return out
+        adjacent = _compose_adjacent_from_idle(
+            state,
+            assets_dir=assets_dir,
+            layout=layout,
+            idle=idle,
+            focused_id=focused_id,
+        )
+        if adjacent is not None:
+            y, x, patch = _diff_focus_patch(idle, adjacent)
+            _store_focus_patch(full_key, y, x, patch)
+            _store_last_full(full_key, adjacent)
+            return adjacent
 
     focused = _composite_keyboard_layers(
         state, assets_dir=assets_dir, focused_button_id=focused_id

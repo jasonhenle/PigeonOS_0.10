@@ -1403,6 +1403,45 @@ class SettingsKeyboard1280Tests(unittest.TestCase):
         back = render_keyboard_bgra(kb, assets_dir=assets)
         self.assertTrue(np.array_equal(first, back))
 
+    def test_keyboard_adjacent_layer_matches_full_composite(self) -> None:
+        from pigeon.widgets.settings_keyboard import (
+            _composite_keyboard_layers,
+            clear_keyboard_render_caches,
+            open_keyboard,
+            render_keyboard_bgra,
+            warm_keyboard_idle,
+        )
+
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        clear_keyboard_render_caches()
+        kb = open_keyboard(target="network", assets_dir=assets)
+        warm_keyboard_idle(kb, assets_dir=assets)
+        kb.navigate(forward=True)
+        adjacent = render_keyboard_bgra(kb, assets_dir=assets)
+        full = _composite_keyboard_layers(
+            kb, assets_dir=assets, focused_button_id=kb.focused.button_id
+        )
+        delta = np.max(np.abs(adjacent.astype(np.int16) - full.astype(np.int16)))
+        self.assertLessEqual(int(delta), 2)
+
+    def test_settings_main_dirty_zones_match_full_redraw(self) -> None:
+        from pigeon.widgets.main_settings import MainSettingsState
+        from pigeon.widgets.settings_main_1280 import (
+            clear_settings_main_compose_cache,
+            render_settings_main_1280_bgra,
+        )
+
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        clear_settings_main_compose_cache()
+        state = MainSettingsState()
+        state.ensure_focus_ring()
+        render_settings_main_1280_bgra(state, assets_dir=assets)
+        state.navigate(forward=True)
+        patched = render_settings_main_1280_bgra(state, assets_dir=assets)
+        clear_settings_main_compose_cache()
+        full = render_settings_main_1280_bgra(state, assets_dir=assets)
+        self.assertTrue(np.array_equal(patched, full))
+
     def test_keyboard_hides_zones_2_to_4(self) -> None:
         from pigeon.widgets.main_settings import MainSettingsState
         from pigeon.widgets.settings_main_1280 import (
@@ -1505,6 +1544,27 @@ class SettingsKeyboard1280Tests(unittest.TestCase):
         roi = frame[y : y + h, x : x + w, :3]
         self.assertGreater(int(np.count_nonzero(roi.min(axis=2) > 180)), 80)
         self.assertGreater(int(np.count_nonzero(roi.max(axis=2) < 80)), 20)
+
+    def test_focus_cache_key_matches_prewarm_lookup(self) -> None:
+        from pigeon.widgets.main_settings import MainSettingsWidget
+
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        widget = MainSettingsWidget(assets_dir=assets)
+        widget.state.ensure_focus_ring()
+        self.assertEqual(
+            widget._focus_cache_key(),
+            widget._focus_key_for_state(widget.state),
+        )
+        widget.navigate(forward=True)
+        self.assertEqual(
+            widget._focus_cache_key(),
+            widget._focus_key_for_state(widget.state),
+        )
+        tt = np.zeros((8, 8, 4), dtype=np.uint8)
+        widget.state.zone2_tt_bgra = tt
+        before = widget._structure_sig()
+        widget.state.zone2_tt_bgra = np.zeros((8, 8, 4), dtype=np.uint8)
+        self.assertEqual(before, widget._structure_sig())
 
 
 if __name__ == "__main__":

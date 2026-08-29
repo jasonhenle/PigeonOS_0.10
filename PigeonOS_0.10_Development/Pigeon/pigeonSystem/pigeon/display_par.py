@@ -270,18 +270,44 @@ def apply_par_compensation(
     par_f = _clamp_par(float(par))
 
     src = image
+    src_h, src_w = int(src.shape[0]), int(src.shape[1])
     if abs(par_f - 1.0) >= _PAR_NEAR_SQUARE:
-        src_h, src_w = int(src.shape[0]), int(src.shape[1])
         # Wider pixels → shrink width in pixel space so physical X matches design.
+        # Fuse the squeeze and the panel letterbox into one resize (two-step was
+        # a full 1280×800 pass plus a second downscale on every UI frame).
         corrected_w = max(1, int(round(src_w / par_f)))
-        corrected_h = src_h
-        if corrected_w != src_w:
+        scale = min(dw / float(corrected_w), dh / float(src_h))
+        nw = max(1, min(dw, int(round(corrected_w * scale))))
+        nh = max(1, min(dh, int(round(src_h * scale))))
+        if nw != src_w or nh != src_h:
             src = cv2.resize(
                 src,
-                (corrected_w, corrected_h),
-                interpolation=cv_resize_interp(src_w, src_h, corrected_w, corrected_h),
+                (nw, nh),
+                interpolation=cv_resize_interp(src_w, src_h, nw, nh),
             )
+            src_h, src_w = nh, nw
+        if src_w == dw and src_h == dh:
+            return src
+        pad_w = dw - src_w
+        pad_h = dh - src_h
+        left = max(0, pad_w // 2)
+        right = max(0, pad_w - left)
+        top = max(0, pad_h // 2)
+        bottom = max(0, pad_h - top)
+        if src.ndim == 3 and src.shape[2] == 4:
+            pad_value = (0, 0, 0, 0)
+        else:
+            pad_value = (0, 0, 0)
+        return cv2.copyMakeBorder(
+            src,
+            top=top,
+            bottom=bottom,
+            left=left,
+            right=right,
+            borderType=cv2.BORDER_CONSTANT,
+            value=pad_value,
+        )
 
-    if int(src.shape[1]) == dw and int(src.shape[0]) == dh:
+    if src_w == dw and src_h == dh:
         return src
     return scale_uniform_letterbox(src, dw, dh)
