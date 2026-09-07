@@ -183,7 +183,58 @@ def temp_uses_celsius(state: MainSettingsState | None = None) -> bool:
 
 
 def ui_is_monochrome(state: MainSettingsState | None = None) -> bool:
+    try:
+        from pigeon.widgets.ui_color_settings import current_ui_picker_key
+
+        if current_ui_picker_key() == "dark":
+            return True
+        if current_ui_picker_key() == "bright":
+            return False
+    except Exception:
+        pass
     return _vals(state)["color_format"] == "dark"
+
+
+def ui_is_bright(state: MainSettingsState | None = None) -> bool:
+    _ = state
+    try:
+        from pigeon.widgets.ui_color_settings import current_ui_picker_key
+
+        return current_ui_picker_key() == "bright"
+    except Exception:
+        return False
+
+
+def ui_paper_bgr() -> tuple[int, int, int]:
+    """Frame / plate paper (BGR). Light mode is white; dark mode is black."""
+    return (255, 255, 255) if ui_is_bright() else (0, 0, 0)
+
+
+def ui_ink_rgb() -> tuple[int, int, int]:
+    """Primary text on paper."""
+    return (0, 0, 0) if ui_is_bright() else (255, 255, 255)
+
+
+def ui_ink_hex() -> str:
+    return "#000000" if ui_is_bright() else "#FFFFFF"
+
+
+def ui_chrome_rgb() -> tuple[int, int, int]:
+    """NP labels / Digital-7 / unplayed track. Gray in dark, black in light."""
+    return (0, 0, 0) if ui_is_bright() else (147, 147, 147)
+
+
+def ui_chrome_bgr() -> tuple[int, int, int]:
+    return ui_chrome_rgb()
+
+
+def ui_chrome_hex() -> str:
+    return "#000000" if ui_is_bright() else "#939393"
+
+
+def ui_idle_text_hex() -> str:
+    """Deselected settings labels sitting on the plate."""
+    return "#000000" if ui_is_bright() else "#919190"
 
 
 def clock_saver_idle_s(state: MainSettingsState | None = None) -> float:
@@ -332,8 +383,20 @@ def apply_ui_mono_bgr(frame_bgr: np.ndarray) -> np.ndarray:
     return bgr_to_red_monochrome_luma(frame_bgr)
 
 
+def apply_ui_bright_bgr(frame_bgr: np.ndarray) -> np.ndarray:
+    """Light mode is painted on the vector layers; no full-frame invert."""
+    return frame_bgr
+
+
+def apply_ui_look_bgr(frame_bgr: np.ndarray) -> np.ndarray:
+    """Apply the picker look: red-mono dark. Light mode is assigned at paint time."""
+    return apply_ui_mono_bgr(frame_bgr)
+
+
 __all__ = [
     "apply_options_svg_state",
+    "apply_ui_bright_bgr",
+    "apply_ui_look_bgr",
     "apply_ui_mono_bgr",
     "clock_saver_analog",
     "clock_saver_enabled",
@@ -349,6 +412,14 @@ __all__ = [
     "render_options_bar_bgra",
     "temp_uses_celsius",
     "toggle_option",
+    "ui_chrome_bgr",
+    "ui_chrome_hex",
+    "ui_chrome_rgb",
+    "ui_idle_text_hex",
+    "ui_ink_hex",
+    "ui_ink_rgb",
+    "ui_is_bright",
     "ui_is_monochrome",
+    "ui_paper_bgr",
     "write_options",
 ]

@@ -468,6 +468,8 @@ class MainSettingsState:
     wifi_level: int = 3  # stub 0–3
     location_name: str = "ROOM 1"
     selected_wifi_ssid: str = ""
+    live_wifi_ssid: str = ""
+    wifi_logged_out: bool = False
     pending_wifi_ssid: str = ""
     wifi_password: str = ""
     network_password_error: bool = False
@@ -526,8 +528,8 @@ class MainSettingsState:
     preferences_focus_index: int = 0
     preferences_active_zone: int = 0  # 1–5 while in widgets nav; else 0
     preferences_zone_widgets: tuple[str, str, str, str, str] = (
-        "clock",
-        "poster",
+        "tt_countdown_16x9",
+        "",
         "volume",
         "cast_info",
         "status_bar",
@@ -587,7 +589,56 @@ class MainSettingsState:
 
     @property
     def wifi_configured(self) -> bool:
-        return bool(str(self.selected_wifi_ssid or "").strip())
+        return bool(self.displayed_wifi_ssid())
+
+    def displayed_wifi_ssid(self) -> str:
+        """SSID shown on settings_main: live radio, else saved location wifi."""
+        if self.wifi_logged_out:
+            return str(self.selected_wifi_ssid or "").strip()
+        return str(self.live_wifi_ssid or self.selected_wifi_ssid or "").strip()
+
+    def refresh_network_ssid(self) -> None:
+        """Reload saved location wifi and the OS association for the dual bar."""
+        try:
+            from pigeon.app_state import read_location_wifi
+
+            wifi = read_location_wifi()
+        except Exception:
+            wifi = None
+        loc_ssid = ""
+        if wifi is not None:
+            loc_ssid = str(wifi.get("ssid") or "").strip()
+            if loc_ssid:
+                self.wifi_logged_out = False
+                if not str(self.selected_wifi_ssid or "").strip():
+                    self.selected_wifi_ssid = loc_ssid
+                    self.wifi_password = str(wifi.get("password") or "")
+        if self.wifi_logged_out:
+            self.live_wifi_ssid = ""
+            return
+        try:
+            from pigeon.wifi_scan import current_connected_ssid
+
+            self.live_wifi_ssid = str(current_connected_ssid() or "").strip()
+        except Exception:
+            self.live_wifi_ssid = ""
+
+    def reload_location_wifi(self) -> None:
+        """Replace in-memory wifi with the current location record, then probe live."""
+        self.wifi_logged_out = False
+        try:
+            from pigeon.app_state import read_location_wifi
+
+            wifi = read_location_wifi()
+        except Exception:
+            wifi = None
+        if wifi is not None:
+            self.selected_wifi_ssid = str(wifi.get("ssid") or "").strip()
+            self.wifi_password = str(wifi.get("password") or "")
+        else:
+            self.selected_wifi_ssid = ""
+            self.wifi_password = ""
+        self.refresh_network_ssid()
 
     def needs_wifi_setup(self) -> bool:
         """True until the user has chosen a WiFi network (SSID)."""
@@ -1090,7 +1141,7 @@ class MainSettingsState:
 
         ring = ui_color_swatch_focus_ring("ui")
         if not ring:
-            return "red"
+            return "blue"
         return ring[int(self.ui_color_focus_index) % len(ring)]
 
     def navigate_ui_color(self, *, forward: bool = True) -> None:
@@ -1125,7 +1176,7 @@ class MainSettingsState:
         ring = ui_color_swatch_focus_ring("ui")
         focused = self.ui_color_focused_id
         if focused not in ring:
-            focused = ring[0] if ring else "red"
+            focused = ring[0] if ring else "blue"
         apply_color_keys_to_state(
             self,
             {
@@ -3165,7 +3216,7 @@ def _location_text_is_grayed(state: MainSettingsState) -> bool:
 
 
 def _wifi_logout_instruction_text(state: MainSettingsState) -> str:
-    ssid = str(state.selected_wifi_ssid or "").strip() or "network"
+    ssid = state.displayed_wifi_ssid() or str(state.selected_wifi_ssid or "").strip() or "network"
     return f"disconnect {ssid}"
 
 
@@ -6171,12 +6222,9 @@ class MainSettingsWidget:
         if self._state.needs_wifi_setup():
             self._state.wifi_onboarding = False
         try:
-            from pigeon.app_state import read_current_location_name, read_location_wifi
+            from pigeon.app_state import read_current_location_name
 
-            wifi = read_location_wifi()
-            if wifi is not None:
-                self._state.selected_wifi_ssid = wifi["ssid"]
-                self._state.wifi_password = wifi.get("password", "")
+            self._state.reload_location_wifi()
             self._state.location_name = read_current_location_name()
         except Exception:
             pass
@@ -6385,6 +6433,9 @@ class MainSettingsWidget:
             st.location_name,
             st.wifi_password,
             st.selected_wifi_ssid,
+            st.live_wifi_ssid,
+            bool(st.wifi_logged_out),
+            st.displayed_wifi_ssid(),
             st.pending_wifi_ssid,
             bool(st.network_password_error),
             bool(st.wifi_connecting),
@@ -6550,6 +6601,9 @@ class MainSettingsWidget:
             st.location_name,
             st.wifi_password,
             st.selected_wifi_ssid,
+            st.live_wifi_ssid,
+            bool(st.wifi_logged_out),
+            st.displayed_wifi_ssid(),
             st.pending_wifi_ssid,
             bool(st.network_password_error),
             bool(st.wifi_connecting),
@@ -6677,6 +6731,9 @@ class MainSettingsWidget:
             st.location_name,
             st.wifi_password,
             st.selected_wifi_ssid,
+            st.live_wifi_ssid,
+            bool(st.wifi_logged_out),
+            st.displayed_wifi_ssid(),
             st.pending_wifi_ssid,
             bool(st.network_password_error),
             bool(st.wifi_connecting),
@@ -8462,6 +8519,12 @@ class MainSettingsWidget:
         return action
 
     def bgra_frame(self) -> np.ndarray | None:
+        try:
+            from pigeon.compositing import clear_bright_artwork_mask
+
+            clear_bright_artwork_mask()
+        except Exception:
+            pass
         try:
             st = self._state
             if st.show_pigeon_settings:

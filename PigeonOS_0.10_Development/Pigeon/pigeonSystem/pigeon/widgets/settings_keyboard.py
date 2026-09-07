@@ -30,7 +30,6 @@ from pigeon.widgets.main_settings import (
     SettingsTheme,
     _BUTTON_FILL_CANDIDATES,
     _apply_button_fill,
-    _apply_contrast_paint,
     _find_by_logical_id,
     _normalize_logical,
     _parent_map,
@@ -663,6 +662,36 @@ def _keyboard_paint_theme(theme: SettingsTheme) -> SettingsTheme:
     )
 
 
+def _keyboard_label_hex(
+    *,
+    selected: bool,
+    ui_hex: str,
+    muted_deselected: bool,
+    inactive: str,
+) -> str:
+    """Selected keys are white; the glyph must be the UI color to stay visible."""
+    if selected:
+        return ui_hex
+    if muted_deselected:
+        return inactive
+    return "#FFFFFF"
+
+
+def _paint_keyboard_label(node: ET.Element, *, fill: str) -> None:
+    """Force letter/icon paint. White is a UI swatch, so contrast-swap skips it."""
+    tag = node.tag.rsplit("}", 1)[-1]
+    if tag in ("text", "tspan"):
+        _set_paint(node, fill=fill)
+        return
+    from pigeon.widgets.main_settings import _iter_style_fill_stroke
+
+    cur_fill, cur_stroke = _iter_style_fill_stroke(node)
+    if cur_fill and cur_fill not in ("none", "transparent"):
+        _set_paint(node, fill=fill)
+    if cur_stroke and cur_stroke not in ("none", "transparent"):
+        _set_paint(node, stroke=fill)
+
+
 def _paint_kb_button_shape(
     node: ET.Element,
     *,
@@ -700,9 +729,11 @@ def apply_keyboard_selection(
     icon_ids_by_button: dict[str, tuple[str, ...]] | None = None,
     muted_deselected: bool = False,
 ) -> None:
-    """Recolor every known button; contrast paint on paired icons/text."""
+    """Recolor every known button; UI-color letters on the selected (white) key."""
     from pigeon.widgets.main_settings import _iter_style_fill_stroke, _set_paint
 
+    ui_hex = str(theme.ui or COLOR_UI_DEFAULT)
+    inactive = str(theme.inactive or "#939393")
     theme = _keyboard_paint_theme(theme)
     icon_map = icon_ids_by_button or {}
     idle = _keyboard_idle_fill(theme)
@@ -731,6 +762,12 @@ def apply_keyboard_selection(
             if _normalize_logical(node.get("id") or "") == "delete":
                 delete_nodes.update(id(n) for n in node.iter())
         fill = theme.selected if selected else idle
+        label_hex = _keyboard_label_hex(
+            selected=selected,
+            ui_hex=ui_hex,
+            muted_deselected=muted_deselected,
+            inactive=inactive,
+        )
         glyph_nodes: list[ET.Element] = []
         for node in el.iter():
             tag = node.tag.rsplit("}", 1)[-1]
@@ -759,12 +796,7 @@ def apply_keyboard_selection(
                         continue
                 _paint_kb_button_shape(node, selected=selected, theme=theme)
         for glyph in glyph_nodes:
-            _apply_contrast_paint(
-                glyph,
-                selected=selected,
-                theme=theme,
-                muted_deselected=muted_deselected,
-            )
+            _paint_keyboard_label(glyph, fill=label_hex)
         # Skip _apply_button_fill — it would recolor the delete glyph as a key.
 
         icons = list(icon_map.get(logical, ()))
@@ -778,12 +810,8 @@ def apply_keyboard_selection(
             seen_icons.add(icon_logical)
             icon_el = _find_by_logical_id(root, icon_logical)
             if icon_el is not None:
-                _apply_contrast_paint(
-                    icon_el,
-                    selected=selected,
-                    theme=theme,
-                    muted_deselected=muted_deselected,
-                )
+                for node in icon_el.iter():
+                    _paint_keyboard_label(node, fill=label_hex)
 
         # Grouped layouts (PIN / numeric): icon is a sibling under the same parent.
         expected_icons = seen_icons
@@ -792,21 +820,12 @@ def apply_keyboard_selection(
             for child in parent:
                 cid = _normalize_logical(child.get("id") or "")
                 if cid in expected_icons:
-                    _apply_contrast_paint(
-                        child,
-                        selected=selected,
-                        theme=theme,
-                        muted_deselected=muted_deselected,
-                    )
-        # 1280 group exports often leave labels unnamed — contrast-paint text in the group.
+                    for node in child.iter():
+                        _paint_keyboard_label(node, fill=label_hex)
+        # 1280 group exports often leave labels unnamed — paint text in the group.
         for node in el.iter():
             if node.tag.endswith("text") or node.tag.endswith("tspan"):
-                _apply_contrast_paint(
-                    node,
-                    selected=selected,
-                    theme=theme,
-                    muted_deselected=muted_deselected,
-                )
+                _paint_keyboard_label(node, fill=label_hex)
 
 
 def _bottom_row_icons(root: ET.Element, group_logical: str, *icon_logicals: str) -> list[ET.Element]:

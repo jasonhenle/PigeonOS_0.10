@@ -8,6 +8,10 @@ import re
 import shutil
 import subprocess
 import sys
+import time
+
+_SSID_CACHE: tuple[float, str] | None = None
+_SSID_CACHE_TTL_S = 2.0
 
 _SWIFT_COREWLAN_SCAN = """
 import CoreWLAN
@@ -63,21 +67,45 @@ def filter_scan_results_for_picker(
     return filtered if filtered else cleaned
 
 
+def current_connected_ssid(*, max_age_s: float | None = None) -> str:
+    """SSID the radio is associated with, cached for settings paint."""
+    global _SSID_CACHE
+    ttl = _SSID_CACHE_TTL_S if max_age_s is None else max(0.0, float(max_age_s))
+    now = time.monotonic()
+    if ttl > 0 and _SSID_CACHE is not None and (now - _SSID_CACHE[0]) < ttl:
+        return _SSID_CACHE[1]
+    ssid = _probe_connected_ssid(allow_slow=False)
+    _SSID_CACHE = (now, ssid)
+    return ssid
+
+
+def clear_connected_ssid_cache() -> None:
+    global _SSID_CACHE
+    _SSID_CACHE = None
+
+
 def _current_connected_ssid() -> str:
+    return _probe_connected_ssid(allow_slow=True)
+
+
+def _probe_connected_ssid(*, allow_slow: bool) -> str:
     if sys.platform == "darwin":
-        return _current_connected_ssid_darwin()
+        return _current_connected_ssid_darwin(allow_slow=allow_slow)
     if sys.platform.startswith("linux"):
         return _current_connected_ssid_linux()
     return ""
 
 
-def _current_connected_ssid_darwin() -> str:
-    corewlan = _current_connected_ssid_darwin_corewlan()
-    if corewlan:
-        return corewlan
+def _current_connected_ssid_darwin(*, allow_slow: bool = True) -> str:
+    # networksetup is faster and more reliable than CoreWLAN ssid() (often nil).
     fast = _current_connected_ssid_darwin_fast()
     if fast:
         return fast
+    corewlan = _current_connected_ssid_darwin_corewlan()
+    if corewlan:
+        return corewlan
+    if not allow_slow:
+        return ""
     try:
         proc = subprocess.run(
             ["system_profiler", "SPAirPortDataType"],
@@ -177,7 +205,24 @@ def _darwin_wifi_interface_name() -> str:
     return "en0"
 
 
+def _linux_ssid_token(raw: str) -> str:
+    ssid = str(raw or "").strip()
+    if not ssid or ssid == "--":
+        return ""
+    return ssid
+
+
 def _current_connected_ssid_linux() -> str:
+    ssid = _linux_nmcli_dev_wifi_active()
+    if ssid:
+        return ssid
+    ssid = _linux_nmcli_active_wifi_connection()
+    if ssid:
+        return ssid
+    return _linux_iwgetid()
+
+
+def _linux_nmcli_dev_wifi_active() -> str:
     if not shutil.which("nmcli"):
         return ""
     try:
@@ -193,10 +238,52 @@ def _current_connected_ssid_linux() -> str:
     for line in proc.stdout.splitlines():
         parts = line.split(":", 1)
         if len(parts) == 2 and parts[0].strip() == "yes":
-            ssid = parts[1].strip()
-            if ssid and ssid != "--":
+            ssid = _linux_ssid_token(parts[1])
+            if ssid:
                 return ssid
     return ""
+
+
+def _linux_nmcli_active_wifi_connection() -> str:
+    """Profile name for the active Wi-Fi connection (nmcli scan list can omit SSID)."""
+    if not shutil.which("nmcli"):
+        return ""
+    try:
+        proc = subprocess.run(
+            ["nmcli", "-t", "-f", "NAME,TYPE", "con", "show", "--active"],
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    for line in proc.stdout.splitlines():
+        parts = line.rsplit(":", 1)
+        if len(parts) != 2:
+            continue
+        name, kind = parts[0].strip(), parts[1].strip().casefold()
+        if kind in ("802-11-wireless", "wifi", "wireless") and name:
+            return name
+    return ""
+
+
+def _linux_iwgetid() -> str:
+    if not shutil.which("iwgetid"):
+        return ""
+    try:
+        proc = subprocess.run(
+            ["iwgetid", "-r"],
+            capture_output=True,
+            text=True,
+            timeout=3.0,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return _linux_ssid_token(proc.stdout)
 
 
 def _dedupe_preserve_order(names: tuple[str, ...] | list[str]) -> tuple[str, ...]:

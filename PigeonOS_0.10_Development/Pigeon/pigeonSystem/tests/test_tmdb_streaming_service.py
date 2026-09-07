@@ -135,6 +135,9 @@ class YoutubeServiceTests(unittest.TestCase):
         self.assertTrue(is_youtube_streaming_service(app_name="YouTube"))
         self.assertTrue(is_youtube_streaming_service(app_id="google.ios.youtube"))
         self.assertTrue(is_youtube_streaming_service(label="YouTube"))
+        self.assertTrue(
+            is_youtube_streaming_service(filename="App logos/AppLogo_YouTube.PNG")
+        )
         self.assertFalse(is_youtube_streaming_service(app_name="Netflix"))
 
 

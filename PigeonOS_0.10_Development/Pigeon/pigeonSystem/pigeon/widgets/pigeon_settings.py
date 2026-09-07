@@ -402,7 +402,13 @@ def _sync_version_text(root: ET.Element, state: MainSettingsState) -> None:
                 break
         text = nested if nested is not None else text
     _set_text_content(text, label)
-    _paint_text(text, _COLOR_WHITE)
+    try:
+        from pigeon.widgets.options_settings import ui_ink_hex
+
+        plate_ink = ui_ink_hex()
+    except Exception:
+        plate_ink = _COLOR_WHITE
+    _paint_text(text, plate_ink)
     # Right-align inside the menu panel so the string never clips the right edge.
     vb_x, vb_y, _vb_w, _vb_h = _PIGEON_VIEWBOX
     text.set("transform", f"translate({vb_x + 1180.0:.2f} {vb_y + 159.0:.2f})")

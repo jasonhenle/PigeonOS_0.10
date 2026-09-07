@@ -289,6 +289,12 @@ class SettingsRenderTests(unittest.TestCase):
         self.assertGreater(int(np.count_nonzero(header.max(axis=2) > 40)), 800)
         bar_only = render_ui_color_bar_bgra(state, assets_dir=assets)
         self.assertEqual(int(bar_only[plate_y:, :, 3].max()), 0)
+        from pigeon.widgets.ui_color_settings import apply_color_keys_to_state
+
+        apply_color_keys_to_state(
+            state, {"accent": "white", "ui": "blue", "button": "black"}, persist=False
+        )
+        state.ui_color_focus_index = 0
         start = state.ui_color_focused_id
         first_hex = str(state.theme.ui)
         state.navigate_ui_color(forward=True)
@@ -643,6 +649,53 @@ class SettingsRenderTests(unittest.TestCase):
         cx, cy = zx + zw // 2, zy + zh // 2
         self.assertLess(int(idle_frame[cy, cx, :3].max()), 80)
         self.assertGreater(int(on_frame[cy, cx, :3].min()), 180)
+
+    def test_bright_uses_gray_background_and_black_box_strokes(self) -> None:
+        from pigeon.widgets.options_settings import apply_ui_bright_bgr, ui_chrome_hex
+        from pigeon.widgets.settings_main_1280 import (
+            _chrome_stroke,
+            _find,
+            _load_widget,
+            _set_fill,
+            _settings_main_bg,
+            _style_column_container,
+            clear_settings_main_compose_cache,
+        )
+        from pigeon.widgets.settings_theme_background import settings_background_ui_hex
+        from pigeon.widgets.ui_color_settings import hex_for_color_key, write_ui_color_keys
+
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        write_ui_color_keys({"ui": "bright"}, persist=False)
+        clear_settings_main_compose_cache()
+        try:
+            gray = hex_for_color_key("ui", "gray").lower()
+            self.assertEqual(settings_background_ui_hex("#4EA6F7").lower(), gray)
+            self.assertEqual(_chrome_stroke().lower(), "#000000")
+            self.assertEqual(ui_chrome_hex().lower(), "#000000")
+            col = _load_widget("column_container", assets_dir=assets)
+            _style_column_container(col, selected=False)
+            self.assertEqual((_find(col, "sm_container").get("stroke") or "").lower(), "#000000")
+            dual = _load_widget("dual", assets_dir=assets)
+            _set_fill(_find(dual, "dual_container"), "#202020", stroke=_chrome_stroke())
+            self.assertEqual((_find(dual, "dual_container").get("stroke") or "").lower(), "#000000")
+
+            bg = _settings_main_bg(ui_hex="#4EA6F7", assets_dir=assets)
+            bgr = bg[:, :, :3]
+            self.assertEqual(tuple(int(v) for v in apply_ui_bright_bgr(bgr)[0, 0]), tuple(int(v) for v in bgr[0, 0]))
+            self.assertGreater(int(bgr[8, 8].min()), 200)
+            plate = bgr[220:620, 120:1160]
+            mx = plate.max(axis=2)
+            mn = plate.min(axis=2)
+            slant = mx > 30
+            self.assertGreater(int(slant.sum()), 2000)
+            self.assertLess(float((mx - mn)[slant].mean()), 24.0)
+            self.assertGreater(float(plate[slant].mean()), 40.0)
+        finally:
+            from pigeon.compositing import clear_bright_slant_mask
+
+            write_ui_color_keys({"ui": "blue"}, persist=False)
+            clear_bright_slant_mask()
+            clear_settings_main_compose_cache()
 
     def test_list_row_text_uses_svg_font_size(self) -> None:
         from pigeon.widgets.settings_main_1280 import (
@@ -1279,6 +1332,36 @@ class SettingsKeyboard1280Tests(unittest.TestCase):
         luma = roi.mean(axis=2)
         self.assertGreater(float(luma.max() - luma.min()), 40)
 
+    def test_selected_key_letter_uses_ui_color(self) -> None:
+        import xml.etree.ElementTree as ET
+
+        from pigeon.widgets.main_settings import (
+            COLOR_UI_DEFAULT,
+            SettingsTheme,
+            _find_by_logical_id,
+            _iter_style_fill_stroke,
+            keyboard_svg_path,
+        )
+        from pigeon.widgets.settings_keyboard import apply_keyboard_selection
+
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        root = ET.parse(keyboard_svg_path("keyboard_lower.svg", assets_dir=assets)).getroot()
+        apply_keyboard_selection(
+            root,
+            focused_button_id="lower_q",
+            theme=SettingsTheme(ui=COLOR_UI_DEFAULT, selected="#FFFFFF"),
+            button_ids={"lower_q", "lower_w"},
+        )
+        q = _find_by_logical_id(root, "lower_q")
+        w = _find_by_logical_id(root, "lower_w")
+        assert q is not None and w is not None
+        q_text = next(n for n in q.iter() if n.tag.endswith("text"))
+        w_text = next(n for n in w.iter() if n.tag.endswith("text"))
+        q_fill, _ = _iter_style_fill_stroke(q_text)
+        w_fill, _ = _iter_style_fill_stroke(w_text)
+        self.assertEqual((q_fill or "").lower(), COLOR_UI_DEFAULT.lower())
+        self.assertEqual((w_fill or "").lower(), "#ffffff")
+
     def test_bottom_row_mode_defaults(self) -> None:
         from pigeon.widgets.settings_keyboard import (
             KeyAction,
@@ -1446,10 +1529,14 @@ class SettingsKeyboard1280Tests(unittest.TestCase):
         from pigeon.widgets.main_settings import MainSettingsState
         from pigeon.widgets.settings_main_1280 import (
             _column_card_rect,
+            clear_settings_main_compose_cache,
             render_settings_main_1280_bgra,
         )
+        from pigeon.widgets.ui_color_settings import write_ui_color_keys
 
         assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        write_ui_color_keys({"ui": "blue"}, persist=False)
+        clear_settings_main_compose_cache()
         state = MainSettingsState()
         state.open_keyboard("location", assets_dir=assets)
         frame = render_settings_main_1280_bgra(state, assets_dir=assets)
@@ -1565,6 +1652,168 @@ class SettingsKeyboard1280Tests(unittest.TestCase):
         before = widget._structure_sig()
         widget.state.zone2_tt_bgra = np.zeros((8, 8, 4), dtype=np.uint8)
         self.assertEqual(before, widget._structure_sig())
+
+
+    def test_ui_color_picker_order_and_looks(self) -> None:
+        from pigeon.widgets.main_settings import COLOR_UI_DEFAULT, MainSettingsState
+        from pigeon.widgets.ui_color_settings import (
+            _BAR_BUTTON_IDS,
+            apply_color_keys_to_state,
+            current_ui_picker_key,
+            hex_for_color_key,
+            theme_from_color_keys,
+            ui_color_swatch_focus_ring,
+            write_ui_color_keys,
+        )
+        from pigeon.compositing import swap_achromatic_black_white_bgr
+
+        ring = ui_color_swatch_focus_ring("ui")
+        self.assertEqual(
+            ring,
+            ("blue", "orange", "yellow", "green", "gray", "dark", "bright"),
+        )
+        self.assertEqual(tuple(_BAR_BUTTON_IDS), ring)
+
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        svg = (assets / "settings" / "pigeon" / "widget_sp_ui_color_zone0.svg").read_text(
+            encoding="utf-8"
+        )
+        for bid in _BAR_BUTTON_IDS.values():
+            self.assertIn(f'id="{bid}"', svg)
+        self.assertNotIn("red_swatch_button", svg)
+        self.assertNotIn("purple_swatch_button", svg)
+
+        mapped = write_ui_color_keys({"ui": "red"}, persist=False)
+        self.assertEqual(mapped["ui"], "dark")
+        self.assertEqual(current_ui_picker_key(), "dark")
+        self.assertEqual(hex_for_color_key("ui", "dark"), COLOR_UI_DEFAULT)
+        self.assertEqual(hex_for_color_key("ui", "bright"), COLOR_UI_DEFAULT)
+        self.assertEqual(theme_from_color_keys({"ui": "bright"}).ui, COLOR_UI_DEFAULT)
+
+        state = MainSettingsState()
+        apply_color_keys_to_state(
+            state, {"accent": "white", "ui": "blue", "button": "black"}, persist=False
+        )
+        state.show_ui_color = True
+        state.ui_color_nav = "swatches"
+        state.ui_color_active_class = "ui"
+        state.ui_color_focus_index = 0
+        self.assertEqual(state.ui_color_focused_id, "blue")
+        for _ in range(5):
+            state.navigate_ui_color(forward=True)
+        self.assertEqual(state.ui_color_focused_id, "dark")
+        self.assertEqual(current_ui_picker_key(), "dark")
+        state.navigate_ui_color(forward=True)
+        self.assertEqual(state.ui_color_focused_id, "bright")
+        self.assertEqual(current_ui_picker_key(), "bright")
+
+        frame = np.zeros((2, 3, 3), dtype=np.uint8)
+        frame[0, 0] = (0, 0, 0)
+        frame[0, 1] = (255, 255, 255)
+        frame[0, 2] = (247, 166, 78)  # BGR of #4EA6F7
+        swapped = swap_achromatic_black_white_bgr(frame)
+        self.assertEqual(tuple(int(v) for v in swapped[0, 0]), (255, 255, 255))
+        self.assertEqual(tuple(int(v) for v in swapped[0, 1]), (0, 0, 0))
+        self.assertEqual(tuple(int(v) for v in swapped[0, 2]), (247, 166, 78))
+        gray = np.full((1, 1, 3), 147, dtype=np.uint8)  # NP chrome / idle text
+        gray_out = swap_achromatic_black_white_bgr(gray)
+        self.assertEqual(tuple(int(v) for v in gray_out[0, 0]), (0, 0, 0))
+        # 24% artwork wash over black (white tank / highlights) must stay a
+        # soft invert, not snap to ink — that was the black "brush strokes".
+        wash = np.full((1, 1, 3), 55, dtype=np.uint8)
+        wash_out = swap_achromatic_black_white_bgr(wash)
+        self.assertGreater(int(wash_out[0, 0, 0]), 150)
+        # Saturated stage light at the same dim wash (chroma ≥ 28) used to
+        # stay dark and cut a hard silhouette against the inverted gray.
+        spot = np.zeros((1, 1, 3), dtype=np.uint8)
+        spot[0, 0] = (8, 24, 56)  # BGR orange-red, y ≈ 32
+        spot_out = swap_achromatic_black_white_bgr(spot)
+        self.assertGreater(int(spot_out[0, 0].min()), 180)
+
+        from pigeon.compositing import (
+            clear_bright_artwork_mask,
+            clear_bright_slant_mask,
+            restore_bright_artwork_pixels,
+            stamp_bright_artwork_mask,
+        )
+        from pigeon.design import DESIGN_H, DESIGN_W
+
+        clear_bright_artwork_mask()
+        clear_bright_slant_mask()
+        canvas = np.zeros((DESIGN_H, DESIGN_W, 3), dtype=np.uint8)
+        canvas[40:80, 40:80] = 40
+        stamp_bright_artwork_mask(np.full((40, 40), 255, dtype=np.uint8), 40, 40)
+        restored = restore_bright_artwork_pixels(
+            canvas, swap_achromatic_black_white_bgr(canvas)
+        )
+        self.assertEqual(int(restored[60, 60, 0]), 40)
+        self.assertEqual(int(restored[0, 0, 0]), 255)
+        clear_bright_artwork_mask()
+        write_ui_color_keys({"ui": "blue"}, persist=False)
+
+
+class SettingsMainNetworkSsidTests(unittest.TestCase):
+    def test_live_ssid_shows_when_location_record_is_empty(self) -> None:
+        from unittest.mock import patch
+
+        from pigeon.widgets.main_settings import MainSettingsState
+
+        state = MainSettingsState()
+        with (
+            patch("pigeon.app_state.read_location_wifi", return_value=None),
+            patch("pigeon.wifi_scan.current_connected_ssid", return_value="HENLI"),
+        ):
+            state.refresh_network_ssid()
+        self.assertEqual(state.displayed_wifi_ssid(), "HENLI")
+        self.assertTrue(state.wifi_configured)
+
+    def test_logout_does_not_readopt_live_ssid(self) -> None:
+        from unittest.mock import patch
+
+        from pigeon.widgets.main_settings import MainSettingsState
+
+        state = MainSettingsState()
+        state.selected_wifi_ssid = ""
+        state.wifi_logged_out = True
+        with (
+            patch("pigeon.app_state.read_location_wifi", return_value=None),
+            patch("pigeon.wifi_scan.current_connected_ssid", return_value="HENLI"),
+        ):
+            state.refresh_network_ssid()
+        self.assertEqual(state.displayed_wifi_ssid(), "")
+        self.assertFalse(state.wifi_configured)
+
+    def test_location_wifi_fills_empty_selected(self) -> None:
+        from unittest.mock import patch
+
+        from pigeon.widgets.main_settings import MainSettingsState
+
+        state = MainSettingsState()
+        with (
+            patch(
+                "pigeon.app_state.read_location_wifi",
+                return_value={"ssid": "NEST", "password": "x"},
+            ),
+            patch("pigeon.wifi_scan.current_connected_ssid", return_value=""),
+        ):
+            state.refresh_network_ssid()
+        self.assertEqual(state.selected_wifi_ssid, "NEST")
+        self.assertEqual(state.displayed_wifi_ssid(), "NEST")
+
+    def test_reload_location_wifi_drops_previous_location_ssid(self) -> None:
+        from unittest.mock import patch
+
+        from pigeon.widgets.main_settings import MainSettingsState
+
+        state = MainSettingsState()
+        state.selected_wifi_ssid = "OLDNET"
+        with (
+            patch("pigeon.app_state.read_location_wifi", return_value=None),
+            patch("pigeon.wifi_scan.current_connected_ssid", return_value=""),
+        ):
+            state.reload_location_wifi()
+        self.assertEqual(state.selected_wifi_ssid, "")
+        self.assertEqual(state.displayed_wifi_ssid(), "")
 
 
 if __name__ == "__main__":

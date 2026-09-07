@@ -8,6 +8,15 @@ cd "${ROOT}"
 SYSTEM_DIR="${ROOT}/pigeonSystem"
 VENV_REBUILD_REASON=""
 
+if command -v flock >/dev/null 2>&1; then
+  LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/pigeon-$(id -u).lock"
+  exec 9>"${LOCK_FILE}"
+  if ! flock -n 9; then
+    echo "pigeon: another Pigeon instance is already running." >&2
+    exit 0
+  fi
+fi
+
 python_is_supported() {
   local py="${1:-}"
   [[ -n "${py}" && -x "${py}" ]] || return 1
@@ -141,9 +150,10 @@ if [[ -f "${USER_FONT_DIR}/fonts.conf" ]] \
   && grep -q 'include.*fonts\.conf' "${USER_FONT_DIR}/fonts.conf" 2>/dev/null; then
   export FONTCONFIG_FILE="${USER_FONT_DIR}/fonts.conf"
 fi
-# Pi / Linux: 800×480 logical target; UI composes at native 800×480. Fullscreen fills the monitor.
-export PIGEON_DISPLAY_W="${PIGEON_DISPLAY_W:-800}"
-export PIGEON_DISPLAY_H="${PIGEON_DISPLAY_H:-480}"
+# Pi / Linux: native 1280×800 UI target. Fullscreen fills matching displays
+# and letterboxes/pillarboxes other aspect ratios without deforming the UI.
+export PIGEON_DISPLAY_W="${PIGEON_DISPLAY_W:-1280}"
+export PIGEON_DISPLAY_H="${PIGEON_DISPLAY_H:-800}"
 export PIGEON_WINDOW_SCALE="${PIGEON_WINDOW_SCALE:-1.0}"
 export PIGEON_PI_FULLSCREEN="${PIGEON_PI_FULLSCREEN:-1}"
 export PIGEON_APPLE_TV_SCAN_TIMEOUT="${PIGEON_APPLE_TV_SCAN_TIMEOUT:-12}"

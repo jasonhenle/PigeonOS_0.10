@@ -773,9 +773,17 @@
     </g>
   </g>
   <g id="selector">
+    <g id="selector_tt_countdown_group">
+      <path id="main_exit_button-8" data-name="main_exit_button" d="M455.83,498.15h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" stroke="#000" stroke-miterlimit="10" stroke-width="7" />
+      <path id="main_02.01_exit_accent-8" data-name="main_02.01_exit_accent" d="M455.83,498.15h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" fill="none" stroke="#fff" stroke-miterlimit="10" stroke-width="2" />
+    </g>
+    <g id="selector_tt_countdown_16x9_group">
+      <path id="main_exit_button-9" data-name="main_exit_button" d="M538.78,498.15h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" stroke="#000" stroke-miterlimit="10" stroke-width="7" />
+      <path id="main_02.01_exit_accent-9" data-name="main_02.01_exit_accent" d="M538.78,498.15h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" fill="none" stroke="#fff" stroke-miterlimit="10" stroke-width="2" />
+    </g>
     <g id="selector_now_playing_group">
-      <path id="main_exit_button-7" data-name="main_exit_button" d="M939.7,498.15h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" stroke="#000" stroke-miterlimit="10" stroke-width="7" />
-      <path id="main_02.01_exit_accent-7" data-name="main_02.01_exit_accent" d="M939.7,498.15h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" fill="none" stroke="#fff" stroke-miterlimit="10" stroke-width="2" />
+      <path id="main_exit_button-7" data-name="main_exit_button" d="M953.53,498.15h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" stroke="#000" stroke-miterlimit="10" stroke-width="7" />
+      <path id="main_02.01_exit_accent-7" data-name="main_02.01_exit_accent" d="M953.53,498.15h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" fill="none" stroke="#fff" stroke-miterlimit="10" stroke-width="2" />
       <text id="selector_now_playing_text" transform="translate(968.52 510.115)" fill="#fff" font-family="SharpSans-Extrabold, 'Sharp Sans'" font-size="15" font-weight="700" text-anchor="middle" isolation="isolate"><tspan x="0" y="0">now</tspan><tspan x="0" y="14">playing</tspan></text>
     </g>
     <g id="selector_cast_info_group">
@@ -784,24 +792,24 @@
       <text id="selector_cast_info_text" transform="translate(1045.26 515.51) scale(1.01 1)" fill="#fff" font-family="SharpSans-Extrabold, 'Sharp Sans'" font-size="15" font-weight="700" isolation="isolate"><tspan x="0" y="0" letter-spacing="0em">c</tspan><tspan x="9.07" y="0" letter-spacing="0em">a</tspan><tspan x="18.06" y="0" letter-spacing="-.03em">s</tspan><tspan x="25.96" y="0" letter-spacing="0em">t</tspan><tspan x="2.17" y="14" letter-spacing="0em">i</tspan><tspan x="6.17" y="14" letter-spacing="-.01em">n</tspan><tspan x="14.95" y="14" letter-spacing="-.03em">f</tspan><tspan x="20.95" y="14">o</tspan></text>
     </g>
     <g id="selector_volume_group">
-      <path id="main_exit_button-2" data-name="main_exit_button" d="M842.92,498.15h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" stroke="#000" stroke-miterlimit="10" stroke-width="7" />
+      <path id="main_exit_button-2" data-name="main_exit_button" d="M870.58,498.15h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" stroke="#000" stroke-miterlimit="10" stroke-width="7" />
       <text id="selector_volumet_text" transform="translate(839.65 522.9) scale(1.01 1)" fill="#fff" font-family="SharpSans-Extrabold, 'Sharp Sans'" font-size="15" font-weight="700" isolation="isolate"><tspan x="0" y="0" letter-spacing="-.03em">v</tspan><tspan x="8.22" y="0" letter-spacing="0em">o</tspan><tspan x="17.84" y="0">l</tspan><tspan x="21.72" y="0" letter-spacing="0em">u</tspan><tspan x="30.75" y="0">me</tspan></text>
-      <path id="main_02.01_exit_accent-2" data-name="main_02.01_exit_accent" d="M842.92,498.15h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" fill="none" stroke="#fff" stroke-miterlimit="10" stroke-width="2" />
+      <path id="main_02.01_exit_accent-2" data-name="main_02.01_exit_accent" d="M870.58,498.15h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" fill="none" stroke="#fff" stroke-miterlimit="10" stroke-width="2" />
     </g>
     <g id="selector_poster_art_group">
-      <path id="main_exit_button-3" data-name="main_exit_button" d="M746.15,498.15h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" stroke="#000" stroke-miterlimit="10" stroke-width="7" />
-      <path id="main_02.01_exit_accent-3" data-name="main_02.01_exit_accent" d="M746.15,498.15h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" fill="none" stroke="#fff" stroke-miterlimit="10" stroke-width="2" />
+      <path id="main_exit_button-3" data-name="main_exit_button" d="M787.63,498.15h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" stroke="#000" stroke-miterlimit="10" stroke-width="7" />
+      <path id="main_02.01_exit_accent-3" data-name="main_02.01_exit_accent" d="M787.63,498.15h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" fill="none" stroke="#fff" stroke-miterlimit="10" stroke-width="2" />
       <text id="seleftor_poster_art_text" transform="translate(746.45 515.38)" fill="#fff" font-family="SharpSans-Extrabold, 'Sharp Sans'" font-size="15" font-weight="700" isolation="isolate"><tspan x="0" y="0">p</tspan><tspan x="9.72" y="0" letter-spacing="0em">o</tspan><tspan x="19.29" y="0" letter-spacing="-.03em">s</tspan><tspan x="27.19" y="0" letter-spacing="-.02em">t</tspan><tspan x="33.69" y="0" letter-spacing="0em">e</tspan><tspan x="43.08" y="0">r</tspan><tspan x="13.61" y="14">art</tspan></text>
     </g>
     <g id="selector_clock_group">
-      <path id="main_exit_button-4" data-name="main_exit_button" d="M649.37,498.15h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" stroke="#000" stroke-miterlimit="10" stroke-width="7" />
-      <path id="main_02.01_exit_accent-4" data-name="main_02.01_exit_accent" d="M649.37,498.15h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" fill="none" stroke="#fff" stroke-miterlimit="10" stroke-width="2" />
+      <path id="main_exit_button-4" data-name="main_exit_button" d="M704.68,498.15h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" stroke="#000" stroke-miterlimit="10" stroke-width="7" />
+      <path id="main_02.01_exit_accent-4" data-name="main_02.01_exit_accent" d="M704.68,498.15h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" fill="none" stroke="#fff" stroke-miterlimit="10" stroke-width="2" />
       <text id="selector_clock_text" transform="translate(653.54 522.74) scale(1.01 1)" fill="#fff" font-family="SharpSans-Extrabold, 'Sharp Sans'" font-size="15" font-weight="700" isolation="isolate"><tspan x="0" y="0">c</tspan><tspan x="9.13" y="0" letter-spacing="0em">l</tspan><tspan x="12.99" y="0">ock</tspan></text>
     </g>
     <g id="selector_audio_levels_group">
       <g id="selector_audio_level_group">
-        <path id="main_exit_button-5" data-name="main_exit_button" d="M552.6,498.15h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" stroke="#000" stroke-miterlimit="10" stroke-width="7" />
-        <path id="main_02.01_exit_accent-5" data-name="main_02.01_exit_accent" d="M552.6,498.15h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" fill="none" stroke="#fff" stroke-miterlimit="10" stroke-width="2" />
+        <path id="main_exit_button-5" data-name="main_exit_button" d="M621.73,498.15h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" stroke="#000" stroke-miterlimit="10" stroke-width="7" />
+        <path id="main_02.01_exit_accent-5" data-name="main_02.01_exit_accent" d="M621.73,498.15h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" fill="none" stroke="#fff" stroke-miterlimit="10" stroke-width="2" />
         <text id="selector_audio_levels_text" transform="translate(556.42 515.35) scale(1.01 1)" fill="#fff" font-family="SharpSans-Extrabold, 'Sharp Sans'" font-size="15" font-weight="700" isolation="isolate"><tspan x="0" y="0" letter-spacing="0em">a</tspan><tspan x="8.97" y="0">udio</tspan><tspan x="-.65" y="14" letter-spacing="0em">l</tspan><tspan x="3.2" y="14" letter-spacing="-.03em">ev</tspan><tspan x="20.32" y="14">els</tspan></text>
       </g>
     </g>

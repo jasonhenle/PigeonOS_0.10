@@ -46,9 +46,10 @@ _COLOR_WHITE = "#FFFFFF"
 _COLOR_GRAY = "#808080"  # 50% gray for unavailable chrome
 
 # Defaults match the 1280×800 now-playing layout.
+# Zone 1 stores the wide TT countdown (drawn in zone 6); zone 2 stays off.
 DEFAULT_ZONE_WIDGETS: tuple[str, str, str, str, str] = (
-    "clock",
-    "poster",
+    "tt_countdown_16x9",
+    "",
     "volume",
     "cast_info",
     "status_bar",
@@ -56,15 +57,44 @@ DEFAULT_ZONE_WIDGETS: tuple[str, str, str, str, str] = (
 
 # Spec catalog — which widgets may occupy each zone.
 ZONE_WIDGET_CATALOG: dict[int, tuple[str, ...]] = {
-    1: ("audio_levels", "clock", "poster", "volume", "now_playing", "cast_info"),
-    2: ("audio_levels", "clock", "poster", "volume", "now_playing", "cast_info"),
-    3: ("audio_levels", "clock", "poster", "volume", "now_playing", "cast_info"),
+    1: (
+        "tt_countdown",
+        "tt_countdown_16x9",
+        "audio_levels",
+        "clock",
+        "poster",
+        "volume",
+        "now_playing",
+        "cast_info",
+    ),
+    2: (
+        "tt_countdown",
+        "tt_countdown_16x9",
+        "audio_levels",
+        "clock",
+        "poster",
+        "volume",
+        "now_playing",
+        "cast_info",
+    ),
+    3: (
+        "tt_countdown",
+        "tt_countdown_16x9",
+        "audio_levels",
+        "clock",
+        "poster",
+        "volume",
+        "now_playing",
+        "cast_info",
+    ),
     4: ("cast_info",),
     5: ("status_bar", "cast_info"),
 }
 
 # Selector chrome groups (navigation B), left → right in the SVG.
 _WIDGET_SELECTOR_ORDER: tuple[str, ...] = (
+    "tt_countdown",
+    "tt_countdown_16x9",
     "audio_levels",
     "clock",
     "poster",
@@ -140,17 +170,20 @@ def _normalize_zone_widgets(
                 zi = int(z)
             except (TypeError, ValueError):
                 continue
-            if 1 <= zi <= 5 and str(name or "").strip():
-                base[zi - 1] = str(name).strip()
+            if 1 <= zi <= 5:
+                base[zi - 1] = str(name or "").strip()
     elif isinstance(values, (tuple, list)):
         for i, name in enumerate(list(values)[:5]):
-            if str(name or "").strip():
-                base[i] = str(name).strip()
-    # Clamp to catalog. Saved ``now_playing`` in zone 5 becomes ``status_bar``.
+            base[i] = str(name or "").strip()
+    # Clamp to catalog. Empty means the zone is off. Saved ``now_playing``
+    # in zone 5 becomes ``status_bar``.
     out: list[str] = []
     for i, name in enumerate(base):
         zone = i + 1
         name = canonical_zone_widget(zone, name)
+        if not name:
+            out.append("")
+            continue
         catalog = ZONE_WIDGET_CATALOG.get(zone, ())
         out.append(name if name in catalog else DEFAULT_ZONE_WIDGETS[i])
     return (out[0], out[1], out[2], out[3], out[4])
@@ -571,6 +604,8 @@ def _selector_label_font(size_px: int = 15):
 
 
 _SELECTOR_LABELS: dict[str, tuple[str, ...]] = {
+    "tt_countdown": ("count", "down"),
+    "tt_countdown_16x9": ("wide", "count"),
     "audio_levels": ("audio", "levels"),
     "clock": ("clock",),
     "poster": ("poster", "art"),
@@ -584,6 +619,8 @@ _SELECTOR_LABEL_SIZE_PX = 15
 _SELECTOR_LABEL_LINE_PITCH = 14.0
 # Per-widget nudge (design px): negative = up. Tuned against prefs pill chrome.
 _SELECTOR_LABEL_Y_NUDGE_PX: dict[str, float] = {
+    "tt_countdown": -2.0,
+    "tt_countdown_16x9": -2.0,
     "audio_levels": -2.0,
     "clock": -2.0,
     "poster": 0.0,
@@ -1481,6 +1518,31 @@ def _prefs_poster_patch_for_zone(
     return patch, x, y
 
 
+def _stamp_preferences_artwork_mask(
+    state: MainSettingsState,
+    svg_path: Path,
+) -> None:
+    """Protect prefs poster slots from bright-mode black↔white swap."""
+    from pigeon.compositing import stamp_bright_artwork_mask
+
+    assignments = _normalize_zone_widgets(
+        getattr(state, "preferences_zone_widgets", None) or DEFAULT_ZONE_WIDGETS
+    )
+    live = bool(getattr(state, "preferences_live_content", False))
+    live_src = getattr(state, "preferences_poster_bgra", None)
+    if live_src is not None and not isinstance(live_src, np.ndarray):
+        live_src = None
+    masters = None if live else _prefs_poster_masters(svg_path)
+    for zone in _PREFS_POSTER_FRAMES:
+        if assignments[zone - 1] != "poster":
+            continue
+        src = live_src if live else (masters.get(zone) if masters else None)
+        if src is None or getattr(src, "size", 0) == 0:
+            continue
+        patch, x, y = _prefs_poster_patch_for_zone(zone, src, svg_path=svg_path)
+        stamp_bright_artwork_mask(patch[:, :, 3], x, y)
+
+
 def _draw_preferences_posters_bgra(
     bgra: np.ndarray,
     state: MainSettingsState,
@@ -1513,6 +1575,12 @@ def _draw_preferences_posters_bgra(
             continue
         patch, x, y = _prefs_poster_patch_for_zone(zone, src, svg_path=svg_path)
         _paste_patch_bgra(bgra, patch, x, y)
+        try:
+            from pigeon.compositing import stamp_bright_artwork_mask
+
+            stamp_bright_artwork_mask(patch[:, :, 3], x, y)
+        except Exception:
+            pass
 
 
 def _hide_preferences_live_demo_texts(root: ET.Element) -> None:
@@ -2000,6 +2068,8 @@ def _apply_zone_preview(root: ET.Element, zone: int, widget: str) -> None:
 
 def _selector_group_for_widget(root: ET.Element, widget: str) -> ET.Element | None:
     names = {
+        "tt_countdown": "selector_tt_countdown_group",
+        "tt_countdown_16x9": "selector_tt_countdown_16x9_group",
         "audio_levels": "selector_audio_levels_group",
         "clock": "selector_clock_group",
         "poster": "selector_poster_art_group",
@@ -2032,6 +2102,10 @@ def apply_preferences_svg_state(root: ET.Element, state: MainSettingsState) -> N
             cast_count=named,
             zone_widgets=assignments,
         )
+    else:
+        from pigeon.np_layout import apply_tt_countdown_16x9_override
+
+        assignments = apply_tt_countdown_16x9_override(assignments)
     focused = str(getattr(state, "preferences_focused_id", "") or "")
 
     # Zone preview layers follow current assignments (live while browsing widgets).
@@ -2128,6 +2202,183 @@ def apply_preferences_svg_state(root: ET.Element, state: MainSettingsState) -> N
     _hide_preferences_color_button_images(root)
 
 
+_TT_COUNTDOWN_DEMO_TITLE = "THE TITLE"
+_TT_COUNTDOWN_DEMO_TIME = "-1:30:00"
+
+
+def _draw_preferences_tt_countdown_bgra(
+    bgra: np.ndarray,
+    state: MainSettingsState,
+) -> None:
+    """Schematic tt_countdown preview: hugged plate, demo title, demo countdown."""
+    from pigeon.np_layout import apply_tt_countdown_16x9_override
+
+    assignments = apply_tt_countdown_16x9_override(
+        _normalize_zone_widgets(
+            getattr(state, "preferences_zone_widgets", None) or DEFAULT_ZONE_WIDGETS
+        )
+    )
+    portrait = [z for z in (1, 2, 3) if assignments[z - 1] == "tt_countdown"]
+    from pigeon.np_layout import tt_countdown_16x9_zone
+
+    wide_zone = tt_countdown_16x9_zone(assignments)
+    if not portrait and wide_zone is None:
+        return
+    from pigeon.np_layout import (
+        TT_COUNTDOWN_16X9_VIEW_H,
+        TT_COUNTDOWN_16X9_VIEW_W,
+        TT_COUNTDOWN_BG_PAD,
+        TT_COUNTDOWN_CARD_RADIUS,
+        TT_COUNTDOWN_TEXT_SIZE_PX,
+        TT_COUNTDOWN_VIEW_H,
+        TT_COUNTDOWN_VIEW_W,
+        tt_countdown_16x9_content_lift,
+        tt_countdown_16x9_time_anchor,
+        tt_countdown_16x9_tt_box,
+        tt_countdown_portrait_content_lift,
+        tt_countdown_time_anchor,
+        tt_countdown_tt_box,
+    )
+    from pigeon.widgets.view_circles import (
+        _load_sharp_semibold,
+        _paste_patch_bgra,
+        _rounded_rect_mask,
+        _text_patch_font,
+        _tt_countdown_time_patch,
+    )
+
+    vb_x, vb_y, vb_w, vb_h = _PREFS_VIEWBOX
+    sx = DESIGN_W / max(vb_w, 1.0)
+    sy = DESIGN_H / max(vb_h, 1.0)
+
+    def _paint_card(
+        *,
+        fx: float,
+        fy: float,
+        fw: float,
+        fh: float,
+        view_w: float,
+        view_h: float,
+        tt_box: tuple[float, float, float, float],
+        time_anchor: tuple[float, float],
+    ) -> None:
+        dx = (fx - vb_x) * sx
+        dy = (fy - vb_y) * sy
+        dw = fw * sx
+        dh = fh * sy
+        s = min(dw / view_w, dh / view_h)
+        cw = max(1, int(round(view_w * s)))
+        chh = max(1, int(round(view_h * s)))
+        cx0 = int(round(dx + (dw - cw) / 2.0))
+        cy0 = int(round(dy + (dh - chh) / 2.0))
+        tt_x, tt_y, tt_w, tt_h = tt_box
+        title_patch, tp_w, tp_h = _text_patch_font(
+            _TT_COUNTDOWN_DEMO_TITLE,
+            font=_load_sharp_semibold(max(8, int(round(44 * s)))),
+            fill_rgb=(255, 255, 255),
+        )
+        time_patch = _tt_countdown_time_patch(
+            _TT_COUNTDOWN_DEMO_TIME,
+            size_px=max(10, int(round(TT_COUNTDOWN_TEXT_SIZE_PX * s))),
+        )
+        trt_h = (
+            float(time_patch.shape[0]) / max(s, 1e-6)
+            if time_patch is not None and time_patch.size > 0
+            else 0.0
+        )
+        tt_h_local = tp_h / max(s, 1e-6)
+        wide_card = abs(view_w - TT_COUNTDOWN_16X9_VIEW_W) < 0.5
+        if wide_card:
+            lift = tt_countdown_16x9_content_lift(tt_h_local, trt_height=trt_h)
+        else:
+            lift = tt_countdown_portrait_content_lift(tt_h_local, trt_height=trt_h)
+        tt_cx = cx0 + (tt_x + tt_w / 2.0) * s
+        tt_bottom = cy0 + (tt_y + tt_h - lift) * s
+        tt_px = tt_cx - tp_w / 2.0
+        tt_py = tt_bottom - tp_h
+        ax, ay = time_anchor
+        if wide_card:
+            ax, ay = tt_countdown_16x9_time_anchor(lift=lift)
+        else:
+            ay -= lift
+        trt_px = trt_py = tw_p = th_p = 0.0
+        if time_patch is not None and time_patch.size > 0:
+            tw_p = float(time_patch.shape[1])
+            th_p = float(time_patch.shape[0])
+            trt_px = cx0 + ax * s - tw_p / 2.0
+            trt_py = cy0 + ay * s
+        boxes = [(tt_px, tt_py, float(tp_w), float(tp_h))]
+        if th_p > 0:
+            boxes.append((trt_px, trt_py, tw_p, th_p))
+        bx0 = min(b[0] for b in boxes)
+        by0 = min(b[1] for b in boxes)
+        bx1 = max(b[0] + b[2] for b in boxes)
+        by1 = max(b[1] + b[3] for b in boxes)
+        pad = TT_COUNTDOWN_BG_PAD * s
+        card_w = max(1, int(round((bx1 - bx0) + 2.0 * pad)))
+        card_h = max(1, int(round((by1 - by0) + 2.0 * pad)))
+        card = np.zeros((card_h, card_w, 4), dtype=np.uint8)
+        card[:, :, 3] = _rounded_rect_mask(
+            card_w,
+            card_h,
+            max(1, int(round(TT_COUNTDOWN_CARD_RADIUS * s))),
+        )
+        _paste_patch_bgra(
+            bgra,
+            card,
+            int(round(bx0 - pad)),
+            int(round(by0 - pad)),
+        )
+        _paste_patch_bgra(
+            bgra,
+            title_patch,
+            int(round(tt_px)),
+            int(round(tt_py)),
+        )
+        if time_patch is None or time_patch.size == 0:
+            return
+        _paste_patch_bgra(
+            bgra,
+            time_patch,
+            int(round(trt_px)),
+            int(round(trt_py)),
+        )
+
+    for z in portrait:
+        frame = _PREFS_POSTER_FRAMES.get(z)
+        if frame is None:
+            continue
+        fx, fy, fw, fh, _frx = frame
+        _paint_card(
+            fx=fx,
+            fy=fy,
+            fw=fw,
+            fh=fh,
+            view_w=TT_COUNTDOWN_VIEW_W,
+            view_h=TT_COUNTDOWN_VIEW_H,
+            tt_box=tt_countdown_tt_box(),
+            time_anchor=tt_countdown_time_anchor(),
+        )
+    if wide_zone is not None:
+        covered = (1, 2) if int(wide_zone) == 6 else (2, 3)
+        frames = [_PREFS_POSTER_FRAMES[z] for z in covered if z in _PREFS_POSTER_FRAMES]
+        if frames:
+            fx = min(f[0] for f in frames)
+            fy = min(f[1] for f in frames)
+            fr = max(f[0] + f[2] for f in frames)
+            fb = max(f[1] + f[3] for f in frames)
+            _paint_card(
+                fx=fx,
+                fy=fy,
+                fw=fr - fx,
+                fh=fb - fy,
+                view_w=TT_COUNTDOWN_16X9_VIEW_W,
+                view_h=TT_COUNTDOWN_16X9_VIEW_H,
+                tt_box=tt_countdown_16x9_tt_box(),
+                time_anchor=tt_countdown_16x9_time_anchor(),
+            )
+
+
 def _prefs_structure_cache_key(
     state: MainSettingsState,
     *,
@@ -2158,7 +2409,7 @@ def _prefs_structure_cache_key(
         # Minute bucket: second wedges refresh at most once/min without full nav.
         datetime.now().strftime("%H%M"),
         1 if getattr(state, "preferences_live_content", False) else 0,
-        3,  # structure schema — live content hides cast/zone5 demos
+        6,  # structure schema — TT+TRT vertically centered
     )
 
 
@@ -2220,6 +2471,8 @@ def _render_preferences_structure_bgra(
     # Idle demo posters bake into the structure; live artwork is overlaid later.
     if not getattr(state, "preferences_live_content", False):
         _draw_preferences_posters_bgra(ui_bgra, state, svg_path=path)
+    # tt_countdown zones show a schematic card (demo title + countdown).
+    _draw_preferences_tt_countdown_bgra(ui_bgra, state)
     _draw_preferences_color_button_bgra(ui_bgra, state, svg_path=path)
     _draw_preferences_selector_labels_bgra(ui_bgra, root, state)
     _draw_preferences_zone_numbers_bgra(ui_bgra, root, state)
@@ -2271,6 +2524,8 @@ def render_preferences_settings_bgra(
         svg_path_meta, Path
     ):
         _draw_preferences_posters_bgra(out, st, svg_path=svg_path_meta)
+    elif isinstance(svg_path_meta, Path):
+        _stamp_preferences_artwork_mask(st, svg_path_meta)
     if isinstance(np_centers, dict) and np_centers:
         _draw_preferences_circular_now_playing_bgra(out, np_centers, st)
     if isinstance(volume_centers, dict) and volume_centers:

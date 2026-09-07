@@ -80,14 +80,13 @@ _ACCENT_SWATCHES: tuple[_Swatch, ...] = (
 )
 
 _UI_SWATCHES: tuple[_Swatch, ...] = (
-    # Keep brand red as the selectable "red" so existing UI-brand protection matches.
-    _Swatch("red", "red_swatch_group", "red_swatch_button", "red_swatch_icon", "#ff0013"),
+    _Swatch("blue", "blue_swatch_group", "blue_swatch_button", "blue_swatch_icon", COLOR_UI_DEFAULT),
     _Swatch("orange", "orange_Swatch_group", "orange_swatch", "orange_swatch_icon", "#FFB600"),
     _Swatch("yellow", "yellow_swatch_group", "yellow_swatch", "yellow_swatch_icon", "#FFF800"),
     _Swatch("green", "green_swatch_group", "green_swatch", "green_swatch_icon", "#58FF00"),
-    _Swatch("blue", "blue_swatch_group", "blue_swatch", "blue_swatch_icon", COLOR_UI_DEFAULT),
-    _Swatch("purple", "purple_swatch_group", "purple_swatch", "purple_swatch_icon", "#9500FF"),
     _Swatch("gray", "gray_swatch_group", "gray_swatch", "gray_swatch_icon", "#777777"),
+    _Swatch("dark", "dark_swatch_group", "dark_swatch_button", "dark_swatch_icon", "#111111"),
+    _Swatch("bright", "bright_swatch_group", "bright_swatch_button", "bright_swatch_icon", "#FFFFFF"),
 )
 
 _BUTTON_SWATCHES: tuple[_Swatch, ...] = (
@@ -150,7 +149,27 @@ THEME_SWATCH_HEXES: frozenset[str] = frozenset(
 
 UI_SWATCH_HEXES: frozenset[str] = frozenset(
     s.hex.lower() for s in _UI_SWATCHES
-) | frozenset({COLOR_UI_DEFAULT.lower(), "#4ea6f7", "#ff0013", "red", "blue"})
+) | frozenset(
+    {
+        COLOR_UI_DEFAULT.lower(),
+        "#4ea6f7",
+        "#ff0013",
+        "#111111",
+        "#ffffff",
+        "blue",
+        "dark",
+        "bright",
+    }
+)
+
+_LEGACY_UI_KEYS: dict[str, str] = {
+    "red": "dark",
+    "purple": "blue",
+    "lightblue": "blue",
+    "light_blue": "blue",
+}
+
+_LIVE_UI_KEY: str | None = None
 
 _SVG_TREE_TEMPLATES: dict[tuple[str, int, int], ET.Element] = {}
 _SVG_TREE_TEMPLATE_MAX = 4
@@ -188,7 +207,12 @@ def _swatch_by_key(color_class: str, key: str) -> _Swatch | None:
 
 
 def hex_for_color_key(color_class: str, key: str) -> str:
-    sw = _swatch_by_key(color_class, key)
+    k = str(key or "").strip().lower()
+    if color_class == "ui":
+        k = _LEGACY_UI_KEYS.get(k, k)
+        if k in ("dark", "bright"):
+            return COLOR_UI_DEFAULT
+    sw = _swatch_by_key(color_class, k)
     if sw is not None:
         return sw.hex
     return {
@@ -208,7 +232,9 @@ def read_ui_color_keys() -> dict[str, str]:
     out = dict(_DEFAULT_KEYS)
     if isinstance(raw, dict):
         for cls, default in _DEFAULT_KEYS.items():
-            key = str(raw.get(cls) or default)
+            key = str(raw.get(cls) or default).strip().lower()
+            if cls == "ui":
+                key = _LEGACY_UI_KEYS.get(key, key)
             if _swatch_by_key(cls, key) is None:
                 key = default
             out[cls] = key
@@ -222,10 +248,14 @@ def write_ui_color_keys(
 ) -> dict[str, str]:
     out = dict(_DEFAULT_KEYS)
     for cls, default in _DEFAULT_KEYS.items():
-        key = str(keys.get(cls) or default)
+        key = str(keys.get(cls) or default).strip().lower()
+        if cls == "ui":
+            key = _LEGACY_UI_KEYS.get(key, key)
         if _swatch_by_key(cls, key) is None:
             key = default
         out[cls] = key
+    global _LIVE_UI_KEY
+    _LIVE_UI_KEY = out.get("ui", "blue")
     if persist:
         try:
             from pigeon.app_state import write_app_state
@@ -233,13 +263,40 @@ def write_ui_color_keys(
             write_app_state(settings_ui_colors=out)
         except Exception:
             pass
+        _sync_options_color_format(out.get("ui", "blue"))
     return out
+
+
+def current_ui_picker_key() -> str:
+    """Live picker key, including in-progress swatch focus before persist."""
+    global _LIVE_UI_KEY
+    if _LIVE_UI_KEY is None:
+        _LIVE_UI_KEY = read_ui_color_keys().get("ui", "blue")
+    k = str(_LIVE_UI_KEY or "blue").strip().lower()
+    return _LEGACY_UI_KEYS.get(k, k) or "blue"
+
+
+def _sync_options_color_format(ui_key: str) -> None:
+    """Keep the options color/dark switch aligned with the picker."""
+    try:
+        from pigeon.widgets.options_settings import read_options, write_options
+
+        vals = read_options()
+        want = "dark" if str(ui_key or "").strip().lower() == "dark" else "color"
+        if vals.get("color_format") == want:
+            return
+        vals["color_format"] = want
+        write_options(vals, persist=True)
+    except Exception:
+        pass
 
 
 def theme_from_color_keys(keys: dict[str, str], *, base: SettingsTheme | None = None) -> SettingsTheme:
     b = base or SettingsTheme()
+    ui_key = str(keys.get("ui", "blue") or "blue").strip().lower()
+    ui_key = _LEGACY_UI_KEYS.get(ui_key, ui_key)
     return SettingsTheme(
-        ui=hex_for_color_key("ui", keys.get("ui", "blue")),
+        ui=hex_for_color_key("ui", ui_key),
         selected=b.selected or COLOR_SELECTED,
         deselected=hex_for_color_key("button", keys.get("button", "black")),
         inactive=b.inactive,
@@ -380,7 +437,15 @@ def apply_ui_color_svg_state(root: ET.Element, state: MainSettingsState) -> None
             active = active_class == cls
         else:
             active = focused == cls
-        _paint_text(text_el, _COLOR_WHITE if active else _COLOR_TEXT_IDLE)
+        try:
+            from pigeon.widgets.options_settings import ui_idle_text_hex, ui_is_bright
+
+            if ui_is_bright():
+                _paint_text(text_el, "#000000")
+            else:
+                _paint_text(text_el, _COLOR_WHITE if active else ui_idle_text_hex())
+        except Exception:
+            _paint_text(text_el, _COLOR_WHITE if active else _COLOR_TEXT_IDLE)
 
     # One icon visible per class — the currently chosen color.
     for cls, swatches in _CLASS_SWATCHES.items():
@@ -429,13 +494,13 @@ _UI_COLOR_BAR_Y = max(
 )
 
 _BAR_BUTTON_IDS: dict[str, str] = {
-    "red": "red_swatch_button",
+    "blue": "blue_swatch_button",
     "orange": "orange_swatch_button",
     "yellow": "yellow_Swatch_button",
     "green": "green_swatch_button",
-    "blue": "blue_swatch_button",
-    "purple": "purple_swatch_button",
     "gray": "gray_swatch_button",
+    "dark": "dark_swatch_button",
+    "bright": "bright_swatch_button",
 }
 
 
@@ -466,7 +531,11 @@ def apply_ui_color_bar_state(
         on = (not preview) and key == focused
         sw = _swatch_by_key("ui", key)
         if sw is not None:
-            _set_paint(el, fill=sw.hex, stroke=_COLOR_WHITE if on else "#202020")
+            if on:
+                stroke = "#000000" if key == "bright" else _COLOR_WHITE
+            else:
+                stroke = "#202020"
+            _set_paint(el, fill=sw.hex, stroke=stroke)
         if key == icon_key and icon is not None:
             try:
                 x = float(el.get("x") or 0)
@@ -477,6 +546,12 @@ def apply_ui_color_bar_state(
                 icon.set("cy", f"{y + h * 0.5:.2f}")
             except ValueError:
                 pass
+            if key == "dark":
+                _set_paint(icon, fill="#ff0013", stroke="#000000")
+            elif key == "bright":
+                _set_paint(icon, fill="#000000", stroke="#ffffff")
+            else:
+                _set_paint(icon, fill=_COLOR_WHITE, stroke="#000000")
     if icon is not None:
         _set_visible(icon, True)
     # Label removed from widget_sp_ui_color_zone0 (swatches are centered in the bar).
@@ -558,6 +633,7 @@ __all__ = [
     "apply_color_keys_to_state",
     "apply_ui_color_svg_state",
     "clear_ui_color_render_caches",
+    "current_ui_picker_key",
     "default_ui_color_svg_path",
     "hex_for_color_key",
     "load_persisted_theme_into_state",

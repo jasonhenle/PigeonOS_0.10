@@ -89,6 +89,8 @@ pigeon_apt_install() {
         python3-venv \
         python3-tk \
         python3-pip \
+        python3-gpiozero \
+        python3-lgpio \
         libportaudio2 \
         libgl1 \
         libglib2.0-0 \

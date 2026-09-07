@@ -308,6 +308,41 @@ def resolve_ui_font_extrabold_italic() -> str | None:
     return resolve_ui_font_extrabold()
 
 
+def resolve_ui_font_semibold_italic() -> str | None:
+    """
+    Sharp Sans Semibold Italic for the now-playing countdown widget.
+
+    Set ``PIGEON_FONT_SEMIBOLD_ITALIC`` to override. Returns ``None`` when no
+    italic cut exists — callers then use Semibold with a synthetic oblique.
+    """
+    env = os.environ.get("PIGEON_FONT_SEMIBOLD_ITALIC")
+    if env and Path(env).is_file():
+        return env
+
+    bundled_names = (
+        "Sharp Sans Semibold Italic.otf",
+        "SharpSansSemiboldItalic.otf",
+        "SharpSans-SemiboldItalic.otf",
+    )
+    bundled = _first_bundled_font(bundled_names)
+    if bundled:
+        return bundled
+
+    roots = _font_search_roots()
+    globs = (
+        "*Sharp*Sans*Semibold*Italic*.otf",
+        "*Sharp*Sans*Semibold*Italic*.ttf",
+        "*SharpSans*Semibold*Italic*.otf",
+        "*SharpSans*Semibold*Italic*.ttf",
+    )
+    for root in roots:
+        for pattern in globs:
+            for p in sorted(root.glob(pattern)):
+                if p.is_file():
+                    return str(p)
+    return None
+
+
 def resolve_ui_font_semibold() -> str | None:
     """
     Return path to Sharp Sans Semibold for settings / keyboard SVG labels.

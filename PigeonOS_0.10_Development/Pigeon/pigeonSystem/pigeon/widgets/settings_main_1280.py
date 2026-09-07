@@ -885,10 +885,11 @@ def _column_list(
             _hide(cell)
             continue
         on = i == int(selected_row)
+        stroke = _chrome_stroke()
         if on:
-            _set_fill(cell, _COLOR_WHITE, stroke=_COLOR_BLACK)
+            _set_fill(cell, _COLOR_WHITE, stroke=stroke)
         else:
-            _set_fill(cell, _COLOR_COLUMN_OFF, stroke=_COLOR_BLACK)
+            _set_fill(cell, _COLOR_COLUMN_OFF, stroke=stroke)
     x, y, w, h = zone_center_rect(zone, *_viewbox_wh(chrome))
     _place_widget(
         canvas,
@@ -897,7 +898,7 @@ def _column_list(
         y=y,
         w=w,
         h=h,
-        cache_key=("list", w, h, int(selected_row), len(labels), bool(show_arrows)),
+        cache_key=("list", w, h, int(selected_row), len(labels), bool(show_arrows), _ui_bright()),
     )
     sx = w / _LIST_CHROME_VB[0]
     sy = h / _LIST_CHROME_VB[1]
@@ -1078,14 +1079,37 @@ def clear_settings_main_compose_cache() -> None:
     _LAST_MAIN["frame"] = None
 
 
+def _ui_bright() -> bool:
+    try:
+        from pigeon.widgets.options_settings import ui_is_bright
+
+        return bool(ui_is_bright())
+    except Exception:
+        return False
+
+
+def _chrome_stroke() -> str:
+    return _COLOR_BLACK
+
+
 def _settings_main_bg(
     *,
     ui_hex: str,
     assets_dir: Path | str | None,
 ) -> np.ndarray:
-    from pigeon.widgets.settings_theme_background import draw_settings_theme_background_bgra
+    from pigeon.widgets.settings_theme_background import (
+        draw_settings_theme_background_bgra,
+        settings_background_ui_hex,
+    )
 
-    key = (str(ui_hex or "").lower(), str(assets_dir or ""), int(DESIGN_W), int(DESIGN_H))
+    tint = settings_background_ui_hex(ui_hex)
+    key = (
+        str(tint or "").lower(),
+        "bright" if _ui_bright() else "std",
+        str(assets_dir or ""),
+        int(DESIGN_W),
+        int(DESIGN_H),
+    )
     cached = _THEME_BG_CACHE.get(key)
     if cached is not None:
         return cached
@@ -1149,6 +1173,9 @@ def _settings_main_structure_sig(
         str(getattr(th, "ui", "") or ""),
         str(st.location_name or ""),
         str(st.selected_wifi_ssid or ""),
+        str(getattr(st, "live_wifi_ssid", "") or ""),
+        str(st.displayed_wifi_ssid() if hasattr(st, "displayed_wifi_ssid") else ""),
+        bool(getattr(st, "wifi_logged_out", False)),
         bool(st.wifi_configured),
         bool(st.keyboard_open),
         kb_target,
@@ -1175,6 +1202,7 @@ def _settings_main_structure_sig(
         str(local_ipv4_address() or ""),
         int(getattr(st, "wifi_level", 0) or 0),
         0 if getattr(st, "zone2_tt_bgra", None) is None else 1,
+        _ui_bright(),
     )
 
 
@@ -1195,10 +1223,11 @@ def _zone_focused(zone_index: int, focused: str) -> bool:
 
 def _style_column_container(root: ET.Element, *, selected: bool) -> None:
     el = _find(root, "sm_container")
+    stroke = _chrome_stroke()
     if selected:
-        _set_fill(el, _COLOR_WHITE, stroke=_COLOR_BLACK)
+        _set_fill(el, _COLOR_WHITE, stroke=stroke)
     else:
-        _set_fill(el, _COLOR_COLUMN_OFF, stroke=_COLOR_BLACK)
+        _set_fill(el, _COLOR_COLUMN_OFF, stroke=stroke)
 
 
 def _tint_add_art(root: ET.Element, color: str) -> None:
@@ -1238,6 +1267,10 @@ def render_settings_main_1280_bgra(
     from pigeon.widgets.main_settings import _location_display_text, _network_field_text
 
     st = state
+    try:
+        st.refresh_network_ssid()
+    except Exception:
+        pass
     st.ensure_focus_ring()
     kb = st.keyboard
     kb_target = str(getattr(kb, "target", "") or "") if kb is not None else ""
@@ -1317,6 +1350,11 @@ def render_settings_main_1280_bgra(
         _draw_yes_no_above_zone1(canvas, kb)
     if _want(1):
         dual = _load_widget("dual", assets_dir=assets_dir)
+        _set_fill(
+            _find(dual, "dual_container"),
+            "#202020",
+            stroke=_chrome_stroke(),
+        )
         _set_fill(_find(dual, "dual_button_container_a"), _COLOR_WHITE if a_on else _COLOR_SLOT_OFF)
         _set_fill(_find(dual, "dual_button_container_b"), _COLOR_WHITE if b_on else _COLOR_SLOT_OFF)
         zone1 = SETTINGS_MAIN_ZONES[1]
@@ -1328,7 +1366,7 @@ def render_settings_main_1280_bgra(
             y=int(round(zone1.y)),
             w=zw,
             h=zh,
-            cache_key=("dual", zw, zh, a_on, b_on),
+            cache_key=("dual", zw, zh, a_on, b_on, _ui_bright()),
         )
 
     loc_box = dual_slot_design(DUAL_SLOT_A)
@@ -1423,12 +1461,13 @@ def render_settings_main_1280_bgra(
                 fit=True,
             )
         else:
-            none = not bool(st.wifi_configured)
+            shown = st.displayed_wifi_ssid() if hasattr(st, "displayed_wifi_ssid") else str(st.selected_wifi_ssid or "").strip()
+            none = not bool(shown)
             label = _network_field_text(st)
             if none:
                 label = "CONNECT"
             elif label in (None, "CONNECTED"):
-                label = str(st.selected_wifi_ssid or "CONNECTED").strip() or "CONNECTED"
+                label = shown or "CONNECTED"
             wifi_box, net_text_box = _network_field_boxes(net_box)
             _draw_wifi_fan(
                 canvas,
@@ -1476,7 +1515,7 @@ def render_settings_main_1280_bgra(
             y=rect[1],
             w=rect[2],
             h=rect[3],
-            cache_key=("col", rect[2], rect[3], column_on[zone_index]),
+            cache_key=("col", rect[2], rect[3], column_on[zone_index], _ui_bright()),
         )
 
     def _column_text_box(zone_index: int) -> tuple[int, int, int, int]:
@@ -1546,6 +1585,11 @@ def render_settings_main_1280_bgra(
         if st.show_network_picker and box_num == 2:
             names = list(st.wifi_networks or ())
             rows = [(n, "") for n in names]
+            shown_net = (
+                st.displayed_wifi_ssid()
+                if hasattr(st, "displayed_wifi_ssid")
+                else str(st.selected_wifi_ssid or "").strip()
+            )
             _column_list(
                 canvas,
                 zone_index,
@@ -1554,9 +1598,7 @@ def render_settings_main_1280_bgra(
                 selected_row=int(st.network_picker_row),
                 show_arrows=len(rows) > _LIST_PAGE_SIZE,
                 assets_dir=assets_dir,
-                current=(str(st.selected_wifi_ssid or "").strip(), "")
-                if str(st.selected_wifi_ssid or "").strip()
-                else None,
+                current=(shown_net, "") if shown_net else None,
             )
             return
         if bool(getattr(panel, "scanning", False)) or str(getattr(panel, "phase", "") or "") == "scanning":

@@ -17,7 +17,7 @@ import tkinter.scrolledtext as scrolledtext
 import tkinter.simpledialog as simpledialog
 
 import numpy as np
-from PIL import Image, ImageTk
+from PIL import Image, ImageDraw, ImageFont, ImageTk
 import cv2
 
 # Status bar: one black pill cols 3–17, bar-shaped mask hole + translucent bar; rows 6–8 gradient.
@@ -229,6 +229,8 @@ try:
     _PIGEON_EXT = True
 except ImportError as _exc:
     _log_optional_import_failure("core_compositing", _exc)
+
+from pigeon.paused_screen import PAUSED_SCREEN_TEXT, paint_paused_screen_label
 
 try:
     from pigeon.widgets.clock_calendar import (
@@ -510,6 +512,7 @@ BACKDROP_BRIGHTNESS = 0.8
 # Static landing logo (no video): full brightness; old 0.3 “paused video” level hid the art.
 LANDING_DISPLAY_BRIGHTNESS = 1.0
 LANDING_DIM_BRIGHTNESS = 0.78  # Space-bar pulse “off” — still readable vs old 0.3
+PAUSED_SCREEN_BACKDROP_DIM = 0.72
 # After UI bootstrap, optional auto-restore of saved TMDb backdrop (env-gated) runs after this delay.
 STARTUP_PIGEON_WORDMARK_MAX_S = 5.0
 # After splash: optional startup transition timing (no mic EQ).
@@ -782,9 +785,9 @@ def _apply_brightness(frame_bgr: np.ndarray, factor: float) -> np.ndarray:
 
 def _bgr_to_tk_image(frame_bgr: np.ndarray) -> ImageTk.PhotoImage:
     try:
-        from pigeon.widgets.options_settings import apply_ui_mono_bgr
+        from pigeon.widgets.options_settings import apply_ui_look_bgr
 
-        frame_bgr = apply_ui_mono_bgr(frame_bgr)
+        frame_bgr = apply_ui_look_bgr(frame_bgr)
     except Exception:
         pass
     rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
@@ -802,9 +805,9 @@ def _update_label_photo_from_bgr(
     ``PhotoImage`` objects per second leaks native Tk storage and locks up after a short run.
     """
     try:
-        from pigeon.widgets.options_settings import apply_ui_mono_bgr
+        from pigeon.widgets.options_settings import apply_ui_look_bgr
 
-        frame_bgr = apply_ui_mono_bgr(frame_bgr)
+        frame_bgr = apply_ui_look_bgr(frame_bgr)
     except Exception:
         pass
     rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
@@ -873,7 +876,8 @@ def main() -> int:
     root = tk.Tk()
     _app_startup_mono = time.monotonic()
     try:
-        root.configure(bg="#000")
+        root.configure(bg="#000", cursor="none")
+        root.option_add("*cursor", "none")
     except tk.TclError:
         pass
     root.title("")
@@ -914,16 +918,16 @@ def main() -> int:
 
     root.report_callback_exception = _report_callback_exception  # type: ignore[method-assign]
 
-    shell = tk.Frame(root, bg="#111")
+    shell = tk.Frame(root, bg="#111", cursor="none")
     shell.pack(fill=tk.BOTH, expand=True)
     # Main UI is built here; splash overlay sits above until the splash sequence finishes.
-    content_host = tk.Frame(shell, bg="#111")
+    content_host = tk.Frame(shell, bg="#111", cursor="none")
     content_host.pack(fill=tk.BOTH, expand=True)
     # Bridge host so the clock saver is visible the instant splash lifts — even if full
     # bootstrap has not created the real video ``Label`` yet. Bootstrap destroys this.
-    _boot_clock_host = tk.Frame(content_host, bg="#000")
+    _boot_clock_host = tk.Frame(content_host, bg="#000", cursor="none")
     _boot_clock_host.pack(fill=tk.BOTH, expand=True)
-    _boot_clock_label = tk.Label(_boot_clock_host, bd=0, highlightthickness=0, bg="#000")
+    _boot_clock_label = tk.Label(_boot_clock_host, bd=0, highlightthickness=0, bg="#000", cursor="none")
     _boot_clock_label.pack(fill=tk.BOTH, expand=True)
     _boot_clock_photo: list[ImageTk.PhotoImage | None] = [None]
 
@@ -1105,7 +1109,7 @@ def main() -> int:
         # Stay a direct child of ``shell`` (placed full-size). Do **not** pack into ``video_area`` after
         # the video ``Label``: two ``pack(..., fill=BOTH, expand=True)`` siblings leave the second with
         # zero height, so the splash would disappear. Transparent PNG / fade pixels show ``content_host``.
-        splash_overlay = tk.Frame(shell, bg="#000", highlightthickness=0, bd=0)
+        splash_overlay = tk.Frame(shell, bg="#000", highlightthickness=0, bd=0, cursor="none")
         splash_overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
         # Placed widgets can sit under later-packed siblings (e.g. ``hud_bar``); pin above ``content_host``.
         try:
@@ -1117,7 +1121,7 @@ def main() -> int:
                 pass
         startup_ph[0] = splash_overlay
         # Opaque black label: splash frames are always composited to RGB (never Tk alpha punch-through).
-        splash_label = tk.Label(splash_overlay, bg="#000", bd=0)
+        splash_label = tk.Label(splash_overlay, bg="#000", bd=0, cursor="none")
         splash_label.pack(expand=True, fill="both")
         splash_photo: list[ImageTk.PhotoImage | None] = [None]
         splash_idx = [0]
@@ -1536,6 +1540,7 @@ def main() -> int:
             justify="center",
             fg="#ddd",
             bg="#111",
+            cursor="none",
             wraplength=WINDOW_W - 40,
         )
         loading.pack(expand=True, fill="both")
@@ -1586,8 +1591,8 @@ def main() -> int:
         # Full-size video area (always WINDOW_H) so scene scale matches non-overlay mode.
         # Paint the clock onto the new label BEFORE destroying the splash bridge — otherwise
         # the screen flashes black between bridge teardown and the first composite.
-        video_area = tk.Frame(content_host, bg="#000")
-        label = tk.Label(video_area, bd=0, highlightthickness=0, takefocus=True, bg="#000")
+        video_area = tk.Frame(content_host, bg="#000", cursor="none")
+        label = tk.Label(video_area, bd=0, highlightthickness=0, takefocus=True, bg="#000", cursor="none")
         _startup_label_black_photo: list[ImageTk.PhotoImage | None] = [None]
         _early_clock_underlay_photo: list[ImageTk.PhotoImage | None] = [None]
         _handoff_clock = _boot_clock_photo[0]
@@ -2140,6 +2145,8 @@ def main() -> int:
             # YouTube (and other 16×9) thumbs from pyatv ``metadata.artwork()``.
             "video_artwork_bgra": None,
             "video_artwork_key": None,
+            "youtube_thumb_in_flight": False,
+            "youtube_thumb_key": None,
             # After no-match / exhausted error-flag retries: stop empty-display poll respawn
             # and show "?" in the circles 2×3 poster slot.
             "tmdb_missing_art": False,
@@ -2217,6 +2224,13 @@ def main() -> int:
 
         def _atv_metadata_is_content_idle(metadata: dict[str, object]) -> bool:
             try:
+                from pigeon.apple_tv_now_playing import apple_tv_power_is_off
+
+                if apple_tv_power_is_off(metadata):
+                    return True
+            except Exception:
+                pass
+            try:
                 from pigeon.display_confidence import content_should_stay_active
                 from pigeon.hdmi_ocr import hdmi_capture_available
                 from pigeon.source_toggles import source_enabled
@@ -2241,8 +2255,25 @@ def main() -> int:
             q = str(metadata.get("query") or "").strip()
             return not q
 
+        def _apple_tv_is_off() -> bool:
+            """True when the selected Apple TV is powered off or has gone unreachable."""
+            if not current_apple_tv.get("identifier"):
+                return False
+            md = apple_tv_auto_state.get("last_metadata")
+            md_dict = md if isinstance(md, dict) else None
+            try:
+                from pigeon.apple_tv_now_playing import apple_tv_should_show_idle_clock
+
+                cf = int(apple_tv_dashboard_track.get("consecutive_fail", 0) or 0)
+                return bool(apple_tv_should_show_idle_clock(md_dict, consecutive_fail=cf))
+            except Exception:
+                raw = str((md_dict or {}).get("power_state") or "").lower()
+                return raw == "off" or raw.endswith(".off")
+
         def _show_paused_row_overlay() -> bool:
             """True when the player has substantive content loaded but is not actively playing."""
+            if _apple_tv_is_off():
+                return False
             lm_raw = apple_tv_auto_state.get("last_metadata")
             lm = lm_raw if isinstance(lm_raw, dict) else None
             if lm is None:
@@ -2286,8 +2317,22 @@ def main() -> int:
         def _resolve_receiver_lines_for_now_playing() -> tuple[str, str, str]:
             """Incoming/config/volume for View 1, with Denon telnet fallback."""
             if bool(receiver_standby_holder[0]):
-                denon_vol_cache["np_hold"] = ""
-                return "", "", ""
+                # Standby hides source/format, but keep the last/current MV so
+                # the volume widget does not go blank while the AVR still
+                # answers (network-eco / false STANDBY).
+                vol = ""
+                if compose_playback_volume_widget_line is not None:
+                    vol = compose_playback_volume_widget_line(
+                        stream_row=streaming_slot_holder[0],
+                        apple_tv_last_metadata=apple_tv_auto_state.get("last_metadata")
+                        if isinstance(apple_tv_auto_state.get("last_metadata"), dict)
+                        else None,
+                        denon_vol_effective=str(denon_vol_cache.get("effective") or ""),
+                        roku_tv_volume_percent="",
+                    )
+                if not vol:
+                    vol = str(denon_vol_cache.get("np_hold") or "").strip()
+                return "", "", vol
             inc = str(receiver_overlay_state.get("incoming") or "").strip()
             cfg = str(receiver_overlay_state.get("config") or "").strip()
             if not inc and not cfg:
@@ -2983,6 +3028,8 @@ def main() -> int:
 
         def _something_playing_now() -> bool:
             """True when the player reports active playback (not idle/home/paused-only)."""
+            if _apple_tv_is_off():
+                return False
             if bool(apple_tv_playback_clock.get("playing")):
                 return True
             lm = apple_tv_auto_state.get("last_metadata")
@@ -2992,6 +3039,8 @@ def main() -> int:
 
         def _np_widgets_content_active(*, incoming: str = "", config: str = "") -> bool:
             """True when NP should show more than the clock (title / play / AVR broadcast)."""
+            if _apple_tv_is_off():
+                return False
             if _something_playing_now() or _show_paused_row_overlay():
                 return True
             if bool(apple_tv_playback_clock.get("live_mode")):
@@ -3102,6 +3151,8 @@ def main() -> int:
                 return False
             if dev_phase != DevPhase.OFF:
                 return False
+            if _apple_tv_is_off():
+                return True
             # Do not require ``scene_enabled``: view ONE now-playing (circles) commonly
             # runs with the video scene off, and the saver must still arm there.
             _apply_position_stall_grace_to_clock_saver(now)
@@ -3521,8 +3572,6 @@ def main() -> int:
                 except Exception:
                     pass
             main_settings_widget.render(canvas)
-            if nav_hot:
-                return
             try:
                 st_ms = main_settings_widget.state
                 pigeon_page = bool(st_ms.show_pigeon_settings)
@@ -3542,10 +3591,13 @@ def main() -> int:
                 return
             if view_circles_widget is None:
                 return
-            try:
-                _sync_now_playing_screen_state()
-            except Exception:
-                pass
+            # Keep the bar on every nav paint. Skipping it while the coalescer
+            # is hot made the track vanish and pop back on each Left/Right.
+            if not nav_hot:
+                try:
+                    _sync_now_playing_screen_state()
+                except Exception:
+                    pass
             try:
                 view_circles_widget.overlay_status_bar(canvas)
             except Exception:
@@ -3575,6 +3627,8 @@ def main() -> int:
                     played_text = _format_hmmss(int(pair[0]))
                     remaining_text = _format_hmmss(int(pair[1]))
             inc, cfg, vol = _resolve_receiver_lines_for_now_playing()
+            if _apple_tv_is_off():
+                inc, cfg, vol = "", "", ""
             circles_poster_bgra = _circles_poster_bgra()
             has_np = _effective_display_view() == DisplayView.ONE
             sb = streaming_badge_state
@@ -3605,6 +3659,26 @@ def main() -> int:
                 lm_svc = apple_tv_auto_state.get("last_metadata")
                 if isinstance(lm_svc, dict):
                     circles_service = str(lm_svc.get("app_name") or "").strip()
+            yt_now = bool(_vv_is_youtube())
+            video_art = apple_tv_auto_state.get("video_artwork_bgra")
+            if (
+                not yt_now
+                and isinstance(video_art, np.ndarray)
+                and video_art.size > 0
+            ):
+                try:
+                    from pigeon.np_layout import poster_image_is_16x9
+
+                    yt_now = bool(poster_image_is_16x9(video_art))
+                except Exception:
+                    yt_now = False
+            if yt_now and "youtube" not in str(circles_service or "").lower():
+                circles_service = "YouTube"
+            if yt_now:
+                try:
+                    _spawn_youtube_thumb_fetch()
+                except Exception:
+                    pass
             np_active = _np_widgets_content_active(incoming=inc, config=cfg)
             if _vv_is_music():
                 lm_music = apple_tv_auto_state.get("last_metadata")
@@ -3637,6 +3711,9 @@ def main() -> int:
                     service_name=circles_service,
                     has_position=_has_playback_position(),
                     content_active=np_active,
+                    is_youtube=False,
+                    tt_bgra=None,
+                    tt_title=song_t,
                 ):
                     changed = True
             else:
@@ -3654,9 +3731,33 @@ def main() -> int:
                     or apple_tv_auto_state.get("pending_tmdb")
                 )
                 missing_art = bool(apple_tv_auto_state.get("tmdb_missing_art"))
-                if _vv_is_youtube():
-                    fetch_busy = False
-                    missing_art = circles_poster_bgra is None
+                song_t = album_t = artist_t = ""
+                if yt_now:
+                    fetch_busy = bool(apple_tv_auto_state.get("youtube_thumb_in_flight"))
+                    missing_art = False
+                    cast_rows = []
+                    lm_yt = apple_tv_auto_state.get("last_metadata")
+                    if isinstance(lm_yt, dict):
+                        song_t = str(lm_yt.get("title") or "").strip()
+                        artist_t = str(lm_yt.get("artist") or "").strip()
+                        album_t = str(lm_yt.get("album") or "").strip()
+                        if not song_t:
+                            try:
+                                from pigeon.apple_tv_now_playing import (
+                                    youtube_title_from_metadata,
+                                )
+
+                                song_t = youtube_title_from_metadata(lm_yt)
+                            except Exception:
+                                song_t = ""
+                        if not song_t and album_t:
+                            song_t, album_t = album_t, ""
+                tt_src = None
+                try:
+                    tt_src = _active_tmdb_tt_src_bgra()
+                except Exception:
+                    tt_src = None
+                tt_fallback = str(active_tmdb_display_title or "").strip() or song_t
                 if view_circles_widget.update_state(
                     progress=progress,
                     elapsed_text=played_text,
@@ -3671,13 +3772,16 @@ def main() -> int:
                     searching=fetch_busy and not missing_art,
                     missing_art=missing_art and not fetch_busy,
                     content_mode="video",
-                    song_title="",
-                    album_title="",
-                    artist_title="",
+                    song_title=song_t if yt_now else "",
+                    album_title=album_t if yt_now else "",
+                    artist_title=artist_t if yt_now else "",
                     paused=circles_paused,
                     service_name=circles_service,
                     has_position=_has_playback_position(),
                     content_active=np_active,
+                    is_youtube=yt_now,
+                    tt_bgra=tt_src,
+                    tt_title=tt_fallback,
                 ):
                     changed = True
             if changed:
@@ -4320,10 +4424,12 @@ def main() -> int:
             if (
                 apple_tv_auto_state.get("video_artwork_bgra") is None
                 and apple_tv_auto_state.get("video_artwork_key") is None
+                and apple_tv_auto_state.get("youtube_thumb_key") is None
             ):
                 return
             apple_tv_auto_state["video_artwork_bgra"] = None
             apple_tv_auto_state["video_artwork_key"] = None
+            apple_tv_auto_state["youtube_thumb_key"] = None
 
         def _clear_playback_artwork_caches() -> None:
             _clear_music_artwork_cache()
@@ -4360,9 +4466,17 @@ def main() -> int:
 
         def _store_music_artwork_from_metadata(md: dict[str, object] | None) -> None:
             """Decode/store pyatv artwork for Music covers or YouTube 16×9 thumbs."""
-            if not isinstance(md, dict) or _atv_metadata_is_content_idle(md):
+            if not isinstance(md, dict):
                 _clear_playback_artwork_caches()
                 return
+            if _atv_metadata_is_content_idle(md):
+                # YouTube often reports Idle on MRP while HDMI/Companion still play.
+                # Keep a thumb we already have instead of flashing an empty zone 6.
+                if not _vv_is_youtube():
+                    _clear_playback_artwork_caches()
+                    return
+                if not md.get("artwork_bytes"):
+                    return
             mt = str(md.get("media_type") or "").strip().lower()
             is_music = mt == "music" or mt.endswith(".music")
             is_youtube = False
@@ -4378,6 +4492,11 @@ def main() -> int:
             except Exception:
                 blob = f"{md.get('app_name') or ''} {md.get('app_id') or ''}".lower()
                 is_youtube = "youtube" in blob
+            if not is_youtube:
+                try:
+                    is_youtube = bool(_vv_is_youtube())
+                except Exception:
+                    pass
             track_key = _music_artwork_track_key(md)
             art_bytes = md.get("artwork_bytes")
             bgra = _decode_artwork_bytes_bgra(art_bytes)
@@ -4403,6 +4522,18 @@ def main() -> int:
                     apple_tv_auto_state["video_artwork_bgra"] = None
                     apple_tv_auto_state["video_artwork_key"] = track_key
                 return
+            # Unknown-app landscape art from pyatv is treated as a 16×9 thumb.
+            try:
+                from pigeon.np_layout import poster_image_is_16x9
+
+                landscape = bool(bgra is not None and poster_image_is_16x9(bgra))
+            except Exception:
+                landscape = False
+            if landscape:
+                _clear_music_artwork_cache()
+                apple_tv_auto_state["video_artwork_bgra"] = bgra
+                apple_tv_auto_state["video_artwork_key"] = track_key
+                return
             _clear_playback_artwork_caches()
 
         def _circles_poster_bgra() -> np.ndarray | None:
@@ -4417,11 +4548,80 @@ def main() -> int:
                 if isinstance(bgra, np.ndarray) and bgra.size > 0:
                     return bgra
                 return None
+            bgra = apple_tv_auto_state.get("video_artwork_bgra")
+            if isinstance(bgra, np.ndarray) and bgra.size > 0:
+                try:
+                    from pigeon.np_layout import poster_image_is_16x9
+
+                    if poster_image_is_16x9(bgra):
+                        return bgra
+                except Exception:
+                    pass
             if apple_tv_auto_state.get("tmdb_fetch_in_flight") or apple_tv_auto_state.get(
                 "pending_tmdb"
             ):
                 return None
             return _active_tmdb_poster_bgra()
+
+        def _spawn_youtube_thumb_fetch() -> None:
+            """Fill zone 6 from YouTube's CDN when pyatv artwork() is empty."""
+            bgra = apple_tv_auto_state.get("video_artwork_bgra")
+            if isinstance(bgra, np.ndarray) and bgra.size > 0:
+                return
+            if apple_tv_auto_state.get("youtube_thumb_in_flight"):
+                return
+            md_raw = apple_tv_auto_state.get("last_metadata")
+            md = dict(md_raw) if isinstance(md_raw, dict) else {}
+            try:
+                from pigeon.apple_tv_now_playing import (
+                    download_youtube_thumbnail_bytes,
+                    youtube_thumb_identity,
+                    youtube_title_from_metadata,
+                    youtube_video_id_from_metadata,
+                )
+            except Exception:
+                return
+            if not youtube_video_id_from_metadata(md) and not youtube_title_from_metadata(md):
+                return
+            key = youtube_thumb_identity(md)
+            if not key or key == apple_tv_auto_state.get("youtube_thumb_key"):
+                return
+            apple_tv_auto_state["youtube_thumb_in_flight"] = True
+
+            def worker() -> None:
+                raw: bytes | None = None
+                try:
+                    raw = download_youtube_thumbnail_bytes(md)
+                except Exception:
+                    raw = None
+
+                def finish() -> None:
+                    nonlocal skip_cache
+                    apple_tv_auto_state["youtube_thumb_in_flight"] = False
+                    apple_tv_auto_state["youtube_thumb_key"] = key
+                    if raw:
+                        art_md = dict(md)
+                        art_md["artwork_bytes"] = raw
+                        try:
+                            _store_music_artwork_from_metadata(art_md)
+                        except Exception:
+                            pass
+                    try:
+                        _sync_now_playing_screen_state()
+                    except Exception:
+                        pass
+                    skip_cache = None
+                    try:
+                        render_once()
+                    except Exception:
+                        pass
+
+                try:
+                    root.after(0, finish)
+                except Exception:
+                    finish()
+
+            threading.Thread(target=worker, daemon=True, name="youtube-thumb").start()
 
         def _resolve_streaming_app_logo_bgra() -> np.ndarray | None:
             """Resolve the streaming-service badge source BGRA (same filename resolution as the
@@ -4576,6 +4776,7 @@ def main() -> int:
                 is_youtube_streaming_service = None  # type: ignore[assignment]
             sb = streaming_badge_state
             label = str(sb.get("label") or "").strip()
+            filename = str(sb.get("filename") or "").strip()
             app_name = ""
             app_id = ""
             lm = apple_tv_auto_state.get("last_metadata")
@@ -4583,13 +4784,26 @@ def main() -> int:
                 app_name = str(lm.get("app_name") or "")
                 app_id = str(lm.get("app_id") or "")
             if is_youtube_streaming_service is not None:
-                return bool(
-                    is_youtube_streaming_service(
-                        app_name=app_name, app_id=app_id, label=label
-                    )
-                )
-            blob = f"{label} {app_name} {app_id}".lower()
-            return "youtube" in blob
+                if is_youtube_streaming_service(
+                    app_name=app_name,
+                    app_id=app_id,
+                    label=label,
+                    filename=filename,
+                ):
+                    return True
+            else:
+                blob = f"{label} {filename} {app_name} {app_id}".lower()
+                if "youtube" in blob:
+                    return True
+            if isinstance(lm, dict):
+                try:
+                    from pigeon.apple_tv_now_playing import youtube_video_id_from_metadata
+
+                    if youtube_video_id_from_metadata(lm):
+                        return True
+                except Exception:
+                    pass
+            return False
 
         def _vv_music_track_title() -> str:
             """Return the preferred Music track title for text rendering.
@@ -4800,6 +5014,58 @@ def main() -> int:
             sub = canvas_bgr[dst_y0:dst_y1, dst_x0:dst_x1]
             sub[:] = alpha_blend_bgra_over_bgr(sub, crop)
 
+        _paused_screen_font_cache: dict[int, ImageFont.FreeTypeFont | ImageFont.ImageFont] = {}
+
+        def _paused_screen_backdrop_bgr() -> np.ndarray | None:
+            """Current TMDb backdrop for the full-screen paused treatment."""
+            if backdrop_master_bgr is not None and not backdrop_app_logo_letterbox_fit:
+                return backdrop_master_bgr
+            if (
+                saved_backdrop_master_bgr is not None
+                and not saved_backdrop_app_logo_letterbox_fit
+            ):
+                return saved_backdrop_master_bgr
+            return None
+
+        def _paused_screen_active() -> bool:
+            if dev_phase != DevPhase.OFF:
+                return False
+            return bool(_show_paused_row_overlay() and _paused_screen_backdrop_bgr() is not None)
+
+        def _paused_screen_font(px: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+            size = max(24, int(px))
+            cached = _paused_screen_font_cache.get(size)
+            if cached is not None:
+                return cached
+            paths = (
+                os.environ.get("PIGEON_FONT_MEDIUM", ""),
+                os.environ.get("PIGEON_FONT_EXTRABOLD", ""),
+                os.environ.get("PIGEON_FONT", ""),
+            )
+            for fp in paths:
+                if fp and os.path.isfile(fp):
+                    try:
+                        font = ImageFont.truetype(fp, size=size)
+                        _paused_screen_font_cache[size] = font
+                        return font
+                    except Exception:
+                        pass
+            font = ImageFont.load_default()
+            _paused_screen_font_cache[size] = font
+            return font
+
+        def _compose_paused_screen(cap_w: int, cap_h: int) -> np.ndarray:
+            src = _paused_screen_backdrop_bgr()
+            if src is None or src.size == 0:
+                base = np.zeros((int(cap_h), int(cap_w), 3), dtype=np.uint8)
+            else:
+                lit = _apply_brightness(src, PAUSED_SCREEN_BACKDROP_DIM)
+                base = SceneFit(target_w=int(cap_w), target_h=int(cap_h)).scale_and_crop(lit)
+            img = Image.fromarray(cv2.cvtColor(base, cv2.COLOR_BGR2RGB))
+            font = _paused_screen_font(max(52, int(round(float(cap_h) * 0.13))))
+            paint_paused_screen_label(img, text=PAUSED_SCREEN_TEXT, font=font)
+            return cv2.cvtColor(np.asarray(img, dtype=np.uint8), cv2.COLOR_RGB2BGR)
+
         def _current_app_display_name() -> str:
             """Human-readable name for the currently foregrounded streaming app."""
             label = str(streaming_badge_state.get("label") or "").strip()
@@ -4845,12 +5111,17 @@ def main() -> int:
         ) -> np.ndarray:
             """Video at display size + poster/clock blits (no full design canvas). Used when developer grid is off."""
             assert _PIGEON_EXT
+            dw, dh = display_dims[0], display_dims[1]
+            cap_w, cap_h, use_cap = _composite_cap_dims(dw, dh)
+            if _paused_screen_active():
+                base_pause = _compose_paused_screen(cap_w, cap_h)
+                if use_cap:
+                    return _present_frame_to_display(base_pause, dw, dh)
+                return base_pause
             # View 1: 070326 now-playing screen only (no classic chrome / TMDB backdrop stack).
             if _effective_display_view() == DisplayView.ONE:
                 _set_playback_overlay_clock_saver_volume_flag()
                 _warm_tmdb_logo_patch()
-                dw, dh = display_dims[0], display_dims[1]
-                cap_w, cap_h, use_cap = _composite_cap_dims(dw, dh)
                 canvas_np = np.zeros((int(DESIGN_H), int(DESIGN_W), 3), dtype=np.uint8)
                 canvas_np[:] = (0, 0, 0)
                 now_cs = time.monotonic()
@@ -4944,9 +5215,6 @@ def main() -> int:
             if playback_overlay_widget is not None and _playback_overlay_fast_sig[0] != fast_sig:
                 _playback_overlay_fast_sig[0] = fast_sig
                 _warm_playback_overlay_blits()
-            dw, dh = display_dims[0], display_dims[1]
-            cap_w, cap_h, use_cap = _composite_cap_dims(dw, dh)
-
             if frame_bgr is None or frame_bgr.size == 0:
                 sb, sg, sr = get_stage_bgr()
                 base = np.empty((cap_h, cap_w, 3), dtype=np.uint8)
@@ -5297,6 +5565,13 @@ def main() -> int:
                 crop2 = rsz[src_y0 : src_y0 + ch, src_x0 : src_x0 + cw]
                 sub = canvas_bgr[dst_y0:dst_y1, dst_x0:dst_x1]
                 sub[:] = alpha_blend_bgra_over_bgr(sub, crop2)
+            if _paused_screen_active() and not show_grid:
+                tw, th = display_dims[0], display_dims[1]
+                cap_w, cap_h, use_cap = _composite_cap_dims(tw, th)
+                base_pause = _compose_paused_screen(cap_w, cap_h)
+                if use_cap:
+                    return _present_frame_to_display(base_pause, tw, th)
+                return base_pause
             if frame_bgr is None or frame_bgr.size == 0:
                 sb, sg, sr = get_stage_bgr()
                 canvas = np.empty((DESIGN_H, DESIGN_W, 3), dtype=np.uint8)
@@ -6955,15 +7230,15 @@ def main() -> int:
             return "break"
 
         def on_tab_key(event: tk.Event) -> str | None:
-            """Plain Tab: toggle OFF ↔ MAIN_SETTINGS (settings_main)."""
-            if _widget_accepts_typing(event.widget):
-                return None
-            if getattr(event, "keysym", "") == "ISO_Left_Tab":
-                return None
-            st_tab = int(getattr(event, "state", 0))
-            if st_tab & 0x0001:
-                return None
-            if st_tab & 0x0004:
+            """Tab / Shift+Tab / Ctrl+Tab: toggle OFF ↔ MAIN_SETTINGS.
+
+            Tk on X11 (Pi) binds class ``<Tab>`` to focus traversal and returns
+            break before ``bind_all``, so this handler is also installed on
+            Label/Button/Entry and the other traversal classes.
+            """
+            st_tab = int(getattr(event, "state", 0) or 0)
+            # Ctrl+Shift+Tab opens the advanced matrix (extension build).
+            if (st_tab & 0x0004) and (st_tab & 0x0001):
                 return None
             now = time.monotonic()
             if now - _last_overlay_mono[0] < 0.08:
@@ -6973,33 +7248,11 @@ def main() -> int:
             return "break"
 
         def on_shift_tab_dev_cycle(event: tk.Event) -> str | None:
-            """Shift+Tab: toggle Settings ↔ off (same as Tab; grid overlay is key 5)."""
-            if _widget_accepts_typing(event.widget):
-                return None
-            ks = getattr(event, "keysym", "") or ""
-            st = int(getattr(event, "state", 0))
-            if st & 0x0004:
-                return None
-            if ks != "ISO_Left_Tab" and not (ks == "Tab" and (st & 0x0001)):
-                return None
-            now = time.monotonic()
-            if now - _last_overlay_mono[0] < 0.08:
-                return "break"
-            _last_overlay_mono[0] = now
-            cycle_dev_phase()
-            return "break"
+            """Shift+Tab: same settings toggle as Tab."""
+            return on_tab_key(event)
 
         def on_ctrl_tab(event: tk.Event) -> str | None:
-            if _widget_accepts_typing(event.widget):
-                return None
-            if not (int(getattr(event, "state", 0)) & 0x0004):
-                return None
-            now = time.monotonic()
-            if now - _last_overlay_mono[0] < 0.08:
-                return "break"
-            _last_overlay_mono[0] = now
-            cycle_dev_phase()
-            return "break"
+            return on_tab_key(event)
 
         def on_s_key(event: tk.Event) -> str | None:
             keysym = (getattr(event, "keysym", "") or "").lower()
@@ -7325,7 +7578,7 @@ def main() -> int:
 
             Short-circuits for MediaType.Music and YouTube. Music uses the
             two-line text patch (track title + "Artist – Album") instead of
-            TMDb. YouTube uses pyatv 16×9 thumbnail art in ``widget_np_07_16x9``.
+            TMDb. YouTube uses pyatv 16×9 thumbnail art in ``widget_np_06_16x9``.
             Skipping the fetch also avoids ~1–3 s of background network work
             plus misleading retry-log entries against a TV/movie-only index.
 
@@ -8540,7 +8793,7 @@ def main() -> int:
                 _frb = settings_footer_reset_holder[0]
                 if _frb is not None:
                     _frb.configure(state=state)
-                root.configure(cursor="" if enabled else "watch")
+                root.configure(cursor="none")
             except tk.TclError:
                 pass
 
@@ -9551,6 +9804,8 @@ def main() -> int:
                 except Exception:
                     pass
                 st.selected_wifi_ssid = ""
+                st.live_wifi_ssid = ""
+                st.wifi_logged_out = False
                 st.pigeon_metadata_ok = False
                 st.pigeon_hdmi_ok = False
                 st.pigeon_audio_ok = False
@@ -9797,6 +10052,8 @@ def main() -> int:
                 except Exception:
                     pass
                 st.selected_wifi_ssid = ""
+                st.live_wifi_ssid = ""
+                st.wifi_logged_out = True
                 st.wifi_password = ""
                 st.pending_wifi_ssid = ""
                 st.pending_network_password = ""
@@ -9836,7 +10093,9 @@ def main() -> int:
                         nonlocal skip_cache
                         st.wifi_connecting = False
                         if ok_w:
+                            st.wifi_logged_out = False
                             st.selected_wifi_ssid = ssid
+                            st.live_wifi_ssid = ssid
                             st.wifi_password = password
                             st.pending_wifi_ssid = ""
                             st.pending_network_password = ""
@@ -9927,6 +10186,10 @@ def main() -> int:
                         try:
                             st.load_saved_box_devices()
                             st.location_name = read_current_location_name()
+                        except Exception:
+                            pass
+                        try:
+                            st.reload_location_wifi()
                         except Exception:
                             pass
                         try:
@@ -10093,10 +10356,13 @@ def main() -> int:
                             main_settings_widget.invalidate()
                             skip_cache = None
                             if ok_af:
-                                messagebox.showinfo(
-                                    "Apple TV",
-                                    f"{msg_af}\n\nPlayer “{dn}” is paired for this location.",
-                                )
+                                try:
+                                    sys.stderr.write(
+                                        f"pigeon: Apple TV AirPlay paired for Player {dn!r}: {msg_af}\n"
+                                    )
+                                    sys.stderr.flush()
+                                except Exception:
+                                    pass
                             else:
                                 messagebox.showerror("AppleTV AirPlay", msg_af)
                             _schedule_refresh_pairing_leds()
@@ -11860,6 +12126,7 @@ def main() -> int:
                         merged_md["total_time"] = metadata_w.get("total_time")
                         merged_md["position"] = metadata_w.get("position")
                         merged_md["device_state"] = str(metadata_w.get("device_state") or "").strip()
+                        merged_md["power_state"] = str(metadata_w.get("power_state") or "").strip()
                         merged_md["inferred_prefer"] = prefer_snap
                         merged_md["prefer_pyatv_media"] = _ppm
                         merged_md["content_key"] = _content_key_from_metadata(merged_md)
@@ -12628,10 +12895,48 @@ def main() -> int:
             if w is not None:
                 _prepend_hotkey_bindtag(w)
 
-        for seq in ("<KeyPress-Tab>", "<Key-Tab>"):
+        _TAB_SEQS = (
+            "<Tab>",
+            "<KeyPress-Tab>",
+            "<Key-Tab>",
+            "<ISO_Left_Tab>",
+            "<KeyPress-ISO_Left_Tab>",
+            "<Shift-Tab>",
+            "<Shift-KeyPress-Tab>",
+            "<Shift-Key-Tab>",
+            "<KP_Tab>",
+            "<KeyPress-KP_Tab>",
+        )
+        for seq in _TAB_SEQS:
             root.bind_class(HOTKEY_BINDTAG, seq, on_tab_key)
         root.bind_class(HOTKEY_BINDTAG, "<Control-KeyPress-Tab>", on_ctrl_tab)
         root.bind_class(HOTKEY_BINDTAG, "<Control-Key-Tab>", on_ctrl_tab)
+        # X11/Pi: class <Tab> is tk_focusNext and returns break before bind_all.
+        for _tab_cls in (
+            "Button",
+            "Label",
+            "Frame",
+            "Canvas",
+            "Toplevel",
+            "Tk",
+            "TFrame",
+            "TLabel",
+            "TButton",
+            "TCheckbutton",
+            "TRadiobutton",
+            "Radiobutton",
+            "Checkbutton",
+            "Scale",
+            "Listbox",
+            "Entry",
+            "TEntry",
+            "Text",
+        ):
+            for seq in _TAB_SEQS:
+                try:
+                    root.bind_class(_tab_cls, seq, on_tab_key)
+                except tk.TclError:
+                    pass
         root.bind_class(HOTKEY_BINDTAG, "<KeyPress-s>", on_s_key)
         root.bind_class(HOTKEY_BINDTAG, "<KeyPress-S>", on_s_key)
 
@@ -12663,8 +12968,8 @@ def main() -> int:
                 return "break"
             return None
 
-        root.bind_all("<KeyPress-Tab>", on_tab_key)
-        root.bind_all("<Key-Tab>", on_tab_key)
+        for seq in _TAB_SEQS:
+            root.bind_all(seq, on_tab_key)
         # Do not bind_all(Return): on macOS that can run before the Entry binding and swallow the key.
         for _rseq in ("<Return>", "<KeyPress-Return>", "<KP_Enter>", "<KeyPress-KP_Enter>"):
             root.bind_class(HOTKEY_BINDTAG, _rseq, on_return_overlay_command)
@@ -13275,10 +13580,113 @@ def main() -> int:
                     skip_cache = None
                     render_once()
 
+        _volume_rotary_fail_log_count = [0]
+        _volume_rotary_ok_log_count = [0]
+        _receiver_volume_queue: queue.Queue[tuple[str, str]] = queue.Queue(maxsize=16)
+
+        def _receiver_volume_worker() -> None:
+            while True:
+                host, action = _receiver_volume_queue.get()
+                try:
+                    from pigeon.receiver_denon_telnet import send_denon_volume_action
+
+                    ok, msg = send_denon_volume_action(host, action, timeout=1.5)
+                except Exception as exc:
+                    ok, msg = False, str(exc)
+                if ok:
+                    if _volume_rotary_ok_log_count[0] < 8:
+                        sys.stderr.write(f"pigeon: rotary_volume_gpio: receiver {action}: {msg}\n")
+                        sys.stderr.flush()
+                        _volume_rotary_ok_log_count[0] += 1
+                    continue
+                if _volume_rotary_fail_log_count[0] < 8:
+                    sys.stderr.write(
+                        f"pigeon: rotary_volume_gpio: receiver {action} failed: {msg}\n"
+                    )
+                    sys.stderr.flush()
+                    _volume_rotary_fail_log_count[0] += 1
+
+        threading.Thread(
+            target=_receiver_volume_worker,
+            name="pigeon-receiver-volume",
+            daemon=True,
+        ).start()
+
+        def _queue_receiver_volume_action(action: str) -> bool:
+            row = avr_slot_holder[0]
+            if not row:
+                return False
+            host = str(row.get("address") or row.get("identifier") or "").strip()
+            if not host:
+                return False
+            try:
+                _receiver_volume_queue.put_nowait((host, action))
+            except queue.Full:
+                try:
+                    _receiver_volume_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    _receiver_volume_queue.put_nowait((host, action))
+                except queue.Full:
+                    pass
+            return True
+
+        def _on_volume_rotary_action(action: str) -> None:
+            _bump_pigeon_user_activity()
+            if action not in ("volume_up", "volume_down", "mute_toggle"):
+                return
+            if _queue_receiver_volume_action(action):
+                return
+            try:
+                from pigeon.player_remote import queue_player_remote_action
+
+                ok = queue_player_remote_action(
+                    streaming_slot_holder[0],
+                    current_apple_tv=current_apple_tv,
+                    action=action,
+                    apple_tv_busy=apple_tv_busy,
+                )
+            except Exception as exc:
+                ok = False
+                if _volume_rotary_fail_log_count[0] < 8:
+                    sys.stderr.write(f"pigeon: rotary_volume_gpio: {action} failed: {exc}\n")
+                    sys.stderr.flush()
+                    _volume_rotary_fail_log_count[0] += 1
+            if not ok and _volume_rotary_fail_log_count[0] < 8:
+                sys.stderr.write(
+                    f"pigeon: rotary_volume_gpio: no player remote command for {action!r}\n"
+                )
+                sys.stderr.flush()
+                _volume_rotary_fail_log_count[0] += 1
+
+        _play_pause_gpio_last_mono = [0.0]
+
+        def _on_play_pause_gpio_action() -> None:
+            _bump_pigeon_user_activity()
+            now_pp = time.monotonic()
+            if now_pp - _play_pause_gpio_last_mono[0] < 0.25:
+                return
+            _play_pause_gpio_last_mono[0] = now_pp
+            ok = _send_player_play_pause_hotkey()
+            try:
+                sys.stderr.write(
+                    "pigeon: play_pause_gpio: "
+                    + ("sent play_pause\n" if ok else "no player remote command\n")
+                )
+                sys.stderr.flush()
+            except Exception:
+                pass
+
         try:
             from pigeon.rotary_serial import start_rotary_serial_listener
 
-            start_rotary_serial_listener(root, on_action=_on_rotary_action)
+            start_rotary_serial_listener(
+                root,
+                on_action=_on_rotary_action,
+                on_volume_action=_on_volume_rotary_action,
+                on_play_pause_action=_on_play_pause_gpio_action,
+            )
         except Exception as _rotary_exc:
             sys.stderr.write(f"pigeon: rotary_serial: not started: {_rotary_exc}\n")
             sys.stderr.flush()
@@ -13933,10 +14341,14 @@ def main() -> int:
                     denon_standby = bool(r is not None and getattr(r, "standby", False))
                     receiver_standby_holder[0] = denon_standby
                     if denon_standby:
-                        # Standby is treated as off: drop cached volume and overlay text.
-                        denon_vol_cache["effective"] = ""
-                        denon_vol_cache["mono_usable"] = 0.0
-                        denon_vol_cache["np_hold"] = ""
+                        # Hide source/format; keep any master-volume the AVR still
+                        # reported so the widget does not flash empty on eco/STANDBY.
+                        if denon_vol_effective:
+                            denon_vol_cache["effective"] = denon_vol_effective
+                            denon_vol_cache["mono_usable"] = time.monotonic()
+                            denon_vol_cache["np_hold"] = denon_vol_effective
+                        else:
+                            denon_vol_cache["mono_usable"] = 0.0
                     elif denon_ok and denon_vol_effective:
                         denon_vol_cache["effective"] = denon_vol_effective
                         denon_vol_cache["mono_usable"] = time.monotonic()
@@ -13983,7 +14395,10 @@ def main() -> int:
                         receiver_telnet_debug_holder[0] = dict(
                             getattr(r, "telnet_debug", {}) or {}
                         ) if r is not None else {}
-                        apply_overlay("", "", "")
+                        held_vol = merged_volume or str(
+                            denon_vol_cache.get("np_hold") or ""
+                        )
+                        apply_overlay("", "", held_vol)
                         if rpl is not None:
                             _paint_boolean_led(rpl, False)
                     elif r is not None and r.ok:

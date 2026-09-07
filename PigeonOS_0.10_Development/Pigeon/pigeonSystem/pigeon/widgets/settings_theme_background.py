@@ -77,6 +77,42 @@ def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
     return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
 
 
+def settings_background_ui_hex(ui_hex: str) -> str:
+    """Light mode uses the gray swatch slants instead of the live UI hue."""
+    try:
+        from pigeon.widgets.options_settings import ui_is_bright
+
+        if ui_is_bright():
+            from pigeon.widgets.ui_color_settings import hex_for_color_key
+
+            return hex_for_color_key("ui", "gray")
+    except Exception:
+        pass
+    return str(ui_hex or "")
+
+
+def _look_is_bright() -> bool:
+    try:
+        from pigeon.widgets.options_settings import ui_is_bright
+
+        return bool(ui_is_bright())
+    except Exception:
+        return False
+
+
+def _paper_bgr() -> tuple[int, int, int]:
+    try:
+        from pigeon.widgets.options_settings import ui_paper_bgr
+
+        return ui_paper_bgr()
+    except Exception:
+        return (0, 0, 0)
+
+
+def _paper_hex() -> str:
+    return "#FFFFFF" if _look_is_bright() else "#000000"
+
+
 def scale_ui_hex(ui_hex: str, brightness: float) -> str:
     """Return ``#rrggbb`` for ``ui_hex`` scaled by ``brightness`` (0..1)."""
     r, g, b = _hex_to_rgb(ui_hex)
@@ -253,6 +289,23 @@ def _recolor_native_background(root: ET.Element, ui_hex: str) -> None:
         el.set("fill", scale_ui_hex(ui_hex, 0.35))
 
 
+def _paint_background_paper(root: ET.Element) -> None:
+    """Assign the page plate (id=bg) instead of relying on a later invert."""
+    paper = _paper_hex()
+    for el in root.iter():
+        eid = (el.get("id") or "").strip()
+        if eid != "bg" and not (
+            el.tag.endswith("rect") and (el.get("width") or "") == "1280"
+        ):
+            continue
+        if el.tag.endswith("g"):
+            for child in el:
+                if child.tag.endswith("rect"):
+                    child.set("fill", paper)
+            continue
+        el.set("fill", paper)
+
+
 def draw_settings_theme_background_bgra(
     bgra: np.ndarray,
     *,
@@ -266,18 +319,25 @@ def draw_settings_theme_background_bgra(
     Native 1280×800 ``widget_general_settings_background.svg`` is preferred.
     Legacy 800×480 slants still honor ``clip_mask``.
     """
+    tint = settings_background_ui_hex(ui_hex)
     path = (
         Path(svg_path)
         if svg_path is not None
         else default_settings_background_svg_path(assets_dir)
     )
     if path.is_file() and "widget_general_settings_background" in path.name:
-        cache_key = (str(path.resolve()), ui_hex.lower(), -1283)
+        cache_key = (
+            str(path.resolve()),
+            tint.lower(),
+            "bright" if _look_is_bright() else "std",
+            -1283,
+        )
         cached = _PLATE_CACHE.get(cache_key)
         if cached is not None:
             h = min(bgra.shape[0], cached.shape[0])
             w = min(bgra.shape[1], cached.shape[1])
             bgra[:h, :w] = cached[:h, :w]
+            _remember_slants(cached)
             return
         import copy
         import xml.etree.ElementTree as ET
@@ -285,7 +345,8 @@ def draw_settings_theme_background_bgra(
         from pigeon.widgets.settings_svg_text import rasterize_settings_svg_bgra
 
         root = copy.deepcopy(ET.parse(path).getroot())
-        _recolor_native_background(root, ui_hex)
+        _recolor_native_background(root, tint)
+        _paint_background_paper(root)
         plate = rasterize_settings_svg_bgra(
             root, width=int(bgra.shape[1]), height=int(bgra.shape[0])
         )
@@ -299,15 +360,17 @@ def draw_settings_theme_background_bgra(
         # PyMuPDF ignores SVG clipPath; force slants into the rounded menu plate.
         mask = _menu_plate_mask(int(plate.shape[0]), int(plate.shape[1]))
         outside = mask == 0
-        plate[outside, 0] = 0
-        plate[outside, 1] = 0
-        plate[outside, 2] = 0
+        paper = _paper_bgr()
+        plate[outside, 0] = paper[0]
+        plate[outside, 1] = paper[1]
+        plate[outside, 2] = paper[2]
         while len(_PLATE_CACHE) >= 12:
             _PLATE_CACHE.pop(next(iter(_PLATE_CACHE)))
         _PLATE_CACHE[cache_key] = plate.copy()
         h = min(bgra.shape[0], plate.shape[0])
         w = min(bgra.shape[1], plate.shape[1])
         bgra[:h, :w] = plate[:h, :w]
+        _remember_slants(plate)
         return
 
     if not path.is_file():
@@ -315,23 +378,25 @@ def draw_settings_theme_background_bgra(
         bgra[:, :, :3] = 0
         bgra[:, :, 3] = 255
         sel = clip_mask > 0
-        rgb = _hex_to_rgb(ui_hex)
+        rgb = _hex_to_rgb(tint)
         bgra[sel, 0] = rgb[2]
         bgra[sel, 1] = rgb[1]
         bgra[sel, 2] = rgb[0]
+        _remember_slants(bgra)
         return
 
-    cache_key = (str(path.resolve()), ui_hex.lower(), int(clip_mask.sum()))
+    cache_key = (str(path.resolve()), tint.lower(), int(clip_mask.sum()))
     cached = _PLATE_CACHE.get(cache_key)
     if cached is not None:
         bgra[:] = cached
+        _remember_slants(cached)
         return
 
     plate = np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)
     plate[:, :, 3] = 255  # opaque black full frame
     specs = load_theme_slant_specs(str(path.resolve()))
     for spec in specs:
-        fill = scale_ui_hex(ui_hex, spec.brightness)
+        fill = scale_ui_hex(tint, spec.brightness)
         r, g, b = _hex_to_rgb(fill)
         corners = _transform_rect_corners(
             spec.x_svg, spec.y_svg, spec.width_svg, spec.height_svg, spec.matrix
@@ -350,6 +415,23 @@ def draw_settings_theme_background_bgra(
         _PLATE_CACHE.pop(next(iter(_PLATE_CACHE)))
     _PLATE_CACHE[cache_key] = plate.copy()
     bgra[:] = plate
+    _remember_slants(plate)
+
+
+def _remember_slants(plate: np.ndarray) -> None:
+    try:
+        from pigeon.widgets.options_settings import ui_is_bright
+
+        if not ui_is_bright():
+            from pigeon.compositing import clear_bright_slant_mask
+
+            clear_bright_slant_mask()
+            return
+        from pigeon.compositing import remember_bright_slant_plate
+
+        remember_bright_slant_plate(plate)
+    except Exception:
+        pass
 
 
 __all__ = [
@@ -358,4 +440,5 @@ __all__ = [
     "draw_settings_theme_background_bgra",
     "load_theme_slant_specs",
     "scale_ui_hex",
+    "settings_background_ui_hex",
 ]

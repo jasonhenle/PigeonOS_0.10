@@ -228,6 +228,17 @@ class ZoneAdaptTests(unittest.TestCase):
         self.assertEqual(zones, ("clock", "", "", "", ""))
         self.assertTrue(_layout_is_fullscreen_clock(zones))
 
+    def test_idle_content_keeps_volume_when_readout_present(self) -> None:
+        zones = _effective_zone_widgets(
+            has_position=False,
+            cast_count=0,
+            content_active=False,
+            has_volume=True,
+            zone_widgets=("clock", "poster", "volume", "cast_info", "status_bar"),
+        )
+        self.assertEqual(zones, ("clock", "", "volume", "", ""))
+        self.assertFalse(_layout_is_fullscreen_clock(zones))
+
     def test_missing_poster_does_not_leave_an_empty_slot(self) -> None:
         zones = _effective_zone_widgets(
             has_position=True,
@@ -236,7 +247,7 @@ class ZoneAdaptTests(unittest.TestCase):
             poster_16x9=True,
             zone_widgets=("clock", "poster", "volume", "cast_info", "status_bar"),
         )
-        self.assertEqual(zones, ("clock", "", "volume", "", "status_bar"))
+        self.assertEqual(zones, ("", "", "volume", "", "status_bar"))
         self.assertFalse(_layout_is_fullscreen_clock(zones))
 
     def test_populated_layout_is_not_fullscreen_clock(self) -> None:
@@ -247,14 +258,14 @@ class ZoneAdaptTests(unittest.TestCase):
         )
         self.assertFalse(_layout_is_fullscreen_clock(zones))
 
-    def test_16x9_override_clears_zones_2_and_3(self) -> None:
+    def test_16x9_override_clears_zones_1_2_and_4(self) -> None:
         zones = _effective_zone_widgets(
             has_position=True,
             cast_count=3,
             zone_widgets=("clock", "poster", "volume", "cast_info", "status_bar"),
             poster_16x9=True,
         )
-        self.assertEqual(zones, ("clock", "", "", "cast_info", "status_bar"))
+        self.assertEqual(zones, ("", "", "volume", "", "status_bar"))
 
 
 if __name__ == "__main__":

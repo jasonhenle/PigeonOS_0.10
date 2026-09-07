@@ -39,6 +39,7 @@ def roku_send_ecp_keypress(*, base_url: str, key: str, timeout: float = 3.0) -> 
 _ROKU_ACTION_KEYS: dict[str, str] = {
     "volume_up": "VolumeUp",
     "volume_down": "VolumeDown",
+    "mute_toggle": "VolumeMute",
     "nav_up": "Up",
     "nav_down": "Down",
     "nav_left": "Left",
@@ -63,7 +64,7 @@ def queue_player_remote_action(
     """
     Fire-and-forget remote command for the current Player row.
 
-    ``action`` is a logical name (``volume_up``, ``nav_left``, ``skip_back``, …).
+    ``action`` is a logical name (``volume_up``, ``mute_toggle``, ``nav_left``, …).
     Returns True if a remote command was queued (Apple TV) or a Roku worker was started.
     """
     if not stream_row:

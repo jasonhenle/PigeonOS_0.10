@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="tt_countdown_group" data-name="tt_countdown_group" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 398 488">
+  <rect id="tt_countdown_background" width="398" height="488" rx="15.98" fill="#000"/>
+  <g id="tmdb_tt">
+    <text transform="translate(199 200)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="64" font-weight="600"><tspan x="0" y="0">TITLE</tspan></text>
+  </g>
+  <rect id="divider" x="41.37" y="310" width="315.26" height="40" fill="none"/>
+  <text id="countdown_text" transform="translate(27 410)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="80" font-weight="600" font-style="italic"><tspan x="0" y="0">-1:30:00</tspan></text>
+</svg>

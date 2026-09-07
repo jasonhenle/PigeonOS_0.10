@@ -211,6 +211,14 @@ class MegaProtocolLineTests(unittest.TestCase):
         self.assertEqual(rs._action_for_line("RIGHT"), "forward")
         self.assertEqual(rs._action_for_line("PUSH"), "activate")
 
+    def test_volume_gpio_tokens_map(self) -> None:
+        self.assertEqual(rs._VOLUME_LINE_TO_ACTION["VOL_UP"], "volume_up")
+        self.assertEqual(rs._VOLUME_LINE_TO_ACTION["VOL_DOWN"], "volume_down")
+        self.assertEqual(rs._VOLUME_LINE_TO_ACTION["MUTE"], "mute_toggle")
+
+    def test_play_pause_gpio_default_pin(self) -> None:
+        self.assertEqual(rs._PLAY_PAUSE_GPIO_BUTTON, 26)
+
 
 class StartListenerEnvTests(unittest.TestCase):
     def test_disabled_by_env_returns_none(self) -> None:

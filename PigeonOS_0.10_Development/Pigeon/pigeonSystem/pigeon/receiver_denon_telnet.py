@@ -278,6 +278,51 @@ def _denon_mv_to_db(digits: str) -> str:
     return f"{db:.1f} dB"
 
 
+def send_denon_telnet_command(
+    host: str,
+    command: str,
+    *,
+    port: int = _DEFAULT_PORT,
+    timeout: float = 1.5,
+) -> tuple[bool, str]:
+    """Send one Denon/Marantz control command, e.g. ``MVUP`` or ``MUON``."""
+    h = _normalize_host(host)
+    cmd = (command or "").strip().upper()
+    if not h:
+        return False, "No receiver host."
+    if not cmd:
+        return False, "No receiver command."
+    try:
+        with socket.create_connection((h, port), timeout=min(1.0, timeout)) as sock:
+            sock.settimeout(0.12)
+            try:
+                # Let the AVR send its on-connect banner before our command.
+                time.sleep(0.08)
+                sock.recv(1024)
+            except (OSError, socket.timeout):
+                pass
+            sock.settimeout(max(0.2, timeout))
+            sock.sendall((cmd + "\r").encode("ascii", errors="ignore"))
+            time.sleep(0.03)
+        return True, f"Denon: {cmd}"
+    except (OSError, socket.timeout) as exc:
+        return False, str(exc)
+
+
+def send_denon_volume_action(host: str, action: str, *, timeout: float = 1.5) -> tuple[bool, str]:
+    """Send volume_up / volume_down / mute_toggle to a Denon-class receiver."""
+    act = (action or "").strip().lower()
+    if act == "volume_up":
+        return send_denon_telnet_command(host, "MVUP", timeout=timeout)
+    if act == "volume_down":
+        return send_denon_telnet_command(host, "MVDOWN", timeout=timeout)
+    if act == "mute_toggle":
+        state = poll_denon_telnet(host, timeout=max(1.0, timeout))
+        muted = str(state.get("MU") or "").strip().upper() == "ON"
+        return send_denon_telnet_command(host, "MUOFF" if muted else "MUON", timeout=timeout)
+    return False, f"Unknown receiver volume action: {action}"
+
+
 def poll_denon_telnet(
     host: str,
     *,

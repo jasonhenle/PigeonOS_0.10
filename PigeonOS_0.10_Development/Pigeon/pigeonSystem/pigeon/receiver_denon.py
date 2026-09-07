@@ -355,6 +355,56 @@ def _merge_zone_status_with_fallback(
     return None
 
 
+def _denon_power_is_standby(d: dict[str, str]) -> bool:
+    """True when every known power field says OFF/STANDBY.
+
+    HTTP ``Power`` on HEOS-era units often stays ``STANDBY`` while telnet ``PW``
+    is ``ON`` (or the reverse). One ``ON`` wins so the volume widget is not
+    wiped by a stale eco/network-standby flag. ``ZM`` (zone-main) is ignored —
+    zone-off is not the same as the AVR having no master volume.
+    """
+    on_tokens = {"ON"}
+    off_tokens = {"OFF", "STANDBY"}
+    tokens: list[str] = []
+    for key in ("Power", "ZonePower", "PW"):
+        raw = _denon_field_ci(d, key).upper()
+        if not raw:
+            continue
+        token = raw.replace("/", " ").split()[0]
+        tokens.append(token)
+    if any(t in on_tokens for t in tokens):
+        return False
+    return bool(tokens) and all(t in off_tokens for t in tokens)
+
+
+def _denon_volume_line(d: dict[str, str]) -> str:
+    """Master-volume readout (``mute`` / ``-22.5 dB``), including while in standby."""
+    mute = _denon_field_ci(d, "Mute", "MU").strip().lower()
+    muted = mute in ("on", "1", "true", "yes")
+    mv = _denon_field_ci(
+        d,
+        "MV_DB",
+        "MasterVolume",
+        "MasterVolumeDisplay",
+        "VolumeDisplay",
+        "DispVolume",
+        "MainZoneVolume",
+    )
+    if mv and re.fullmatch(r"\d{2,3}", mv.strip()):
+        # Bare 2-3 digit values are Denon volume steps, not dB (e.g. "575" = -22.5dB).
+        mv = _denon_mv_to_db(mv.strip()) or mv
+    if not mv:
+        mv_step = _denon_field_ci(d, "MV")
+        if mv_step and re.fullmatch(r"\d{2,3}", mv_step.strip()):
+            mv = _denon_mv_to_db(mv_step.strip())
+    if muted:
+        return "mute"
+    if not mv:
+        return ""
+    low_mv = mv.lower()
+    return mv if "db" in low_mv or mv.strip().endswith("%") else f"{mv} dB"
+
+
 def _denon_field_ci(d: dict[str, str], *names: str) -> str:
     """
     Read the first non-empty field matching one of ``names``, case-insensitive on keys.
@@ -530,36 +580,11 @@ def poll_denon_like_receiver(host: str, timeout: float = 4.0) -> ReceiverPollRes
                 continue
             d[k] = v
 
-    power = _denon_field_ci(d, "Power", "ZonePower", "PW", "ZM").upper()
-    if power in ("OFF", "STANDBY"):
-        return ReceiverPollResult(True, "", "", "", telnet_state, standby=True)
-
-    # Mute comes from HTTP ``Mute`` or telnet ``MU``; firmware truthy forms vary.
-    mute = _denon_field_ci(d, "Mute", "MU").strip().lower()
-    muted = mute in ("on", "1", "true", "yes")
-    mv = _denon_field_ci(
-        d,
-        "MV_DB",
-        "MasterVolume",
-        "MasterVolumeDisplay",
-        "VolumeDisplay",
-        "DispVolume",
-        "MainZoneVolume",
-    )
-    if mv and re.fullmatch(r"\d{2,3}", mv.strip()):
-        # Bare 2-3 digit values are Denon volume steps, not dB (e.g. "575" = -22.5dB).
-        mv = _denon_mv_to_db(mv.strip()) or mv
-    if not mv:
-        mv_step = _denon_field_ci(d, "MV")
-        if mv_step and re.fullmatch(r"\d{2,3}", mv_step.strip()):
-            mv = _denon_mv_to_db(mv_step.strip())
-    if muted:
-        vol_s = "mute"
-    elif mv:
-        low_mv = mv.lower()
-        vol_s = mv if "db" in low_mv or mv.strip().endswith("%") else f"{mv} dB"
-    else:
-        vol_s = ""
+    vol_s = _denon_volume_line(d)
+    if _denon_power_is_standby(d):
+        # Keep the master-volume number (the AVR still reports MV in standby /
+        # network-eco). Hide source/format so idle chrome does not look live.
+        return ReceiverPollResult(True, vol_s, "", "", telnet_state, standby=True)
 
     # Incoming = source audio format (codec/signal). Playback = surround/output mode (``MS``).
     # Never use ``SI`` (HDMI input selector such as SAT/CBL) for the widget line.

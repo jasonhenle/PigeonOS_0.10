@@ -78,3 +78,33 @@ def pick_gradient_bgr(
     if lum is None:
         return (dark_bgr, None)
     return (dark_bgr if lum >= float(threshold) else light_bgr, lum)
+
+
+# Below this luminance the TT is treated as "black or close to black" and is
+# recolored pure white for display on dark widgets (e.g. the countdown card).
+DARK_TT_LUMINANCE_MAX = 0.25
+
+
+def whiten_dark_tt_bgra(
+    bgra: np.ndarray | None,
+    *,
+    threshold: float = DARK_TT_LUMINANCE_MAX,
+) -> np.ndarray | None:
+    """Return the TT unchanged unless it is black / near-black — then pure white.
+
+    Dark logos (visible-pixel luminance below ``threshold``) get their RGB
+    replaced with pure white while the alpha channel (shape + anti-aliased
+    edges) is preserved. Anything brighter passes through untouched.
+    """
+    if bgra is None or not isinstance(bgra, np.ndarray):
+        return bgra
+    if bgra.ndim != 3 or bgra.shape[2] != 4 or bgra.size == 0:
+        return bgra
+    lum = relative_luminance(bgra)
+    if lum is None or lum >= float(threshold):
+        return bgra
+    out = bgra.copy()
+    out[:, :, 0] = 255
+    out[:, :, 1] = 255
+    out[:, :, 2] = 255
+    return out

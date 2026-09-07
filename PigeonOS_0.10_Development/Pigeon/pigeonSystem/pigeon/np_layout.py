@@ -71,10 +71,20 @@ POSTER_2X3_LOCAL = (42.68, 6.34, 315.26, 472.90, 15.98)
 # 1×1 album mask.
 POSTER_1X1_LOCAL = (42.69, 85.16, 315.26, 315.26, 26.47)
 
-# 16×9 poster across zone 6 (zones 1+2) or zone 7 (zones 2+3). Default live
-# placement is zone 7. Side insets match 2×3 so the landscape frame clears a
-# surviving portrait clock in zone 1. Corner radius follows widget_np_0*_16x9.
-DEFAULT_16X9_POSTER_ZONE = 7
+# 16×9 poster across zone 6 (zones 1+2) or zone 7 (zones 2+3). YouTube uses
+# zone 6 so volume can stay in portrait column 3. Side insets match 2×3.
+# Corner radius follows widget_np_0*_16x9.
+DEFAULT_16X9_POSTER_ZONE = 6
+# Forced now-playing layout while YouTube is the foreground app.
+# Zone 4 stays unassigned as a widget: video title is drawn into that strip
+# the same way music draws track / artist / album.
+YOUTUBE_ZONE_WIDGETS: tuple[str, str, str, str, str] = (
+    "",
+    "",
+    "volume",
+    "",
+    "status_bar",
+)
 POSTER_16X9_ASPECT_MIN = 1.4  # wider than 4:3 → treat as landscape/16×9
 _POSTER_16X9_INSET_L = POSTER_2X3_LOCAL[0]
 _POSTER_16X9_INSET_R = _ZONE_PORTRAIT_W - POSTER_2X3_LOCAL[0] - POSTER_2X3_LOCAL[2]
@@ -92,7 +102,15 @@ POSTER_16X9_LOCAL = (
     _POSTER_16X9_H,
     _POSTER_16X9_RX,
 )
-_16X9_RELOCATE_PRIORITY = ("clock", "volume", "audio_levels", "now_playing", "cast_info")
+_16X9_RELOCATE_PRIORITY = (
+    "clock",
+    "volume",
+    "audio_levels",
+    "tt_countdown",
+    "tt_countdown_16x9",
+    "now_playing",
+    "cast_info",
+)
 
 # Cast text baselines in 399×488 viewBox (actor then character, rows 1–5).
 CAST_LOCAL_ROWS: tuple[tuple[float, float, float], ...] = (
@@ -168,6 +186,252 @@ VOLUME_SOURCE_SIZE_PX = 48
 VOLUME_VALUE_SIZE_PX = 125
 VOLUME_SCALE_SIZE_PX = 100
 
+# TT + countdown widget (zones 1–3): TMDb title treatment above a live
+# remaining-time countdown. The ``divider`` rect in the SVG is a guide only —
+# it is never rendered. The TT hangs its bottom edge on the divider's top
+# edge; the countdown hangs its top line from the divider's bottom edge.
+# Both are horizontally centered on the divider.
+TT_COUNTDOWN_VIEW_W = 398.0
+TT_COUNTDOWN_VIEW_H = 488.0
+TT_COUNTDOWN_DIVIDER_LOCAL = (41.37, 310.0, 315.26, 40.0)  # x, y, w, h
+TT_COUNTDOWN_TT_INSET_X = 12.0
+TT_COUNTDOWN_TT_TOP_Y = 34.0
+TT_COUNTDOWN_TEXT_SIZE_PX = 80
+TT_COUNTDOWN_CARD_RADIUS = 28.0
+# Black card hugs the TT+TRT group. Padding matches divider thickness (~20–25).
+TT_COUNTDOWN_BG_PAD = 25.0
+# TT art darker than this luminance is recolored pure white before display.
+TT_COUNTDOWN_DARK_TT_LUMINANCE_MAX = 0.25
+
+
+def tt_countdown_tt_box() -> tuple[float, float, float, float]:
+    """Widget-local (x, y, w, h) box the title treatment must fit inside.
+
+    Full widget width (minus a small inset); bottom edge sits on the divider's
+    top edge.
+    """
+    _dx, div_y, _dw, _dh = TT_COUNTDOWN_DIVIDER_LOCAL
+    x = TT_COUNTDOWN_TT_INSET_X
+    y = TT_COUNTDOWN_TT_TOP_Y
+    w = TT_COUNTDOWN_VIEW_W - TT_COUNTDOWN_TT_INSET_X * 2.0
+    h = div_y - y
+    return (x, y, w, h)
+
+
+def tt_countdown_time_anchor() -> tuple[float, float]:
+    """Widget-local (center_x, top_y) anchor for the countdown text.
+
+    Centered on the divider; the text's top line starts at the divider's
+    bottom edge.
+    """
+    div_x, div_y, div_w, div_h = TT_COUNTDOWN_DIVIDER_LOCAL
+    return (div_x + div_w / 2.0, div_y + div_h)
+
+
+# Wide TT + countdown (zone 6 or 7, 793×488). Asset: widget_np_06-07_tt_countdown.svg
+# (covers slots 6 and 7). Four divider guides are never rendered:
+#   top_divider        TT top sits on the bottom of this bar after the group lift
+#   left_divider       landscape TT left sits on its right side
+#   right_divider      landscape TT right sits on its left side
+#   horizontal_divider seats landscape TT bottom / TRT top; the group then lifts
+#                      so it rests just under top_divider
+TT_COUNTDOWN_16X9_VIEW_W = 793.0
+TT_COUNTDOWN_16X9_VIEW_H = 488.0
+TT_COUNTDOWN_16X9_TOP_DIVIDER_LOCAL = (238.87, 24.0, 315.26, 20.0)
+TT_COUNTDOWN_16X9_LEFT_DIVIDER_LOCAL = (90.0, 44.0, 20.0, 286.0)
+TT_COUNTDOWN_16X9_RIGHT_DIVIDER_LOCAL = (683.0, 44.0, 20.0, 286.0)
+TT_COUNTDOWN_16X9_HORIZONTAL_DIVIDER_LOCAL = (238.87, 330.0, 315.26, 40.0)
+TT_COUNTDOWN_16X9_WIDGET = "tt_countdown_16x9"
+
+
+def tt_countdown_16x9_tt_box() -> tuple[float, float, float, float]:
+    """Widget-local (x, y, w, h) max landscape TT bounds from the divider guides.
+
+    - left edge  = right side of ``left_divider``
+    - right edge = left side of ``right_divider``
+    - top edge   = bottom of ``top_divider``
+    - bottom     = top of ``horizontal_divider``
+
+    Landscape TTs width-fit this box. The seated TT+TRT group then lifts so
+    the TT top rests on ``top_divider``'s bottom — see
+    ``tt_countdown_16x9_content_lift``.
+    """
+    lx, _ly, lw, _lh = TT_COUNTDOWN_16X9_LEFT_DIVIDER_LOCAL
+    rx, _ry, _rw, _rh = TT_COUNTDOWN_16X9_RIGHT_DIVIDER_LOCAL
+    _tx, ty, _tw, th = TT_COUNTDOWN_16X9_TOP_DIVIDER_LOCAL
+    _hx, hy, _hw, _hh = TT_COUNTDOWN_16X9_HORIZONTAL_DIVIDER_LOCAL
+    x = lx + lw
+    y = ty + th
+    w = rx - x
+    h = hy - y
+    return (x, y, w, h)
+
+
+def tt_countdown_16x9_tt_is_portrait(src_w: float, src_h: float) -> bool:
+    """True when width-fitting the landscape box would overflow its height."""
+    if float(src_w) <= 0.0 or float(src_h) <= 0.0:
+        return False
+    _x, _y, box_w, box_h = tt_countdown_16x9_tt_box()
+    return (float(src_h) / float(src_w)) * box_w > box_h + 0.5
+
+
+def tt_countdown_16x9_portrait_rects(
+    src_w: float,
+    src_h: float,
+    trt_w: float,
+    trt_h: float,
+    *,
+    pad: float = TT_COUNTDOWN_BG_PAD,
+) -> tuple[tuple[float, float, float, float], tuple[float, float, float, float]]:
+    """Side-by-side layout for a tall TT: left-aligned art, right-aligned TRT.
+
+    TT fills the widget height when it can, shrinking only enough to leave
+    room for the countdown beside it. TRT is vertically centered on the TT.
+    """
+    view_w, view_h = TT_COUNTDOWN_16X9_VIEW_W, TT_COUNTDOWN_16X9_VIEW_H
+    inset = max(0.0, float(pad))
+    gap = 20.0
+    trt_w = max(0.0, float(trt_w))
+    trt_h = max(0.0, float(trt_h))
+    max_h = max(1.0, view_h - 2.0 * inset)
+    max_w = max(1.0, view_w - 2.0 * inset - gap - trt_w)
+    sw = max(1e-6, float(src_w))
+    sh = max(1e-6, float(src_h))
+    scale = max_h / sh
+    if sw * scale > max_w:
+        scale = max_w / sw
+    tw = sw * scale
+    th = sh * scale
+    tt_x = inset
+    tt_y = (view_h - th) / 2.0
+    trt_x = view_w - inset - trt_w
+    trt_y = tt_y + th / 2.0 - trt_h / 2.0
+    return (tt_x, tt_y, tw, th), (trt_x, trt_y, trt_w, trt_h)
+
+
+def tt_countdown_content_center_shift(
+    *,
+    tt_height: float,
+    trt_height: float = 0.0,
+    seat_y: float,
+    gap: float,
+    view_h: float,
+) -> float:
+    """Upward shift that vertically centers the TT+TRT group in the card.
+
+    Content is first seated on the horizontal divider (TT bottom at ``seat_y``,
+    TRT top at ``seat_y + gap``), then this delta is subtracted from both Ys.
+    """
+    tt_h = max(0.0, float(tt_height))
+    trt_h = max(0.0, float(trt_height))
+    g = max(0.0, float(gap)) if trt_h > 0.0 else 0.0
+    group_top = float(seat_y) - tt_h
+    group_h = tt_h + g + trt_h
+    if group_h <= 0.0:
+        return 0.0
+    desired_top = (float(view_h) - group_h) / 2.0
+    return group_top - desired_top
+
+
+def tt_countdown_portrait_content_lift(
+    tt_height: float, *, trt_height: float = 0.0
+) -> float:
+    """Center-shift for the portrait TT + countdown card."""
+    _dx, seat_y, _dw, gap = TT_COUNTDOWN_DIVIDER_LOCAL
+    return tt_countdown_content_center_shift(
+        tt_height=tt_height,
+        trt_height=trt_height,
+        seat_y=seat_y,
+        gap=gap,
+        view_h=TT_COUNTDOWN_VIEW_H,
+    )
+
+
+def tt_countdown_16x9_content_lift(
+    tt_height: float, *, trt_height: float = 0.0
+) -> float:
+    """Lift the seated landscape group so TT top sits on ``top_divider``'s bottom.
+
+    Content is first seated on the horizontal divider (TT bottom at its top,
+    TRT under it). ``trt_height`` is unused — the group top is the TT top.
+    """
+    del trt_height
+    _tx, ty, _tw, th = TT_COUNTDOWN_16X9_TOP_DIVIDER_LOCAL
+    _hx, seat_y, _hw, _hh = TT_COUNTDOWN_16X9_HORIZONTAL_DIVIDER_LOCAL
+    desired_top = ty + th
+    group_top = float(seat_y) - max(0.0, float(tt_height))
+    return max(0.0, group_top - desired_top)
+
+
+def tt_countdown_16x9_time_anchor(*, lift: float = 0.0) -> tuple[float, float]:
+    """Widget-local (center_x, top_y) for the TRT under the horizontal divider.
+
+    ``lift`` is the upward group shift from ``tt_countdown_16x9_content_lift``.
+    """
+    hx, hy, hw, hh = TT_COUNTDOWN_16X9_HORIZONTAL_DIVIDER_LOCAL
+    return (hx + hw / 2.0, hy + hh - max(0.0, float(lift)))
+
+
+def tt_countdown_16x9_zone(assignments: tuple[str, ...] | list[str]) -> int | None:
+    """Wide slot for a ``tt_countdown_16x9`` assignment: 6 (slots 1–2) or 7 (slot 3)."""
+    zones = [str(n or "").strip() for n in list(assignments)[:3]]
+    for i, name in enumerate(zones):
+        if name == TT_COUNTDOWN_16X9_WIDGET:
+            return 7 if i == 2 else 6
+    return None
+
+
+def apply_tt_countdown_16x9_override(
+    assignments: tuple[str, ...] | list[str],
+) -> tuple[str, str, str, str, str]:
+    """Blank the portrait slots covered by a wide ``tt_countdown_16x9``.
+
+    The marker stays in its stored slot (1–3); the sibling portrait zone the
+    wide slot spans (zone 6 → 1+2, zone 7 → 2+3) is cleared so nothing draws
+    underneath.
+    """
+    zones = [str(n or "").strip() for n in list(assignments)[:5]]
+    while len(zones) < 5:
+        zones.append("")
+    wide = tt_countdown_16x9_zone(zones)
+    if wide is not None:
+        covered = (1, 2) if wide == 6 else (2, 3)
+        keep = next(
+            i for i in range(3) if zones[i] == TT_COUNTDOWN_16X9_WIDGET
+        )
+        for z in covered:
+            if (z - 1) != keep:
+                zones[z - 1] = ""
+        # Only one wide card — drop later copies so zone 6 and 7 never fight.
+        for i, name in enumerate(zones):
+            if i != keep and name == TT_COUNTDOWN_16X9_WIDGET:
+                zones[i] = ""
+    return (zones[0], zones[1], zones[2], zones[3], zones[4])
+
+
+def tabular_time_layout(
+    text: str,
+    *,
+    digit_cell_w: float,
+    char_widths: dict[str, float],
+) -> tuple[tuple[tuple[str, float, float], ...], float]:
+    """Per-character cells for a fixed-width countdown readout.
+
+    Every digit occupies an equal-width cell (``digit_cell_w``, normally the
+    widest digit's advance) so the readout never jitters as values change.
+    Non-digits (``:``, ``-``) keep their natural width. Returns
+    ``((char, cell_x, cell_w), ...)`` plus the total width; glyphs should be
+    drawn centered inside their cell.
+    """
+    cells: list[tuple[str, float, float]] = []
+    x = 0.0
+    for ch in str(text or ""):
+        natural = float(char_widths.get(ch, digit_cell_w))
+        cell_w = float(digit_cell_w) if ch.isdigit() else natural
+        cells.append((ch, x, cell_w))
+        x += cell_w
+    return tuple(cells), x
+
 
 def volume_readout_y_shift(
     *,
@@ -207,10 +471,12 @@ WIDGET_FILENAMES: dict[str, str] = {
     "cast_info_z4": "widget_np_04_cast_info.svg",
     "cast_info_z5": "widget_np_05_cast_info.svg",
     "status_bar": "widget_np_05_status_bar.svg",
+    "tt_countdown": "widget_np_01-02-03_tt_countdown.svg",
+    "tt_countdown_16x9": "widget_np_06-07_tt_countdown.svg",
     "play": "widget_np_01-02-03_play.svg",
     "poster_2x3": "widget_np_01-02-03_poster_2x3.svg",
     "poster_1x1": "widget_np_01-02-03_poster_1x1.svg",
-    "poster_16x9": "widget_np_07_16x9.svg",
+    "poster_16x9": "widget_np_06_16x9.svg",
     "poster_16x9_z6": "widget_np_06_16x9.svg",
     "poster_16x9_z7": "widget_np_07_16x9.svg",
 }
@@ -240,9 +506,9 @@ def widget_filename(widget_key: str, zone: int | None = None) -> str:
     if key in ("status_bar", "now_playing"):
         return WIDGET_FILENAMES["status_bar"]
     if key == "poster_16x9":
-        if z == 6:
-            return WIDGET_FILENAMES["poster_16x9_z6"]
-        return WIDGET_FILENAMES["poster_16x9_z7"]
+        if z == 7:
+            return WIDGET_FILENAMES["poster_16x9_z7"]
+        return WIDGET_FILENAMES["poster_16x9_z6"]
     return WIDGET_FILENAMES.get(key, "")
 
 
@@ -307,13 +573,16 @@ def wants_16x9_poster(
     poster_bgra: np.ndarray | None = None,
     content_mode: str | None = None,
 ) -> bool:
-    """Whether live now-playing should use the zone 6/7 16×9 poster widget."""
+    """Whether live now-playing should use the zone-6 16×9 YouTube thumbnail.
+
+    Other services keep poster art in the portrait 2×3 slot even when the
+    bitmap itself is landscape.
+    """
+    del poster_bgra
     mode = str(content_mode or "video").strip().lower()
     if mode == "music":
         return False
-    return service_requests_16x9_poster(service_name) or poster_image_is_16x9(
-        poster_bgra
-    )
+    return service_requests_16x9_poster(service_name)
 
 
 def apply_16x9_poster_override(
@@ -323,9 +592,10 @@ def apply_16x9_poster_override(
 ) -> tuple[str, str, str, str, str]:
     """Runtime layout: 16×9 poster occupies zone 6 or 7; prefs are not persisted.
 
-    Zone 7 (default) spans portrait slots 2+3. Zone 6 spans 1+2. The portrait
-    ``poster`` assignment is removed. Other widgets displaced by the wide slot
-    move into remaining empty portrait columns (clock before volume).
+    Zone 6 (default, YouTube) spans portrait slots 1+2 so volume can stay in
+    column 3. Zone 7 spans 2+3. The portrait ``poster`` assignment is removed.
+    Other widgets displaced by the wide slot move into remaining empty
+    portrait columns (clock before volume).
     """
     z = int(zone)
     if z not in (6, 7):

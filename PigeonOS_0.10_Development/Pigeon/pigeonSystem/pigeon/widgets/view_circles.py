@@ -65,6 +65,14 @@ from pigeon.np_layout import (
     STATUS_BAR_VIEW_H,
     STATUS_BAR_VIEW_W,
     STATUS_BAR_VIEW_Y0,
+    TT_COUNTDOWN_16X9_VIEW_H,
+    TT_COUNTDOWN_16X9_VIEW_W,
+    TT_COUNTDOWN_16X9_WIDGET,
+    TT_COUNTDOWN_BG_PAD,
+    TT_COUNTDOWN_CARD_RADIUS,
+    TT_COUNTDOWN_TEXT_SIZE_PX,
+    TT_COUNTDOWN_VIEW_H,
+    TT_COUNTDOWN_VIEW_W,
     VOLUME_FORMAT_LOCAL,
     VOLUME_FORMAT_SIZE_PX,
     VOLUME_INNER_R,
@@ -80,7 +88,7 @@ from pigeon.np_layout import (
     VOLUME_VIEW_H,
     VOLUME_VIEW_W,
     WIDGET_FILENAMES,
-    apply_16x9_poster_override,
+    YOUTUBE_ZONE_WIDGETS,
     canonical_zone_widget,
     cast_names_for_zone,
     design_rect_from_local,
@@ -90,7 +98,18 @@ from pigeon.np_layout import (
     status_bar_elapsed_travel_x,
     status_bar_handoff_alphas,
     status_bar_service_has_room,
+    apply_tt_countdown_16x9_override,
     strip_cast_columns,
+    tabular_time_layout,
+    tt_countdown_16x9_content_lift,
+    tt_countdown_16x9_portrait_rects,
+    tt_countdown_16x9_time_anchor,
+    tt_countdown_16x9_tt_box,
+    tt_countdown_16x9_tt_is_portrait,
+    tt_countdown_16x9_zone,
+    tt_countdown_portrait_content_lift,
+    tt_countdown_time_anchor,
+    tt_countdown_tt_box,
     volume_readout_y_shift,
     wants_16x9_poster,
     widget_filename,
@@ -102,6 +121,7 @@ from pigeon.font_paths import (
     resolve_ui_font_light_italic,
     resolve_ui_font_medium_italic,
     resolve_ui_font_semibold,
+    resolve_ui_font_semibold_italic,
 )
 from pigeon.widgets.playback_overlay import (
     _receiver_audio_display_line,
@@ -130,6 +150,46 @@ _COLOR_CENTER_BLACK_HEX = "#000000"
 _COLOR_CENTER_BLACK_BGR = (0, 0, 0)
 _COLOR_CHROME_BGR = (147, 147, 147)  # #939393
 _COLOR_CHROME_RGB = (147, 147, 147)
+
+
+def _look_chrome_rgb() -> tuple[int, int, int]:
+    try:
+        from pigeon.widgets.options_settings import ui_chrome_rgb
+
+        return ui_chrome_rgb()
+    except Exception:
+        return _COLOR_CHROME_RGB
+
+
+def _look_chrome_bgr() -> tuple[int, int, int]:
+    return _look_chrome_rgb()
+
+
+def _look_chrome_hex() -> str:
+    try:
+        from pigeon.widgets.options_settings import ui_chrome_hex
+
+        return ui_chrome_hex()
+    except Exception:
+        return "#939393"
+
+
+def _look_ink_rgb() -> tuple[int, int, int]:
+    try:
+        from pigeon.widgets.options_settings import ui_ink_rgb
+
+        return ui_ink_rgb()
+    except Exception:
+        return (255, 255, 255)
+
+
+def _look_is_bright() -> bool:
+    try:
+        from pigeon.widgets.options_settings import ui_is_bright
+
+        return bool(ui_is_bright())
+    except Exception:
+        return False
 
 
 def _hex_to_bgr(hex_color: str) -> tuple[int, int, int]:
@@ -192,8 +252,9 @@ class _NpTheme:
         return _darken_hex(self.ui_hex, factor=0.5)
 
     @property
-    def cache_key(self) -> tuple[str, str, str]:
-        return (self.ui_hex.lower(), self.accent_hex.lower(), self.button_hex.lower())
+    def cache_key(self) -> tuple[str, str, str, str]:
+        look = "bright" if _look_is_bright() else "std"
+        return (self.ui_hex.lower(), self.accent_hex.lower(), self.button_hex.lower(), look)
 
 
 def np_theme_from_settings() -> _NpTheme:
@@ -289,13 +350,6 @@ _POSTER_Y = _POSTER_VIDEO_Y
 _POSTER_W = _POSTER_VIDEO_W
 _POSTER_H = _POSTER_VIDEO_H
 _POSTER_RX = _POSTER_VIDEO_RX
-
-# Music track titles under zone2 album art.
-_TRACK_CX = 400.0
-_TRACK_MAX_W = 360
-_SONG_CY, _SONG_SIZE = 320.0, 28
-_ALBUM_CY, _ALBUM_SIZE = 344.0, 20
-_ARTIST_CY, _ARTIST_SIZE = 364.0, 20
 
 _CONTENT_MODE_VIDEO = "video"
 _CONTENT_MODE_MUSIC = "music"
@@ -470,6 +524,10 @@ class ViewCirclesState:
     has_position: bool = False
     # False → clock-only layout until playback / receiver broadcast / title.
     content_active: bool = False
+    # Host sets this when the foreground app is YouTube (not inferred from art).
+    is_youtube: bool = False
+    # Sharp Sans fallback title when no TMDb title treatment is cached.
+    tt_title: str = ""
 
 
 def _normalize_content_mode(mode: str | None) -> str:
@@ -802,7 +860,7 @@ def _default_zone_widget_assignments() -> tuple[str, str, str, str, str]:
 
         return read_now_playing_zone_widgets()
     except Exception:
-        return ("clock", "poster", "volume", "cast_info", "status_bar")
+        return ("tt_countdown_16x9", "", "volume", "cast_info", "status_bar")
 
 
 _CAST_NAMES_PER_ZONE = CAST_NAMES_PER_ZONE
@@ -826,6 +884,7 @@ def _effective_zone_widgets(
     poster_16x9: bool = False,
     poster_16x9_zone: int = DEFAULT_16X9_POSTER_ZONE,
     has_poster: bool = True,
+    has_volume: bool = False,
 ) -> tuple[str, str, str, str, str]:
     """Show only widgets we have content for; never two copies of the same one.
 
@@ -837,17 +896,28 @@ def _effective_zone_widgets(
     unused cast names. A second cast strip is kept only when more names remain.
     Any other repeated widget is dropped so the layout does not duplicate.
 
-    When ``poster_16x9`` is True and a poster is actually available, user poster
-    placement is overridden: the landscape widget occupies zone 7 (default) or
-    zone 6 and the conflicting portrait columns are cleared. A missing poster
-    never occupies a slot (no empty 16×9 shell).
+    When ``poster_16x9`` is True, YouTube layout wins over prefs: zones 1/2
+    off, volume in zone 3, status bar in zone 5, 16×9 thumbnail in zone 6.
+    Zone 4 is reserved for the video title (drawn in Pillow, not a widget).
+    The thumbnail does not need to have arrived yet — the slot stays reserved.
     """
     zones = list(zone_widgets or _default_zone_widget_assignments())
     if len(zones) < 5:
         return _default_zone_widget_assignments()
     zones = [canonical_zone_widget(i + 1, w) for i, w in enumerate(zones[:5])]
     if not content_active:
-        return tuple("clock" if z == "clock" else "" for z in zones)
+        return tuple(
+            z if z == "clock" or (z == "volume" and has_volume) else ""
+            for z in zones
+        )
+    if poster_16x9:
+        youtube = list(YOUTUBE_ZONE_WIDGETS)
+        if not has_position:
+            youtube[4] = ""
+        return (youtube[0], youtube[1], youtube[2], youtube[3], youtube[4])
+    # Wide TT countdown spans zone 6 (slots 1+2) or zone 7 (slots 2+3):
+    # blank the covered sibling portrait slot before dedupe.
+    zones = list(apply_tt_countdown_16x9_override(tuple(zones)))
     named = max(0, int(cast_count))
     if not has_position:
         for i, widget in enumerate(zones):
@@ -874,10 +944,7 @@ def _effective_zone_widgets(
             zones[i] = ""
             continue
         seen.add(key)
-    result = (zones[0], zones[1], zones[2], zones[3], zones[4])
-    if poster_16x9 and has_poster:
-        return apply_16x9_poster_override(result, zone=int(poster_16x9_zone))
-    return result
+    return (zones[0], zones[1], zones[2], zones[3], zones[4])
 
 
 def configured_status_bar_zone(
@@ -907,7 +974,7 @@ def _zone_widget_visibility(
     paused: bool,
     zone_widgets: tuple[str, str, str, str, str] | None = None,
 ) -> dict[str, bool]:
-    """Zone widget on/off map from preferences (defaults: clock / poster / volume / cast / bar)."""
+    """Zone widget on/off map from preferences (defaults: wide countdown / volume / cast / bar)."""
     mode = _normalize_content_mode(content_mode)
     is_music = mode == _CONTENT_MODE_MUSIC
     assignments = zone_widgets if zone_widgets is not None else _default_zone_widget_assignments()
@@ -1442,6 +1509,57 @@ def _apply_clock_accent_fills(root: ET.Element, *, theme: _NpTheme | None = None
         _apply_clock_black_rings(clock, zone=zone)
 
 
+def _seconds_alternate_colors(
+    now: datetime, *, ui_hex: str, white_hex: str = "#FFFFFF"
+) -> tuple[str, str, int]:
+    """Incoming color, outgoing color, and how many ticks have flipped.
+
+    The seconds ring is never empty. Even minutes start fully white and paint
+    UI-color ticks one per second. Odd minutes start fully UI-color and paint
+    white ticks one per second. At ``:00`` all 60 ticks are the outgoing color
+    (the color that finished filling on the previous minute).
+    """
+    ui = str(ui_hex or "#FFFFFF")
+    white = str(white_hex or "#FFFFFF")
+    if int(now.minute) % 2 == 0:
+        incoming, outgoing = ui, white
+    else:
+        incoming, outgoing = white, ui
+    return incoming, outgoing, max(0, min(59, int(now.second)))
+
+
+def _paint_seconds_ticks_alternating(
+    seconds_g: ET.Element | None,
+    now: datetime,
+    *,
+    ui_hex: str,
+    white_hex: str = "#FFFFFF",
+) -> None:
+    """Keep every second tick box filled; flip white ↔ UI one tick per second."""
+    if seconds_g is None:
+        return
+    _fix_seconds_08_label(seconds_g)
+    incoming, outgoing, incoming_count = _seconds_alternate_colors(
+        now, ui_hex=ui_hex, white_hex=white_hex
+    )
+    current: ET.Element | None = None
+    for el, key in list(_iter_named_children(seconds_g)):
+        if not key.startswith("seconds_"):
+            continue
+        m = re.fullmatch(r"seconds_(\d{2})", key)
+        if not m:
+            continue
+        idx = int(m.group(1))
+        if not (1 <= idx <= 60):
+            continue
+        _set_tick_paint(el, color=incoming if idx <= incoming_count else outgoing)
+        if incoming_count > 0 and idx == incoming_count:
+            current = el
+        elif incoming_count == 0 and idx == 60:
+            current = el
+    _raise_in_group(seconds_g, current)
+
+
 def _apply_clock_ticks(
     root: ET.Element,
     zone: int,
@@ -1452,8 +1570,9 @@ def _apply_clock_ticks(
     """Drive clock tick layers for the active zone.
 
     Hours: original geometry; only the current face layer is kept.
-    Minutes + seconds: keep layers 1..current (0 → 60); prior ticks dim UI,
+    Minutes: keep layers 1..current (0 → 60); prior ticks dim UI,
     current full UI and raised above siblings.
+    Seconds: every tick box stays filled and alternates white ↔ UI color.
     """
     th = theme or np_theme_from_settings()
     clock = _clock_group_for_zone(root, zone)
@@ -1504,21 +1623,7 @@ def _apply_clock_ticks(
             _set_tick_paint(el, color=th.tick_dim, opacity=_CLOCK_MINUTE_TICK_OPACITY)
     _raise_in_group(minutes_g, current_min)
 
-    # Seconds: layers 1..current; dim priors, highlight current.
-    current_sec = _resolve_seconds_el(seconds_g, sec_idx)
-    for el, key in list(_iter_named_children(seconds_g)):
-        if not key.startswith("seconds_"):
-            continue
-        if el is current_sec:
-            _set_tick_paint(el, color=th.tick_active)
-            continue
-        m = re.fullmatch(r"seconds_(\d{2})", key)
-        idx = int(m.group(1)) if m else -1
-        if 1 <= idx <= sec_idx:
-            _set_tick_paint(el, color=th.tick_dim)
-        else:
-            _detach_element(root, el)
-    _raise_in_group(seconds_g, current_sec)
+    _paint_seconds_ticks_alternating(seconds_g, now, ui_hex=th.tick_active)
 
 
 def _clock_widget_is_analog() -> bool:
@@ -1549,7 +1654,7 @@ def _detach_clock_tick_groups(root: ET.Element, *, zone: int | None = None) -> N
 def _apply_standalone_clock_ticks(
     root: ET.Element, now: datetime, *, theme: _NpTheme
 ) -> None:
-    """Drive the 1280×800 clock widget (no zone prefix). Seconds fill white."""
+    """Drive the 1280×800 clock widget (no zone prefix)."""
     _apply_clock_black_rings(root, zone=None)
     hours_g = _find_by_key(root, "clock_hours_group")
     minutes_g = _find_by_key(root, "clock_minutes_group")
@@ -1560,11 +1665,8 @@ def _apply_standalone_clock_ticks(
     if h12 == 0:
         h12 = 12
     minute = int(now.minute)
-    second = int(now.second)
     min_idx = 60 if minute == 0 else minute
-    sec_idx = 60 if second == 0 else second
     ui = theme.tick_active
-    white = "#FFFFFF"
 
     face_name = _HOUR_FACE_NAMES.get(h12, "")
     for el, key in list(_iter_named_children(hours_g)):
@@ -1589,17 +1691,7 @@ def _apply_standalone_clock_ticks(
             current_min = el
     _raise_in_group(minutes_g, current_min)
 
-    current_sec = _resolve_seconds_el(seconds_g, sec_idx)
-    for el, key in list(_iter_named_children(seconds_g)):
-        if not key.startswith("seconds_"):
-            continue
-        m = re.fullmatch(r"seconds_(\d{2})", key)
-        idx = int(m.group(1)) if m else -1
-        if el is current_sec or (1 <= idx <= sec_idx):
-            _set_tick_paint(el, color=white)
-        else:
-            _detach_element(root, el)
-    _raise_in_group(seconds_g, current_sec)
+    _paint_seconds_ticks_alternating(seconds_g, now, ui_hex=ui)
 
     for name in ("clock_digital_text", "day_text", "month_date_text"):
         _clear_text_content(_find_by_key(root, name))
@@ -1632,6 +1724,24 @@ def _prepare_cast_svg(root: ET.Element) -> None:
     for el in list(root.iter()):
         key = _layer_key(el)
         if key.endswith("_text") and key.startswith("cast_info_"):
+            _detach_element(root, el)
+
+
+def _prepare_tt_countdown_svg(root: ET.Element) -> None:
+    """Drop live layers and the SVG plate. TT and countdown are Pillow; dividers are guides only."""
+    for name in (
+        "tt_countdown_background",
+        "tmdb_tt",
+        "countdown_text",
+        "divider",
+        "dividers",
+        "top_divider",
+        "left_divider",
+        "right_divider",
+        "horizontal_divider",
+    ):
+        el = _find_by_key(root, name)
+        if el is not None:
             _detach_element(root, el)
 
 
@@ -1702,6 +1812,8 @@ def _rasterize_named_widget(
         _prepare_volume_svg(root)
     elif widget_key == "cast_info":
         _prepare_cast_svg(root)
+    elif widget_key in ("tt_countdown", TT_COUNTDOWN_16X9_WIDGET):
+        _prepare_tt_countdown_svg(root)
     elif widget_key in ("now_playing", "status_bar"):
         _prepare_status_bar_svg(root)
     elif widget_key == "play" and not include_play_overlay:
@@ -1759,13 +1871,13 @@ def _draw_clock_labels_in_zone(
     day_max_w = max(40, int(round(month_x - day_x - 8.0)))
     font_day = _load_sharp_extrabold(header_px)
     day_patch, dw, _dh = _text_patch_font(
-        day_label, font=font_day, fill_rgb=(255, 255, 255)
+        day_label, font=font_day, fill_rgb=_look_ink_rgb()
     )
     if dw > day_max_w:
         for size in range(header_px - 2, 18, -2):
             font_day = _load_sharp_extrabold(size)
             day_patch, dw, _dh = _text_patch_font(
-                day_label, font=font_day, fill_rgb=(255, 255, 255)
+                day_label, font=font_day, fill_rgb=_look_ink_rgb()
             )
             if dw <= day_max_w:
                 break
@@ -1778,7 +1890,7 @@ def _draw_clock_labels_in_zone(
     )
     font_month = _load_sharp_semibold(header_px)
     month_patch, _mw, _mh = _text_patch_font(
-        month_label, font=font_month, fill_rgb=(255, 255, 255)
+        month_label, font=font_month, fill_rgb=_look_ink_rgb()
     )
     _paste_baseline_left(
         out,
@@ -1791,7 +1903,7 @@ def _draw_clock_labels_in_zone(
         return
     time_p = _ink_crop_bgra(
         _matching_hhmm_patch(
-            _clock_hhmm(now), size_px=digital_px, fill_rgb=(255, 255, 255)
+            _clock_hhmm(now), size_px=digital_px, fill_rgb=_look_ink_rgb()
         )
     )
     nudge_x = CLOCK_DIGITAL_NUDGE[0] * sx
@@ -1899,7 +2011,7 @@ def apply_view_circles_svg_state(
     for z in (1, 2, 3):
         play = _find_by_key(root, f"zone{z}_play_button")
         if play is not None:
-            _set_tick_paint(play, color="#939393")
+            _set_tick_paint(play, color=_look_chrome_hex())
 
     # Remove demo text / embedded images / volume pies we redraw (keep tick paths).
     for name in _STRIP_OR_HIDE_NAMES:
@@ -1989,11 +2101,22 @@ def render_view_circles_svg_base_bgra(
     assignments = zone_widgets or _default_zone_widget_assignments()
     out = np.zeros((int(DESIGN_H), int(DESIGN_W), 4), dtype=np.uint8)
     now_dt = now if now is not None else datetime.now()
-    chrome_keys = {"clock": "clock", "volume": "volume", "cast_info": "cast_info"}
+    chrome_keys = {
+        "clock": "clock",
+        "volume": "volume",
+        "cast_info": "cast_info",
+        "tt_countdown": "tt_countdown",
+    }
     for z in (1, 2, 3, 4, 5):
         key = str(assignments[z - 1] if z <= len(assignments) else "").strip()
-        if key == "cast_info" or key in ("now_playing", "status_bar"):
-            # Cast text and status-bar fill are drawn in Pillow.
+        if key in (
+            "cast_info",
+            "now_playing",
+            "status_bar",
+            "tt_countdown",
+            TT_COUNTDOWN_16X9_WIDGET,
+        ):
+            # Cast, bar, and TT countdown (type only) are Pillow.
             continue
         widget_key = chrome_keys.get(key)
         if not widget_key:
@@ -2100,13 +2223,99 @@ def _load_sharp_light_italic(size: int) -> ImageFont.FreeTypeFont | ImageFont.Im
     return _load_sharp_italic(px)
 
 
+# Synthetic oblique slant (tan 12°) when no Semibold Italic cut is installed.
+_TT_ITALIC_SHEAR = 0.2126
+
+
+@lru_cache(maxsize=8)
+def _load_sharp_semibold_italic(
+    size: int,
+) -> tuple[ImageFont.FreeTypeFont | ImageFont.ImageFont, bool]:
+    """(font, needs_synthetic_shear) for the countdown's Semibold Italic."""
+    px = max(6, int(size))
+    path = resolve_ui_font_semibold_italic()
+    if path:
+        try:
+            return ImageFont.truetype(path, px), False
+        except OSError:
+            pass
+    return _load_sharp_semibold(px), True
+
+
+def _shear_italic_bgra(patch: np.ndarray, shear: float = _TT_ITALIC_SHEAR) -> np.ndarray:
+    """Lean a rendered text patch to the right (synthetic oblique)."""
+    if patch is None or patch.size == 0:
+        return patch
+    h, w = patch.shape[:2]
+    extra = int(math.ceil(float(shear) * h))
+    if extra <= 0:
+        return patch
+    # x' = x + shear * (h - y): baseline stays put, the top leans right.
+    m = np.array([[1.0, -float(shear), float(shear) * h], [0.0, 1.0, 0.0]], dtype=np.float32)
+    return cv2.warpAffine(
+        patch,
+        m,
+        (w + extra, h),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=(0, 0, 0, 0),
+    )
+
+
+def _tt_countdown_time_patch(
+    text: str,
+    *,
+    size_px: int = TT_COUNTDOWN_TEXT_SIZE_PX,
+    fill_rgb: tuple[int, int, int] = (255, 255, 255),
+) -> np.ndarray:
+    """Countdown readout in Sharp Sans Semibold Italic with tabular digits.
+
+    Every digit is drawn centered inside an equal-width cell (the widest
+    digit's advance) so the readout stays perfectly column-aligned while it
+    counts down. When no true italic cut exists, the roman Semibold is
+    sheared into a synthetic oblique.
+    """
+    label = str(text or "")
+    if not label:
+        return np.zeros((1, 1, 4), dtype=np.uint8)
+    font, synthetic = _load_sharp_semibold_italic(int(size_px))
+    probe = Image.new("RGBA", (4, 4), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(probe)
+    digit_cell = max(float(draw.textlength(d, font=font)) for d in "0123456789")
+    char_widths = {ch: float(draw.textlength(ch, font=font)) for ch in set(label)}
+    cells, total_w = tabular_time_layout(
+        label, digit_cell_w=digit_cell, char_widths=char_widths
+    )
+    try:
+        ascent, descent = font.getmetrics()
+    except AttributeError:
+        ascent, descent = int(size_px), max(2, int(size_px) // 4)
+    pad = 2
+    img = Image.new(
+        "RGBA",
+        (int(math.ceil(total_w)) + pad * 2, int(ascent + descent) + pad * 2),
+        (0, 0, 0, 0),
+    )
+    draw = ImageDraw.Draw(img)
+    for ch, cell_x, cell_w in cells:
+        natural = char_widths.get(ch, cell_w)
+        gx = pad + cell_x + (cell_w - natural) / 2.0
+        draw.text((gx, pad), ch, font=font, fill=(*fill_rgb, 255))
+    arr = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGBA2BGRA)
+    if synthetic:
+        arr = _shear_italic_bgra(arr)
+    return arr
+
+
 def _text_patch_digital7(
     text: str,
     *,
     size_px: int,
-    fill_rgb: tuple[int, int, int] = _COLOR_CHROME_RGB,
+    fill_rgb: tuple[int, int, int] | None = None,
     max_width_px: int | None = None,
 ) -> tuple[np.ndarray, int, int]:
+    if fill_rgb is None:
+        fill_rgb = _look_chrome_rgb()
     draw_text = str(text or "")
     if not draw_text:
         return np.zeros((1, 1, 4), dtype=np.uint8), 0, 0
@@ -2142,8 +2351,10 @@ def _text_patch_font(
     text: str,
     *,
     font: ImageFont.ImageFont,
-    fill_rgb: tuple[int, int, int] = _COLOR_CHROME_RGB,
+    fill_rgb: tuple[int, int, int] | None = None,
 ) -> tuple[np.ndarray, int, int]:
+    if fill_rgb is None:
+        fill_rgb = _look_chrome_rgb()
     draw_text = str(text or "")
     if not draw_text:
         return np.zeros((1, 1, 4), dtype=np.uint8), 0, 0
@@ -2351,6 +2562,23 @@ def _cast_line_patch(text: str, *, size_px: int, max_width_px: int) -> np.ndarra
     if tw < 1:
         return None
     return _ink_crop_bgra(patch)
+
+
+def _zone4_title_xywh() -> tuple[int, int, int, int]:
+    """Zone 4 box clipped so titles stay above zone 5 (the strips overlap in spec)."""
+    z4 = _zone_spec(4)
+    z5 = _zone_spec(5)
+    x = int(round(z4.x))
+    y = int(round(z4.y))
+    w = max(1, int(round(z4.w)))
+    gap = 12.0
+    h = min(float(z4.h), float(z5.y) - float(z4.y) - gap)
+    return x, y, w, max(8, int(round(h)))
+
+
+# Line 2 starts here so artist/album sit under the title and use the rest of
+# the strip (down to the status bar gap).
+_ZONE4_SUBTITLE_TOP_FRAC = 0.48
 
 
 def _draw_stacked_cast_pair(
@@ -2916,7 +3144,7 @@ def _draw_circle_pair(
         outer_r=_RING_OUTER_R,
         inner_r=_RING_INNER_R,
         fraction=1.0,
-        fill_bgr=_COLOR_CHROME_BGR,
+        fill_bgr=_look_chrome_bgr(),
         fill_opacity=0.42,
         stroke=0,
     )
@@ -2940,10 +3168,10 @@ def _draw_circle_pair(
         outer_r=_RING_OUTER_R,
         inner_r=_RING_INNER_R,
         fraction=1.0,
-        fill_bgr=_COLOR_CHROME_BGR,
+        fill_bgr=_look_chrome_bgr(),
         fill_opacity=0.0,
         stroke=2,
-        stroke_bgr=_COLOR_CHROME_BGR,
+        stroke_bgr=_look_chrome_bgr(),
         stroke_opacity=0.85,
     )
     _draw_filled_circle_bgra(
@@ -3035,6 +3263,42 @@ def format_status_bar_timecode(raw: str, *, remaining: bool = False) -> str:
     return out
 
 
+def format_countdown_timecode(raw: str) -> str:
+    """TT-countdown remaining clock: never a leading-zero field, always ``-``.
+
+    Hours drop off the left when they hit 0 (``-1:00:00`` → ``-59:59``). The
+    new leftmost number is not zero-padded, so the string shortens by one
+    digit at each decade (``-10:00`` → ``-9:59``, ``-1:00`` → ``-59``).
+    """
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    if s.upper() == "LIVE":
+        return "LIVE"
+    body = s[1:] if s.startswith("-") else s
+    parts = [p for p in re.split(r"[:.]", body) if p != ""]
+    try:
+        nums = [max(0, int(p)) for p in parts]
+    except ValueError:
+        return "-" + body if not s.startswith("-") else s
+    hours = minutes = seconds = 0
+    if len(nums) >= 3:
+        hours, minutes, seconds = nums[0], nums[1], nums[2]
+    elif len(nums) == 2:
+        minutes, seconds = nums[0], nums[1]
+    elif len(nums) == 1:
+        seconds = nums[0]
+        minutes, seconds = divmod(seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+    if hours > 0:
+        out = f"{hours}:{minutes:02d}:{seconds:02d}"
+    elif minutes > 0:
+        out = f"{minutes}:{seconds:02d}"
+    else:
+        out = f"{seconds}"
+    return "-" + out
+
+
 def _draw_volume_selected_pie(
     bgra: np.ndarray,
     *,
@@ -3072,6 +3336,10 @@ def _clock_hhmm(now: datetime | None = None) -> str:
 def _fallback_base_bgra() -> np.ndarray:
     out = np.zeros((int(DESIGN_H), int(DESIGN_W), 4), dtype=np.uint8)
     out[:, :, 3] = 255
+    paper = (255, 255, 255) if _look_is_bright() else (0, 0, 0)
+    out[:, :, 0] = paper[2]
+    out[:, :, 1] = paper[1]
+    out[:, :, 2] = paper[0]
     return out
 
 
@@ -3082,6 +3350,8 @@ class ViewCirclesWidget:
         self._assets_dir = Path(assets_dir)
         self._state = ViewCirclesState()
         self._poster_bgra: np.ndarray | None = None
+        self._tt_bgra: np.ndarray | None = None
+        self._tt_patch_cache: dict[tuple[object, ...], np.ndarray | None] = {}
         self._cached_bgra: np.ndarray | None = None
         self._cached_sig: tuple[object, ...] | None = None
         self._svg_chrome_by_key: dict[tuple[object, ...], np.ndarray] = {}
@@ -3166,6 +3436,24 @@ class ViewCirclesWidget:
         self.clear_cache()
         return True
 
+    def set_tt_bgra(self, tt_bgra: np.ndarray | None) -> bool:
+        """Update the cached TMDb title-treatment source art (BGRA)."""
+        if tt_bgra is None:
+            if self._tt_bgra is None:
+                return False
+            self._tt_bgra = None
+            self._tt_patch_cache.clear()
+            self.clear_cache()
+            return True
+        arr = np.asarray(tt_bgra, dtype=np.uint8)
+        if self._tt_bgra is not None and self._tt_bgra.shape == arr.shape:
+            if np.array_equal(self._tt_bgra, arr):
+                return False
+        self._tt_bgra = arr.copy()
+        self._tt_patch_cache.clear()
+        self.clear_cache()
+        return True
+
     def _ensure_artwork_blur_bgra(self) -> np.ndarray | None:
         src = self._poster_bgra
         if src is None or src.size == 0:
@@ -3201,6 +3489,9 @@ class ViewCirclesWidget:
         service_name: str | None = None,
         has_position: bool | None = None,
         content_active: bool | None = None,
+        is_youtube: bool | None = None,
+        tt_bgra: np.ndarray | None = None,
+        tt_title: str | None = None,
     ) -> bool:
         changed = False
         if self.set_now_playing_chrome_visible(has_now_playing):
@@ -3266,7 +3557,13 @@ class ViewCirclesWidget:
             if svc != self._state.service_name:
                 self._state.service_name = svc
                 changed = True
-        if is_music:
+        if is_youtube is not None:
+            want_yt = bool(is_youtube)
+            if want_yt != self._state.is_youtube:
+                self._state.is_youtube = want_yt
+                changed = True
+        keep_titles = is_music or bool(self._state.is_youtube)
+        if keep_titles:
             if song_title is not None:
                 st = str(song_title or "")
                 if st != self._state.song_title:
@@ -3318,6 +3615,14 @@ class ViewCirclesWidget:
             if self.set_poster_bgra(None):
                 changed = True
         elif self.set_poster_bgra(poster_bgra):
+            changed = True
+        if tt_title is not None:
+            tt = str(tt_title or "").strip()
+            if tt != self._state.tt_title:
+                self._state.tt_title = tt
+                self._tt_patch_cache.clear()
+                changed = True
+        if self.set_tt_bgra(tt_bgra):
             changed = True
         if changed:
             self.clear_cache()
@@ -3380,6 +3685,8 @@ class ViewCirclesWidget:
         return self._search_frames
 
     def _wants_16x9_poster(self) -> bool:
+        if self._state.is_youtube:
+            return str(self.content_mode or "video").strip().lower() != "music"
         return wants_16x9_poster(
             service_name=self._state.service_name,
             poster_bgra=self._poster_bgra,
@@ -3400,21 +3707,24 @@ class ViewCirclesWidget:
             has_position=bool(self._state.has_position),
             cast_count=named,
             content_active=bool(self._state.content_active),
-            poster_16x9=self._wants_16x9_poster() and has_poster,
+            poster_16x9=self._wants_16x9_poster() and bool(self._state.content_active),
+            poster_16x9_zone=int(DEFAULT_16X9_POSTER_ZONE),
             has_poster=has_poster,
+            has_volume=bool(_receiver_volume_display_line(self._state.volume)),
         )
 
     def _poster_zone(self) -> int | None:
-        if not self._has_drawable_poster():
-            return None
         if self._wants_16x9_poster() and self._state.content_active:
             return int(DEFAULT_16X9_POSTER_ZONE)
+        if not self._has_drawable_poster():
+            return None
         return _zone_for_widget(self._assignments(), "poster")
 
     def _cache_sig(self) -> tuple[object, ...]:
         st = self._state
         cast_sig = tuple(st.cast[:21])
         poster_id = id(self._poster_bgra) if self._poster_bgra is not None else None
+        tt_id = id(self._tt_bgra) if self._tt_bgra is not None else None
         now = self._clock_now_for_display()
         search_frame = (
             int(round(st.search_angle_deg / 10.0)) % 36 if st.searching else -1
@@ -3426,7 +3736,7 @@ class ViewCirclesWidget:
         zone_widgets = self._assignments()
         theme_key = np_theme_from_settings().cache_key
         return (
-            42,  # cache schema — 16x9 poster slot (zone 7 default)
+            49,  # cache schema — wide TT landscape lift + portrait side-by-side
             st.content_mode,
             st.has_position,
             st.content_active,
@@ -3444,10 +3754,13 @@ class ViewCirclesWidget:
             st.album_title,
             st.artist_title,
             poster_id,
+            tt_id,
+            st.tt_title,
             st.searching,
             st.missing_art,
             st.paused,
             st.service_name,
+            st.is_youtube,
             search_frame,
             h12,
             int(now.minute),
@@ -3649,7 +3962,7 @@ class ViewCirclesWidget:
             y=ty,
             w=tw,
             h=th,
-            fill_bgr=_COLOR_UNPLAYED_BGR,
+            fill_bgr=_look_chrome_bgr(),
             radius=trx,
             stroke_bgr=None,
             fill_opacity=1.0,
@@ -3682,15 +3995,16 @@ class ViewCirclesWidget:
         _, ry = _bar_xy(STATUS_BAR_REMAINING_LOCAL)
         size = STATUS_BAR_TIME_SIZE_PX
 
-        def _label_patch(label: str) -> tuple[np.ndarray, int, int]:
+        def _label_patch(
+            label: str, *, fill_rgb: tuple[int, int, int] | None = None
+        ) -> tuple[np.ndarray, int, int]:
+            ink = fill_rgb if fill_rgb is not None else _look_chrome_rgb()
             if not label:
                 return np.zeros((1, 1, 4), dtype=np.uint8), 0, 0
             if label.upper() == "LIVE":
-                patch, pw, ph = _text_patch_digital7(label, size_px=size)
+                patch, pw, ph = _text_patch_digital7(label, size_px=size, fill_rgb=ink)
             else:
-                patch = _matching_hhmm_patch(
-                    label, size_px=size, fill_rgb=_COLOR_CHROME_RGB
-                )
+                patch = _matching_hhmm_patch(label, size_px=size, fill_rgb=ink)
                 ph, pw = patch.shape[:2]
             return patch, int(pw), int(ph)
 
@@ -3714,7 +4028,7 @@ class ViewCirclesWidget:
             _paste_patch_bgra(out, patch, paste_x, paste_y)
 
         et_patch, et_w, _et_h = _label_patch(et)
-        rt_patch, rt_w, _rt_h = _label_patch(rt)
+        rt_patch, rt_w, _rt_h = _label_patch(rt, fill_rgb=_look_ink_rgb())
         svc_patch, svc_w, _svc_h = _label_patch(svc.lower() if svc else "")
         remaining_left = float(tx + tw) - float(rt_w) if rt_w > 0 else None
         travel_x = status_bar_elapsed_travel_x(
@@ -3763,7 +4077,7 @@ class ViewCirclesWidget:
             px, py = _bar_xy(STATUS_BAR_PAUSED_LOCAL)
             font = _load_sharp_medium_italic(STATUS_BAR_PAUSED_SIZE_PX)
             paused_patch, _, _ = _text_patch_font(
-                "paused", font=font, fill_rgb=(255, 255, 255)
+                "paused", font=font, fill_rgb=_look_ink_rgb()
             )
             _paste_baseline_left(
                 out,
@@ -3922,7 +4236,7 @@ class ViewCirclesWidget:
             fx, fy = _local(VOLUME_FORMAT_LOCAL)
             font = _load_sharp_extrabold(VOLUME_FORMAT_SIZE_PX)
             patch, _w, _h = _text_patch_font(
-                fmt.upper(), font=font, fill_rgb=(255, 255, 255)
+                fmt.upper(), font=font, fill_rgb=_look_chrome_rgb()
             )
             _paste_baseline_left(
                 out, patch, fx, fy, bbox_top=_font_bbox_top(fmt.upper(), font)
@@ -3933,7 +4247,7 @@ class ViewCirclesWidget:
                 src.upper(),
                 size_px=VOLUME_SOURCE_SIZE_PX,
                 max_width_px=int(round(z.w - 40)),
-                fill_rgb=(255, 255, 255),
+                fill_rgb=_look_chrome_rgb(),
             )
             font_src = _load_digital7(VOLUME_SOURCE_SIZE_PX)
             _paste_baseline_left(
@@ -3947,11 +4261,11 @@ class ViewCirclesWidget:
         db_h = 0
         if show_value:
             vol_p, _, vol_h = _text_patch_digital7(
-                vol_value, size_px=VOLUME_VALUE_SIZE_PX
+                vol_value, size_px=VOLUME_VALUE_SIZE_PX, fill_rgb=_look_ink_rgb()
             )
         if show_scale:
             db_p, _, db_h = _text_patch_digital7(
-                "dB", size_px=VOLUME_SCALE_SIZE_PX, fill_rgb=_COLOR_CHROME_RGB
+                "dB", size_px=VOLUME_SCALE_SIZE_PX, fill_rgb=_look_ink_rgb()
             )
         dy_local = volume_readout_y_shift(
             has_source=bool(src),
@@ -4051,21 +4365,294 @@ class ViewCirclesWidget:
                 _paste_ink_centered(out, cp, cx, cy - cp.shape[0])
 
     def _draw_track_titles(self, out: np.ndarray) -> None:
+        """Song or video name in zone 4, using the music title/artist/album stack."""
         st = self._state
-        for text, cy, size in (
-            (st.song_title, _SONG_CY, _SONG_SIZE),
-            (st.album_title, _ALBUM_CY, _ALBUM_SIZE),
-            (st.artist_title, _ARTIST_CY, _ARTIST_SIZE),
-        ):
-            label = str(text or "").strip()
-            if not label:
-                continue
-            patch, _, _ = _text_patch_digital7(
-                label.upper(),
-                size_px=size,
-                max_width_px=_TRACK_MAX_W,
+        title = str(st.song_title or "").strip()
+        artist = str(st.artist_title or "").strip()
+        album = str(st.album_title or "").strip()
+        if not title and not artist and not album:
+            return
+        zx, zy, zw, zh = _zone4_title_xywh()
+        if zw < 8 or zh < 8:
+            return
+        try:
+            from pigeon.view_one_variants import render_ui_music_text_patch_bgra
+        except Exception:
+            render_ui_music_text_patch_bgra = None  # type: ignore[assignment]
+        patch = None
+        if render_ui_music_text_patch_bgra is not None:
+            patch = render_ui_music_text_patch_bgra(
+                title,
+                artist,
+                album,
+                zw,
+                zh,
+                subtitle_top_frac=_ZONE4_SUBTITLE_TOP_FRAC,
             )
-            _paste_centered(out, patch, _TRACK_CX, cy)
+        if patch is None or patch.size == 0:
+            return
+        if int(patch.shape[0]) > zh:
+            patch = patch[:zh]
+        _paste_patch_bgra(out, patch, zx, zy)
+
+    def _tt_countdown_tt_patch(
+        self,
+        z: NowPlayingZone,
+        *,
+        wide: bool = False,
+        dest_wh: tuple[int, int] | None = None,
+    ) -> np.ndarray | None:
+        """Title-treatment patch sized for the TT box, or a Sharp Sans fallback.
+
+        Near-black TT art is recolored pure white; everything else displays
+        unchanged. When no TT is cached, the title renders in Sharp Sans
+        Semibold instead. ``dest_wh`` overrides the landscape box (portrait
+        side-by-side uses an explicit size).
+        """
+        if dest_wh is not None:
+            box_w = max(1, int(dest_wh[0]))
+            box_h = max(1, int(dest_wh[1]))
+        elif wide:
+            tt_x, tt_y, tt_w, tt_h = tt_countdown_16x9_tt_box()
+            view_w, view_h = TT_COUNTDOWN_16X9_VIEW_W, TT_COUNTDOWN_16X9_VIEW_H
+            x0, y0 = design_xy_from_local(z, tt_x, tt_y, view_w=view_w, view_h=view_h)
+            x1, y1 = design_xy_from_local(
+                z,
+                tt_x + tt_w,
+                tt_y + tt_h,
+                view_w=view_w,
+                view_h=view_h,
+            )
+            box_w = max(1, int(round(x1 - x0)))
+            box_h = max(1, int(round(y1 - y0)))
+        else:
+            tt_x, tt_y, tt_w, tt_h = tt_countdown_tt_box()
+            view_w, view_h = TT_COUNTDOWN_VIEW_W, TT_COUNTDOWN_VIEW_H
+            x0, y0 = design_xy_from_local(z, tt_x, tt_y, view_w=view_w, view_h=view_h)
+            x1, y1 = design_xy_from_local(
+                z,
+                tt_x + tt_w,
+                tt_y + tt_h,
+                view_w=view_w,
+                view_h=view_h,
+            )
+            box_w = max(1, int(round(x1 - x0)))
+            box_h = max(1, int(round(y1 - y0)))
+        src = self._tt_bgra
+        title = str(self._state.tt_title or "").strip()
+        key: tuple[object, ...]
+        if src is not None and src.size > 0:
+            key = ("img", id(src), box_w, box_h)
+        elif title:
+            key = ("txt", title, box_w, box_h)
+        else:
+            return None
+        if key in self._tt_patch_cache:
+            return self._tt_patch_cache[key]
+        patch: np.ndarray | None = None
+        if src is not None and src.size > 0:
+            arr = src
+            if arr.ndim == 3 and arr.shape[2] == 3:
+                arr = cv2.cvtColor(arr, cv2.COLOR_BGR2BGRA)
+            try:
+                from pigeon.tmdb_tt_contrast import whiten_dark_tt_bgra
+
+                arr = whiten_dark_tt_bgra(arr)
+            except Exception:
+                pass
+            sh, sw = arr.shape[:2]
+            if sh >= 1 and sw >= 1:
+                # Fill the divider width; shrink further only if too tall.
+                scale = box_w / float(sw)
+                if sh * scale > box_h:
+                    scale = box_h / float(sh)
+                nw = max(1, int(round(sw * scale)))
+                nh = max(1, int(round(sh * scale)))
+                patch = cv2.resize(
+                    arr, (nw, nh), interpolation=cv_resize_interp(sw, sh, nw, nh)
+                )
+        elif title:
+            probe_px = 100
+            font = _load_sharp_semibold(probe_px)
+            probe = Image.new("RGBA", (4, 4), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(probe)
+            l, t, r, b = draw.textbbox((0, 0), title, font=font)
+            tw0, th0 = max(1, r - l), max(1, b - t)
+            fit = box_w / float(tw0)
+            if th0 * fit > box_h:
+                fit = box_h / float(th0)
+            size_px = max(16, int(probe_px * fit))
+            font = _load_sharp_semibold(size_px)
+            patch, _, _ = _text_patch_font(title, font=font, fill_rgb=(255, 255, 255))
+        while len(self._tt_patch_cache) >= 4:
+            self._tt_patch_cache.pop(next(iter(self._tt_patch_cache)))
+        self._tt_patch_cache[key] = patch
+        return patch
+
+    def _draw_tt_countdown(
+        self, out: np.ndarray, *, zone: int, wide: bool = False
+    ) -> None:
+        """TT art anchored above the divider guide, live countdown hanging below.
+
+        The countdown text consumes ``remaining_text``, which the host updates
+        every second from the drift-corrected playback clock — it starts at the
+        content's total running time and counts down in real time. The timecode
+        formatter drops leading-zero fields, so the readout shortens naturally
+        (e.g. "-1:00:00" ticks to "-59:59").
+
+        ``wide`` selects the 16:9 (zone 6/7) geometry. Landscape TTs width-fit
+        the divider box, seat on the horizontal guide, then lift so the group
+        sits on ``top_divider``. Portrait TTs (too tall to width-fit) go
+        side-by-side: left-aligned art, right-aligned TRT. A black plate hugs
+        the group with divider-width padding.
+        """
+        if wide:
+            tt_box_fn = tt_countdown_16x9_tt_box
+            view_w, view_h = TT_COUNTDOWN_16X9_VIEW_W, TT_COUNTDOWN_16X9_VIEW_H
+        else:
+            tt_box_fn = tt_countdown_tt_box
+            view_w, view_h = TT_COUNTDOWN_VIEW_W, TT_COUNTDOWN_VIEW_H
+        z = _zone_spec(int(zone))
+        st = self._state
+        tpatch = None
+        if st.has_position:
+            label = format_countdown_timecode(st.remaining_text)
+            if label:
+                sx = float(z.w) / view_w
+                size_px = max(12, int(round(TT_COUNTDOWN_TEXT_SIZE_PX * sx)))
+                tpatch = _tt_countdown_time_patch(label, size_px=size_px)
+
+        def _paste_group(pastes: list[tuple[np.ndarray, int, int]]) -> None:
+            if not pastes:
+                return
+            boxes = [
+                (float(px), float(py), float(img.shape[1]), float(img.shape[0]))
+                for img, px, py in pastes
+            ]
+            x0 = min(b[0] for b in boxes)
+            y0 = min(b[1] for b in boxes)
+            x1 = max(b[0] + b[2] for b in boxes)
+            y1 = max(b[1] + b[3] for b in boxes)
+            sx = float(z.w) / max(view_w, 1.0)
+            pad = TT_COUNTDOWN_BG_PAD * sx
+            radius = TT_COUNTDOWN_CARD_RADIUS * sx
+            zx, zy, zw, zh = z.xywh
+            cx0 = max(float(zx), x0 - pad)
+            cy0 = max(float(zy), y0 - pad)
+            cx1 = min(float(zx + zw), x1 + pad)
+            cy1 = min(float(zy + zh), y1 + pad)
+            _draw_rounded_bar_bgra(
+                out,
+                x=int(round(cx0)),
+                y=int(round(cy0)),
+                w=max(1, int(round(cx1 - cx0))),
+                h=max(1, int(round(cy1 - cy0))),
+                fill_bgr=(0, 0, 0),
+                radius=max(1, int(round(radius))),
+            )
+            for img, px, py in pastes:
+                _paste_patch_bgra(out, img, px, py)
+
+        src = self._tt_bgra
+        portrait_wide = False
+        if (
+            wide
+            and src is not None
+            and src.size > 0
+            and src.ndim >= 2
+        ):
+            sh, sw = int(src.shape[0]), int(src.shape[1])
+            portrait_wide = tt_countdown_16x9_tt_is_portrait(sw, sh)
+
+        if portrait_wide:
+            scale_y = view_h / max(float(z.h), 1.0)
+            trt_w_l = (
+                float(tpatch.shape[1]) * scale_y
+                if tpatch is not None and tpatch.size > 0
+                else 0.0
+            )
+            trt_h_l = (
+                float(tpatch.shape[0]) * scale_y
+                if tpatch is not None and tpatch.size > 0
+                else 0.0
+            )
+            tt_rect, trt_rect = tt_countdown_16x9_portrait_rects(
+                float(src.shape[1]),
+                float(src.shape[0]),
+                trt_w_l,
+                trt_h_l,
+            )
+            x0, y0 = design_xy_from_local(
+                z, tt_rect[0], tt_rect[1], view_w=view_w, view_h=view_h
+            )
+            x1, y1 = design_xy_from_local(
+                z,
+                tt_rect[0] + tt_rect[2],
+                tt_rect[1] + tt_rect[3],
+                view_w=view_w,
+                view_h=view_h,
+            )
+            dest_w = max(1, int(round(x1 - x0)))
+            dest_h = max(1, int(round(y1 - y0)))
+            patch = self._tt_countdown_tt_patch(
+                z, wide=True, dest_wh=(dest_w, dest_h)
+            )
+            pastes: list[tuple[np.ndarray, int, int]] = []
+            if patch is not None and patch.size > 0:
+                pastes.append((patch, int(round(x0)), int(round(y0))))
+            if tpatch is not None and tpatch.size > 0:
+                tx, ty = design_xy_from_local(
+                    z, trt_rect[0], trt_rect[1], view_w=view_w, view_h=view_h
+                )
+                pastes.append((tpatch, int(round(tx)), int(round(ty))))
+            _paste_group(pastes)
+            return
+
+        patch = self._tt_countdown_tt_patch(z, wide=wide)
+        scale_y = view_h / max(float(z.h), 1.0)
+        tt_local_h = 0.0
+        trt_local_h = 0.0
+        if patch is not None and patch.size > 0:
+            tt_local_h = float(patch.shape[0]) * scale_y
+        if tpatch is not None and tpatch.size > 0:
+            trt_local_h = float(tpatch.shape[0]) * scale_y
+        if wide:
+            lift = tt_countdown_16x9_content_lift(
+                tt_local_h, trt_height=trt_local_h
+            )
+        else:
+            lift = tt_countdown_portrait_content_lift(
+                tt_local_h, trt_height=trt_local_h
+            )
+        pastes = []
+        if patch is not None and patch.size > 0:
+            tt_x, tt_y, tt_w, tt_h = tt_box_fn()
+            ph, pw = patch.shape[:2]
+            cx_d, bottom_d = design_xy_from_local(
+                z,
+                tt_x + tt_w / 2.0,
+                tt_y + tt_h - lift,
+                view_w=view_w,
+                view_h=view_h,
+            )
+            px = cx_d - pw / 2.0
+            py = bottom_d - ph
+            pastes.append((patch, int(round(px)), int(round(py))))
+        if tpatch is not None and tpatch.size > 0:
+            ax, ay = (
+                tt_countdown_16x9_time_anchor(lift=lift)
+                if wide
+                else tt_countdown_time_anchor()
+            )
+            if not wide:
+                ay -= lift
+            cx_d, top_d = design_xy_from_local(
+                z, ax, ay, view_w=view_w, view_h=view_h
+            )
+            tw_p = tpatch.shape[1]
+            px = cx_d - tw_p / 2.0
+            pastes.append((tpatch, int(round(px)), int(round(top_d))))
+        _paste_group(pastes)
 
     def _render_static_bgra(self) -> np.ndarray:
         now = self._clock_now_for_display()
@@ -4110,9 +4697,17 @@ class ViewCirclesWidget:
             self._draw_audio_group(out, zone=int(vol_zone))
         self._draw_clock_digital(out, now)
         self._draw_audio_level_labels(out)
+        if self.content_mode == _CONTENT_MODE_MUSIC or self._state.is_youtube:
+            self._draw_track_titles(out)
         if any(is_status_bar_widget(assignments[i], i + 1) for i in range(5)):
             self._draw_status_bar(out)
-        if self.content_mode != _CONTENT_MODE_MUSIC:
+        for z in (1, 2, 3):
+            if assignments[z - 1] == "tt_countdown":
+                self._draw_tt_countdown(out, zone=z)
+        wide_tt_zone = tt_countdown_16x9_zone(assignments)
+        if wide_tt_zone is not None:
+            self._draw_tt_countdown(out, zone=int(wide_tt_zone), wide=True)
+        if self.content_mode != _CONTENT_MODE_MUSIC and not self._state.is_youtube:
             for z in (1, 2, 3, 4, 5):
                 if assignments[z - 1] == "cast_info":
                     self._draw_cast(out, cast_zone=z)
@@ -4150,6 +4745,29 @@ class ViewCirclesWidget:
         roi[:] = alpha_blend_bgra_over_bgr(roi, bar)
         return True
 
+    def _stamp_current_poster_protect(self) -> None:
+        """Mark the live poster/thumbnail so bright mode does not invert it."""
+        from pigeon.compositing import (
+            clear_bright_artwork_mask,
+            clear_bright_slant_mask,
+            stamp_bright_artwork_mask,
+        )
+
+        clear_bright_artwork_mask()
+        clear_bright_slant_mask()
+        if self._state.searching:
+            return
+        poster_zone = self._poster_zone()
+        if poster_zone is None:
+            return
+        src = self._poster_bgra
+        if src is None or src.size == 0:
+            return
+        px, py, pw, ph, prx = _poster_geometry(
+            self.content_mode, zone=int(poster_zone)
+        )
+        stamp_bright_artwork_mask(_rounded_rect_mask(pw, ph, prx), px, py)
+
     def bgra_frame(self) -> np.ndarray | None:
         if not self._state.chrome_visible:
             return None
@@ -4157,6 +4775,7 @@ class ViewCirclesWidget:
         if self._cached_bgra is None or self._cached_sig != sig:
             self._cached_bgra = self._render_static_bgra()
             self._cached_sig = sig
+        self._stamp_current_poster_protect()
         return self._cached_bgra
 
     def render(self, canvas_bgr: np.ndarray) -> None:
