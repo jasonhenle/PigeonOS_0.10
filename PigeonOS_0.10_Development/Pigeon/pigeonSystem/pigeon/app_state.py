@@ -356,6 +356,20 @@ def write_saved_av_receiver(
 ) -> None:
     migrate_device_slots_from_legacy_if_needed()
     _v2_write_av_receiver_slot(row, for_location_id=for_location_id)
+    # Box3 / volume poll used to keep ``last_receiver`` on a previous AVR
+    # (the X3800H) after the user activated a different unit.
+    if row is None:
+        clear_last_receiver()
+        return
+    adr = str(row.get("address") or "").strip()
+    if not adr:
+        return
+    write_last_receiver(
+        host=adr,
+        name=str(row.get("name") or "").strip() or None,
+        label=str(row.get("label") or "").strip() or None,
+        device_id=str(row.get("identifier") or "").strip() or None,
+    )
 
 
 def clear_all_persisted_devices_and_targets() -> None:
@@ -825,7 +839,7 @@ def _v2_write_av_receiver_slot(row: dict[str, str] | None, *, for_location_id: s
     if row is None:
         loc["av_receiver"] = []
     else:
-        pr = _coerce_slot_row(row, "av_receiver")
+        pr = _coerce_slot_row(row, "av_receiver") or _receiver_from_partial_dict(row)
         if pr is not None:
             loc["av_receiver"] = [pr]
     _v2_persist_locations_and_mirror_legacy(locs)

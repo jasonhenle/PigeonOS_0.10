@@ -1069,6 +1069,27 @@ class VolumeWidgetCaptionTests(unittest.TestCase):
         self.assertNotIn("dB", volume_widget_value_text("-22.5 dB"))
         self.assertNotIn("db", volume_widget_value_text("-22.5 dB").lower())
 
+    def test_http_volume_wins_without_telnet_and_empty_poll_keeps_cache(self) -> None:
+        from pigeon.widgets.playback_overlay import choose_poll_overlay_volume
+
+        self.assertEqual(
+            choose_poll_overlay_volume(
+                merged_volume="-18.5 dB",
+                accept_vol=True,
+                cache_effective="",
+            ),
+            "-18.5 dB",
+        )
+        self.assertEqual(
+            choose_poll_overlay_volume(
+                merged_volume="",
+                accept_vol=True,
+                cache_effective="-18.5 dB",
+                cache_hold="-18.5 dB",
+            ),
+            "-18.5 dB",
+        )
+
     def test_readout_patch_fills_inner_disc_with_padding(self) -> None:
         from pigeon.np_layout import VOLUME_INNER_R
         from pigeon.widgets.view_circles import _VOLUME_TEXT_INNER_FIT, _volume_readout_patch

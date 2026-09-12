@@ -314,6 +314,29 @@ def compose_playback_volume_widget_line(
     return ""
 
 
+def choose_poll_overlay_volume(
+    *,
+    merged_volume: str,
+    accept_vol: bool,
+    cache_effective: str,
+    cache_hold: str = "",
+    saver_hold: str = "",
+) -> str:
+    """HTTP / telnet readout wins; otherwise keep the last good level.
+
+    Telnet ``MV`` is not required. AppCommand ``GetVolumeLevel`` is the same
+    master volume the front panel shows. An empty poll must not wipe a cached
+    level for the *same* receiver.
+    """
+    merged = str(merged_volume or "").strip()
+    cached = str(
+        cache_effective or cache_hold or saver_hold or ""
+    ).strip()
+    if accept_vol and merged:
+        return merged
+    return cached or merged
+
+
 # Large wordmark: top-left cell [2,3], bottom-right [5,15] → 13×4 cells.
 _PIGEON_WORDMARK = "pigeon"
 _PIGEON_WORDMARK_ROW = 2

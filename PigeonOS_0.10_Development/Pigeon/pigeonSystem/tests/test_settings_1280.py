@@ -124,6 +124,45 @@ class SettingsRenderTests(unittest.TestCase):
         blue_below = (below[:, :, 0] > 180) & (below[:, :, 1] < 80) & (below[:, :, 2] < 80)
         self.assertGreater(int(blue_below.sum()), 40)
 
+    def test_tt_ink_flips_black_and_white_with_selection(self) -> None:
+        from pigeon.widgets.settings_main_1280 import _tt_ink_for_column
+
+        black = np.zeros((8, 8, 4), dtype=np.uint8)
+        black[:, :, 3] = 255
+        white = np.full((8, 8, 4), 255, dtype=np.uint8)
+        blue = np.zeros((8, 8, 4), dtype=np.uint8)
+        blue[:, :, 0] = 255
+        blue[:, :, 3] = 255
+        off = _tt_ink_for_column(black, selected=False)
+        on = _tt_ink_for_column(white, selected=True)
+        kept = _tt_ink_for_column(blue, selected=False)
+        self.assertTrue(np.all(off[:, :, :3] == 255))
+        self.assertTrue(np.all(on[:, :, :3] == 0))
+        self.assertTrue(np.all(kept[:, :, 0] == 255))
+        self.assertTrue(np.all(kept[:, :, 1] == 0))
+
+    def test_pick_box3_updates_displayed_ip(self) -> None:
+        from pigeon.widgets.main_settings import MainSettingsState
+
+        st = MainSettingsState()
+        st.box3_devices.picked = ("Denon", "10.0.7.116")
+        st.box3_devices.active = True
+        st.box3_devices.phase = "results"
+        st.box3_devices.devices = (("Living room", "10.0.4.88"),)
+        st.box3_devices.device_rows = (
+            {
+                "identifier": "aa:bb:cc:dd:ee:ff",
+                "address": "10.0.4.88",
+                "name": "Living room",
+                "label": "Living room — 10.0.4.88",
+                "looks_like_apple_tv": "false",
+            },
+        )
+        row = st.pick_box_device(3)
+        self.assertIsNotNone(row)
+        self.assertEqual(st.box3_devices.picked, ("Living room", "10.0.4.88"))
+        self.assertEqual(st.saved_box_device(3), ("Living room", "10.0.4.88"))
+
     def test_np_status_bar_can_overlay_settings_main(self) -> None:
         from pigeon.np_layout import NOW_PLAYING_ZONES
         from pigeon.widgets.main_settings import MainSettingsState

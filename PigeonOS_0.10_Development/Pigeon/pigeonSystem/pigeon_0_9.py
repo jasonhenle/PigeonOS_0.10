@@ -3756,6 +3756,9 @@ def main() -> int:
             "mono_usable": 0.0,
             # Last volume string shown on View 1 (survives brief empty polls).
             "np_hold": "",
+            "heal_quick_mono": 0.0,
+            "heal_sweep_mono": 0.0,
+            "bound_host": "",
         }
         # True when the last Denon poll answered but reported OFF/STANDBY — hide all
         # receiver metadata and treat the receiver indicator as inactive.
@@ -9964,14 +9967,11 @@ def main() -> int:
                 write_saved_streaming_device(saved, for_location_id=lid)
                 streaming_slot_holder[0] = read_saved_streaming_device()
             else:
-                append_device_to_location_slot(
-                    "av_receiver",
-                    saved,
-                    for_location_id=lid,
-                    new_location_name=None,
-                )
                 write_saved_av_receiver(saved, for_location_id=lid)
                 avr_slot_holder[0] = read_saved_av_receiver()
+                adr = str((avr_slot_holder[0] or saved).get("address") or "").strip()
+                if adr:
+                    receiver_http_host["host"] = adr
             describe_current_apple_tv()
             _rebuild_paired_devices_panel()
 
@@ -10450,6 +10450,20 @@ def main() -> int:
                 threading.Thread(target=worker_wifi_join, daemon=True).start()
                 return
 
+            if action == "keyboard_go:device_name":
+                avr = read_saved_av_receiver()
+                if avr:
+                    avr_slot_holder[0] = avr
+                    adr = str(avr.get("address") or "").strip()
+                    if adr:
+                        receiver_http_host["host"] = adr
+                picked = st.box3_devices.picked
+                if picked and str(picked[1] or "").strip():
+                    receiver_http_host["host"] = str(picked[1]).strip()
+                main_settings_widget.invalidate()
+                skip_cache = None
+                return
+
             if action == "keyboard_go:location":
                 nm = str(st.location_name or "").strip() or "Room"
                 lid = str(getattr(st, "renaming_location_id", "") or "").strip()
@@ -10531,6 +10545,12 @@ def main() -> int:
                 if sess is None or int(sess.box_num) != 3:
                     return
                 _save_box_pair_device_row(3, sess.row)
+                name = str(sess.row.get("name") or sess.row.get("label") or "Receiver").strip()
+                ip = str(sess.row.get("address") or "").strip()
+                if ip:
+                    st.box3_devices.picked = (name or ip, ip)
+                    st.box3_ip_invalid = False
+                st.show_box3_panel = True
                 st.clear_box_pairing()
                 main_settings_widget.invalidate()
                 skip_cache = None
@@ -14748,42 +14768,43 @@ def main() -> int:
             def work() -> None:
                 vol = ""
                 src = ""
-                heos: dict[str, object] = {}
                 try:
-                    from pigeon.receiver_denon import (
-                        read_heos_volume,
-                        read_live_receiver_volume,
-                    )
+                    from pigeon.receiver_denon import read_live_receiver_volume
 
+                    # Telnet MV, then AppCommand GetVolumeLevel. Never HEOS
+                    # player volume — that sits at 0 (−80 dB) while HDMI plays.
                     vol, src = read_live_receiver_volume(
-                        host, timeout=1.0, telnet_blocking=False
+                        host,
+                        timeout=1.0,
+                        telnet_blocking=True,
+                        allow_appcommand=True,
                     )
-                    heos = read_heos_volume(host, timeout=1.0)
                 except Exception:
                     vol, src = "", ""
-                    heos = {}
+                if src == "appcommand":
+                    from pigeon.receiver_denon import coalesce_receiver_volume_read
+
+                    raw_http = vol
+                    vol, src = coalesce_receiver_volume_read(
+                        telnet_line="",
+                        http_line=raw_http,
+                        last_http=str(denon_vol_cache.get("last_appcommand") or ""),
+                        held=str(
+                            denon_vol_cache.get("last_telnet")
+                            or denon_vol_cache.get("effective")
+                            or ""
+                        ),
+                    )
+                    denon_vol_cache["last_appcommand"] = raw_http
 
                 def apply() -> None:
                     _volume_quick_busy[0] = False
-                    from pigeon.receiver_denon import heos_level_to_db
-
-                    chosen = ""
-                    if src == "telnet" and vol:
-                        prev_tn = str(denon_vol_cache.get("last_telnet") or "")
-                        denon_vol_cache["last_telnet"] = vol
-                        if vol != prev_tn:
-                            chosen = vol
-                    level = heos.get("level")
-                    if isinstance(level, int):
-                        prev_lv = denon_vol_cache.get("last_heos_level")
-                        denon_vol_cache["last_heos_level"] = level
-                        if not chosen and prev_lv != level:
-                            mapped = heos_level_to_db(level)
-                            if mapped:
-                                chosen = mapped
-                    if not chosen:
+                    if not vol:
                         return
-                    changed = _commit_receiver_volume(chosen)
+                    if src == "telnet":
+                        denon_vol_cache["last_telnet"] = vol
+                        denon_vol_cache["last_telnet_mono"] = time.monotonic()
+                    changed = _commit_receiver_volume(vol)
                     if not changed and not _volume_lines.fading():
                         return
                     nonlocal skip_cache
@@ -14833,8 +14854,16 @@ def main() -> int:
             _av_row = avr_slot_holder[0]
             if _av_row:
                 _slot_adr = str(_av_row.get("address") or "").strip()
-                if _slot_adr and _slot_adr != str(receiver_http_host.get("host") or "").strip():
+                _cur_host = str(receiver_http_host.get("host") or "").strip()
+                if _slot_adr and _slot_adr != _cur_host:
+                    bound = str(denon_vol_cache.get("bound_host") or "")
+                    if bound and bound != _slot_adr:
+                        denon_vol_cache["effective"] = ""
+                        denon_vol_cache["np_hold"] = ""
+                        denon_vol_cache["mono_usable"] = 0.0
+                        receiver_overlay_state["volume"] = ""
                     receiver_http_host["host"] = _slot_adr
+                    denon_vol_cache["bound_host"] = _slot_adr
             host = str(receiver_http_host.get("host") or "").strip()
             if not host:
                 return
@@ -14882,12 +14911,15 @@ def main() -> int:
             receiver_poll_busy["active"] = True
 
             def work() -> None:
+                nonlocal host
                 from pigeon.widgets.playback_overlay import (
                     _receiver_volume_display_line,
+                    choose_poll_overlay_volume,
                     compose_playback_volume_widget_line,
                 )
 
                 r = None
+                healed_host = ""
                 if host:
                     try:
                         from pigeon.receiver_denon import poll_denon_like_receiver
@@ -14909,6 +14941,37 @@ def main() -> int:
                         )
                         if use_tn:
                             denon_vol_cache["telnet_meta_mono"] = now_tn
+                        if r is None or not r.ok:
+                            now_h = time.monotonic()
+                            quick_due = now_h - float(
+                                denon_vol_cache.get("heal_quick_mono") or 0.0
+                            ) >= 15.0
+                            sweep_due = now_h - float(
+                                denon_vol_cache.get("heal_sweep_mono") or 0.0
+                            ) >= 90.0
+                            if quick_due or sweep_due:
+                                if quick_due:
+                                    denon_vol_cache["heal_quick_mono"] = now_h
+                                if sweep_due:
+                                    denon_vol_cache["heal_sweep_mono"] = now_h
+                                from pigeon.receiver_denon import (
+                                    resolve_paired_receiver_host,
+                                )
+
+                                found = str(
+                                    resolve_paired_receiver_host(
+                                        avr_slot_holder[0],
+                                        extra_hosts=[host],
+                                        subnet_sweep=sweep_due,
+                                    )
+                                    or ""
+                                ).strip()
+                                if found and found != host:
+                                    healed_host = found
+                                    host = found
+                                    r = poll_denon_like_receiver(
+                                        host, timeout=5.0, include_telnet=use_tn
+                                    )
                     except Exception:
                         r = None
 
@@ -14948,8 +15011,35 @@ def main() -> int:
                 denon_vol_raw = ""
                 if r is not None and r.ok:
                     denon_vol_raw = str(r.volume or "").strip()
+                from pigeon.receiver_denon import (
+                    _volume_fields_line,
+                    coalesce_receiver_volume_read,
+                )
+
+                tn_line = ""
+                if r is not None:
+                    tn_line = _volume_fields_line(
+                        getattr(r, "telnet_debug", None) or {}
+                    )
+                denon_vol_picked, denon_vol_src = coalesce_receiver_volume_read(
+                    telnet_line=tn_line,
+                    http_line=denon_vol_raw,
+                    last_http=str(denon_vol_cache.get("last_appcommand") or ""),
+                    held=str(
+                        denon_vol_cache.get("last_telnet")
+                        or denon_vol_cache.get("effective")
+                        or ""
+                    ),
+                )
+                if denon_vol_raw:
+                    denon_vol_cache["last_appcommand"] = denon_vol_raw
+                if denon_vol_src == "telnet" and tn_line:
+                    denon_vol_cache["last_telnet"] = tn_line
+                    denon_vol_cache["last_telnet_mono"] = time.monotonic()
                 denon_vol_effective = (
-                    denon_vol_raw if _receiver_volume_display_line(denon_vol_raw) else ""
+                    denon_vol_picked
+                    if _receiver_volume_display_line(denon_vol_picked)
+                    else ""
                 )
                 merged_volume = compose_playback_volume_widget_line(
                     stream_row=streaming_slot_holder[0],
@@ -14969,7 +15059,22 @@ def main() -> int:
                         receiver_poll_busy["active"] = False
 
                 def _apply_body(rpl: object) -> None:
+                    if healed_host:
+                        receiver_http_host["host"] = healed_host
+                        denon_vol_cache["bound_host"] = healed_host
+                        try:
+                            row_h = dict(avr_slot_holder[0] or {})
+                            if not row_h:
+                                row_h = dict(read_saved_av_receiver() or {})
+                            if row_h:
+                                row_h["address"] = healed_host
+                                write_saved_av_receiver(row_h)
+                                avr_slot_holder[0] = read_saved_av_receiver()
+                        except Exception:
+                            pass
                     denon_ok = r is not None and r.ok
+                    if denon_ok and host:
+                        denon_vol_cache["bound_host"] = host
                     raw_standby = bool(r is not None and getattr(r, "standby", False))
                     if (
                         receiver_power_on_pending[0]
@@ -14991,7 +15096,7 @@ def main() -> int:
                     live_mv = bool(
                         tn_dbg.get("MV") or tn_dbg.get("MV_DB") or tn_dbg.get("MU")
                     )
-                    if accept_vol and denon_vol_effective and live_mv:
+                    if accept_vol and denon_vol_effective and (live_mv or denon_ok):
                         if denon_standby:
                             denon_vol_cache["effective"] = denon_vol_effective
                             denon_vol_cache["np_hold"] = denon_vol_effective
@@ -15044,14 +15149,13 @@ def main() -> int:
                     except Exception:
                         pass
                     _refresh_observed_pairing_led_rows()
-                    overlay_vol = merged_volume
-                    if not accept_vol or not live_mv:
-                        overlay_vol = str(
-                            denon_vol_cache.get("effective")
-                            or denon_vol_cache.get("np_hold")
-                            or getattr(_clock_saver_volume, "hold", "")
-                            or (merged_volume if live_mv else "")
-                        )
+                    overlay_vol = choose_poll_overlay_volume(
+                        merged_volume=merged_volume,
+                        accept_vol=accept_vol,
+                        cache_effective=str(denon_vol_cache.get("effective") or ""),
+                        cache_hold=str(denon_vol_cache.get("np_hold") or ""),
+                        saver_hold=str(getattr(_clock_saver_volume, "hold", "") or ""),
+                    )
                     if overlay_vol:
                         _note_volume_graphics(overlay_vol)
                     if denon_standby:
@@ -15081,7 +15185,12 @@ def main() -> int:
                             _paint_boolean_led(rpl, False)
                     else:
                         receiver_telnet_debug_holder[0] = {}
-                        apply_overlay("", "", "")
+                        keep_vol = str(
+                            receiver_overlay_state.get("volume")
+                            or denon_vol_cache.get("np_hold")
+                            or ""
+                        ).strip()
+                        apply_overlay("", "", keep_vol)
                         if rpl is not None:
                             _paint_boolean_led(rpl, False)
                     if roku_app_name:

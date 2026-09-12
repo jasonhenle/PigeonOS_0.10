@@ -1592,6 +1592,10 @@ class MainSettingsState:
         if self.device_row_matches_saved(box_num, row):
             self.restore_box_device_panel(box_num)
             return None
+        name = str(row.get("name") or row.get("label") or "Device").strip()
+        ip = str(row.get("address") or "").strip()
+        if name or ip:
+            panel.picked = (name or ip, ip or name)
         panel.active = False
         panel.phase = "idle"
         panel.scanning = False

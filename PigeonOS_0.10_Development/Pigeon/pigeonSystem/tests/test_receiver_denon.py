@@ -25,6 +25,13 @@ class DenonPowerStandbyTests(unittest.TestCase):
             _denon_power_is_standby({"Power": "STANDBY", "PW": "ON"})
         )
 
+    def test_s670h_appcommand_off_loses_to_telnet_on(self) -> None:
+        self.assertFalse(
+            _denon_power_is_standby(
+                {"Power": "OFF", "PW": "ON", "MasterVolume": "-18.5"}
+            )
+        )
+
     def test_both_off_is_standby(self) -> None:
         self.assertTrue(
             _denon_power_is_standby({"Power": "STANDBY", "PW": "STANDBY"})
@@ -49,6 +56,35 @@ class DenonVolumeLineTests(unittest.TestCase):
     def test_mv_step_converts_to_db(self) -> None:
         # 215 → -58.5 dB (Denon half-step encoding).
         self.assertEqual(_denon_volume_line({"MV": "215", "MU": "OFF"}), "-58.5 dB")
+
+    def test_appcommand_relative_db_is_master_volume(self) -> None:
+        self.assertEqual(
+            _denon_volume_line({"MasterVolume": "-18.5", "Mute": "off"}),
+            "-18.5 dB",
+        )
+        self.assertEqual(
+            _denon_volume_line({"MasterVolume": "-24.0", "Mute": "off"}),
+            "-24.0 dB",
+        )
+
+    def test_parse_get_volume_level_xml(self) -> None:
+        from pigeon.receiver_denon import _parse_appcommand_rx
+
+        xml = """<?xml version="1.0" encoding="utf-8" ?>
+<rx>
+<cmd><zone1>ON</zone1><zone2>ON</zone2></cmd>
+<cmd>
+<volume>-18.5</volume>
+<state>variable</state>
+<disptype>RELATIVE</disptype>
+<dispvalue>-18.5dB</dispvalue>
+</cmd>
+<cmd><mute>off</mute></cmd>
+</rx>
+"""
+        parsed = _parse_appcommand_rx(xml)
+        self.assertEqual(parsed.get("MasterVolume"), "-18.5")
+        self.assertEqual(_denon_volume_line(parsed), "-18.5 dB")
 
     def test_mute_wins(self) -> None:
         self.assertEqual(
@@ -193,6 +229,7 @@ class DenonHttpCommandTests(unittest.TestCase):
             side_effect=[
                 {"Power": "ON", "MasterVolume": "-13.0", "Mute": "off"},
                 {"Power": "ON", "MasterVolume": "-12.5", "Mute": "off"},
+                {"Power": "ON", "MasterVolume": "-12.5", "Mute": "off"},
             ],
         ), patch(
             "pigeon.receiver_denon_telnet.query_denon_volume_telnet",
@@ -203,14 +240,11 @@ class DenonHttpCommandTests(unittest.TestCase):
         ), patch(
             "pigeon.receiver_denon.send_heos_volume_control",
             return_value=(True, "HEOS: volume_up"),
-        ) as heos, patch(
-            "pigeon.receiver_denon.read_heos_volume",
-            return_value={"pid": 222, "level": 67, "muted": False},
-        ):
+        ) as heos:
             ok, msg, vol = apply_denon_master_volume("10.0.7.116", steps=1)
         self.assertTrue(ok)
         heos.assert_called_once()
-        self.assertEqual(vol, "-13.0 dB")
+        self.assertEqual(vol, "-12.5 dB")
         self.assertIn("HEOS", msg)
 
     def test_apply_heos_when_telnet_echoes_same_mv(self) -> None:
@@ -231,14 +265,12 @@ class DenonHttpCommandTests(unittest.TestCase):
         ), patch(
             "pigeon.receiver_denon.send_heos_volume_control",
             return_value=(True, "HEOS: volume_up"),
-        ) as heos, patch(
-            "pigeon.receiver_denon.read_heos_volume",
-            return_value={"level": 26, "muted": False},
-        ):
+        ) as heos:
             ok, msg, vol = apply_denon_master_volume("10.0.7.116", steps=1)
         self.assertTrue(ok)
         heos.assert_called_once()
-        self.assertEqual(vol, "-54.0 dB")
+        # HEOS player level is not AVR master — keep the telnet / AppCommand line.
+        self.assertEqual(vol, "-27.5 dB")
         self.assertIn("HEOS", msg)
 
     def test_same_db_two_and_three_digit_mv_is_not_a_move(self) -> None:
@@ -280,6 +312,163 @@ class DenonHttpCommandTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(calls, ["heos://player/set_volume?pid=222&level=26"])
         self.assertIn("set_volume", msg)
+
+
+class ReceiverVolumeCoalesceTests(unittest.TestCase):
+    def test_telnet_wins_over_frozen_http(self) -> None:
+        from pigeon.receiver_denon import coalesce_receiver_volume_read
+
+        line, src = coalesce_receiver_volume_read(
+            telnet_line="-16.0 dB",
+            http_line="-18.5 dB",
+            last_http="-18.5 dB",
+            held="-18.5 dB",
+        )
+        self.assertEqual(line, "-16.0 dB")
+        self.assertEqual(src, "telnet")
+
+    def test_unchanged_http_keeps_held_telnet(self) -> None:
+        from pigeon.receiver_denon import coalesce_receiver_volume_read
+
+        line, src = coalesce_receiver_volume_read(
+            telnet_line="",
+            http_line="-18.5 dB",
+            last_http="-18.5 dB",
+            held="-16.0 dB",
+        )
+        self.assertEqual(line, "-16.0 dB")
+        self.assertEqual(src, "hold")
+
+    def test_http_wins_when_it_moves(self) -> None:
+        from pigeon.receiver_denon import coalesce_receiver_volume_read
+
+        line, src = coalesce_receiver_volume_read(
+            telnet_line="",
+            http_line="-22.0 dB",
+            last_http="-18.5 dB",
+            held="-16.0 dB",
+        )
+        self.assertEqual(line, "-22.0 dB")
+        self.assertEqual(src, "appcommand")
+
+    def test_http_off_plus_telnet_on_is_not_standby(self) -> None:
+        from pigeon.receiver_denon import _denon_power_is_standby
+
+        self.assertFalse(
+            _denon_power_is_standby({"Power": "OFF", "PW": "ON", "MV_DB": "-18.5 dB"})
+        )
+
+    def test_http_only_poll_merges_short_telnet_volume(self) -> None:
+        from unittest.mock import patch
+
+        from pigeon.receiver_denon import poll_denon_like_receiver
+
+        http = {
+            "Power": "OFF",
+            "MasterVolume": "-18.5",
+            "Mute": "off",
+            "FriendlyName": "Denon AVR-S670H",
+        }
+        tn = {"PW": "ON", "MV": "575", "MV_DB": "-22.5 dB", "MU": "OFF"}
+        with patch(
+            "pigeon.receiver_denon._merge_zone_status_with_fallback",
+            return_value=http,
+        ), patch(
+            "pigeon.receiver_denon.query_denon_volume_telnet",
+            return_value=tn,
+        ):
+            r = poll_denon_like_receiver("10.0.4.64", timeout=2.0, include_telnet=False)
+        self.assertTrue(r.ok)
+        self.assertFalse(r.standby)
+        self.assertEqual(r.volume, "-22.5 dB")
+
+
+class ReceiverIdentityTests(unittest.TestCase):
+    def test_model_key_ignores_brand_only_names(self) -> None:
+        from pigeon.receiver_denon import receiver_model_key
+
+        self.assertEqual(receiver_model_key("Denon AVR-S670H"), "s670h")
+        self.assertEqual(receiver_model_key("AVR-X3800H"), "x3800h")
+        self.assertEqual(receiver_model_key("Denon"), "")
+
+    def test_identities_match_model_not_brand(self) -> None:
+        from pigeon.receiver_denon import receiver_identities_match
+
+        paired = {
+            "name": "Denon AVR-S670H",
+            "identifier": "00:06:78:E5:3D:66",
+            "address": "10.0.4.64",
+        }
+        self.assertTrue(
+            receiver_identities_match(
+                paired, name="Family Room", model="Denon AVR-S670H"
+            )
+        )
+        self.assertFalse(
+            receiver_identities_match(
+                paired, name="Denon AVR-X3800H", model="Denon AVR-X3800H"
+            )
+        )
+        self.assertTrue(
+            receiver_identities_match(
+                paired, name="Denon", device_id="00:06:78:e5:3d:66"
+            )
+        )
+
+    def test_slash22_scan_includes_other_octets(self) -> None:
+        import ipaddress
+
+        from pigeon.receiver_denon import ipv4_hosts_for_networks
+
+        hosts = ipv4_hosts_for_networks(
+            [ipaddress.IPv4Network("10.0.4.0/22")], max_hosts=2048
+        )
+        self.assertIn("10.0.4.64", hosts)
+        self.assertIn("10.0.7.116", hosts)
+        self.assertNotIn("10.0.4.0", hosts)
+
+    def test_resolve_uses_heos_directory_ip_for_paired_model(self) -> None:
+        from unittest.mock import patch
+
+        from pigeon.receiver_denon import resolve_paired_receiver_host
+
+        paired = {
+            "name": "Denon AVR-S670H",
+            "identifier": "00:06:78:E5:3D:66",
+            "address": "10.0.4.64",
+        }
+        heos_rows = [
+            {
+                "name": "Denon AVR-X3800H",
+                "model": "Denon AVR-X3800H",
+                "ip": "10.0.7.116",
+                "pid": 1,
+            },
+            {
+                "name": "Denon AVR-S670H",
+                "model": "Denon AVR-S670H",
+                "ip": "10.0.6.20",
+                "pid": 2,
+            },
+        ]
+        with patch(
+            "pigeon.receiver_denon._probe_host_for_receiver",
+            side_effect=lambda host, timeout: (
+                {"host": host, "name": "Denon AVR-S670H"}
+                if str(host).startswith("10.0.6.20")
+                else None
+            ),
+        ), patch(
+            "pigeon.receiver_denon._ssdp_collect_probe_hints",
+            return_value=[("10.0.7.116", None)],
+        ), patch(
+            "pigeon.receiver_denon.heos_players_from_hosts",
+            return_value=heos_rows,
+        ):
+            self.assertEqual(
+                resolve_paired_receiver_host(paired, extra_hosts=["10.0.4.64"]),
+                "10.0.6.20",
+            )
 
 
 class HeosHostBindTests(unittest.TestCase):

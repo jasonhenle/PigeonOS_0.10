@@ -253,6 +253,31 @@ def _paired_device_line_boxes(
     )
 
 
+def _tt_ink_for_column(src: np.ndarray, *, selected: bool) -> np.ndarray:
+    """Contrast a TMDb title treatment against the box1 column card.
+
+    Deselected (dark card): black ink → white.
+    Selected (white card): white ink → black.
+    Chromatic pixels stay as they are.
+    """
+    if src.size == 0 or src.ndim != 3 or src.shape[2] < 3:
+        return src
+    out = np.array(src, copy=True)
+    bgr = out[:, :, :3]
+    span = bgr.max(axis=2).astype(np.int16) - bgr.min(axis=2).astype(np.int16)
+    achromatic = span <= 36
+    lum = (
+        0.114 * bgr[:, :, 0].astype(np.float32)
+        + 0.587 * bgr[:, :, 1].astype(np.float32)
+        + 0.299 * bgr[:, :, 2].astype(np.float32)
+    )
+    flip = achromatic & ((lum >= 160.0) if selected else (lum <= 96.0))
+    if not np.any(flip):
+        return out
+    bgr[flip] = (255 - bgr[flip].astype(np.int16)).astype(np.uint8)
+    return out
+
+
 def _tight_crop_logo(logo: np.ndarray) -> np.ndarray:
     if logo.size == 0:
         return logo
@@ -291,12 +316,14 @@ def _draw_zone2_pigeon(
     *,
     assets_dir: Path | str | None,
     tt_bgra: np.ndarray | None = None,
+    selected: bool = False,
 ) -> None:
     """Pigeon wordmark + IP, matching the predecessor zone-2 card.
 
     While content is playing, ``tt_bgra`` (TMDb title treatment) is contain-fitted
-    and centered in the black column card instead of the name slot. Missing TT
-    keeps the pigeon logo.
+    and centered in the column card instead of the name slot. Missing TT
+    keeps the pigeon logo. Black/white TT ink flips with selection so it
+    stays visible on the dark (deselected) and white (selected) cards.
     """
     zx, zy, zw, zh = box
     if zw < 8 or zh < 8:
@@ -309,7 +336,8 @@ def _draw_zone2_pigeon(
             logo = cv2.cvtColor(logo, cv2.COLOR_BGR2BGRA)
     using_tt = logo is not None and getattr(logo, "size", 0) > 0
     if using_tt:
-        _contain_center_blit(canvas, _tight_crop_logo(logo), box)
+        art = _tt_ink_for_column(_tight_crop_logo(logo), selected=selected)
+        _contain_center_blit(canvas, art, box)
         return
     logo = _load_png("pigeon_logo", assets_dir=assets_dir)
     if logo.shape[0] > _PIGEON_WORDMARK_H:
@@ -1554,6 +1582,7 @@ def render_settings_main_1280_bgra(
             _column_text_rgb(2),
             assets_dir=assets_dir,
             tt_bgra=getattr(st, "zone2_tt_bgra", None),
+            selected=column_on[2],
         )
 
     def _paint_add_tile(zone_index: int, label: str) -> None:

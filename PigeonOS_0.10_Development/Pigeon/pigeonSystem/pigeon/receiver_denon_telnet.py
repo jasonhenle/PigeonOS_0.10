@@ -447,7 +447,7 @@ def query_denon_volume_telnet(
             idle_s=0.06,
             total_deadline=min(deadline, time.monotonic() + 0.12),
         )
-        for cmd in ("MV?", "MU?"):
+        for cmd in ("PW?", "MV?", "MU?"):
             if time.monotonic() >= deadline:
                 break
             sock.sendall((cmd + "\r").encode("ascii", errors="ignore"))
