@@ -57,3 +57,18 @@ class PausedScreenLabelTests(unittest.TestCase):
         self.assertLess(int(ys.max()), y + h)
         self.assertGreaterEqual(int(xs.min()), x)
         self.assertLess(int(xs.max()), x + w)
+
+
+class PausedScreenCoverTests(unittest.TestCase):
+    def test_square_album_art_fills_wide_frame(self) -> None:
+        from pigeon.paused_screen import cover_scale_and_crop
+
+        art = np.zeros((100, 100, 3), dtype=np.uint8)
+        art[:, :] = (18, 40, 220)
+        out = cover_scale_and_crop(art, 1280, 800)
+        self.assertEqual(out.shape, (800, 1280, 3))
+        # Cover-crop, not pillarbox: left, right, top, and bottom are album pixels.
+        self.assertGreater(int(out[:, 2, 2].min()), 180)
+        self.assertGreater(int(out[:, 1277, 2].min()), 180)
+        self.assertGreater(int(out[2, :, 2].min()), 180)
+        self.assertGreater(int(out[797, :, 2].min()), 180)

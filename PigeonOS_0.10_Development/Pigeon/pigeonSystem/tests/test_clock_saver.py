@@ -11,6 +11,7 @@ _SYS_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _SYS_ROOT not in sys.path:
     sys.path.insert(0, _SYS_ROOT)
 
+import numpy as np
 from PIL import Image, ImageDraw
 
 from pigeon.widgets import clock_saver as cs  # noqa: E402
@@ -62,8 +63,8 @@ class ClockSaverSvgTests(unittest.TestCase):
         lx, ly = cs._parse_translate_xy(low)
         self.assertGreater(hx, 250.0)
         self.assertGreater(lx, hx)
-        self.assertLess(hy, 160.0)
-        self.assertLess(ly, 160.0)
+        self.assertLess(hy, 200.0)
+        self.assertLess(ly, 200.0)
         self.assertAlmostEqual(hy, ly, delta=2.0)
 
     def test_composite_returns_full_frame(self) -> None:
@@ -103,8 +104,8 @@ class ClockSaverSvgTests(unittest.TestCase):
             cs._hhmmss_block_width(matching_w, "11:11:11"),
             8 * half,
         )
+        self.assertGreater(cs._WEATHER_SCALE, 1.0)
         self.assertGreater(cs._HHMMSS_MID_Y_SVG, cs._DATE_BASELINE_Y_SVG)
-        self.assertLess(cs._HHMMSS_MID_Y_SVG, cs._WEATHER_ICON_TOP_SVG)
 
     def test_colons_locked_pairs_recenter(self) -> None:
         """Colon X is fixed; HH/MM/SS pair widths shrink with skinny 1s."""
@@ -145,6 +146,403 @@ class ClockSaverSvgTests(unittest.TestCase):
         # Shared non-transparent ink near the disc center (HH:MM stays on).
         cy, cx = cs.DESIGN_H // 2, cs.DESIGN_W // 2
         self.assertGreater(int(frame[cy, cx, 3]), 20)
+
+
+class ClockSaverSecondsBarTests(unittest.TestCase):
+    def test_sixty_equal_segments_step_each_second(self) -> None:
+        from pigeon.np_layout import (
+            CLOCK_SAVER_SECONDS_SEGMENTS,
+            clock_saver_seconds_filled,
+            clock_saver_seconds_segment_rects,
+            clock_saver_seconds_track_rect,
+        )
+
+        self.assertEqual(CLOCK_SAVER_SECONDS_SEGMENTS, 60)
+        self.assertEqual(clock_saver_seconds_filled(0), 1)
+        self.assertEqual(clock_saver_seconds_filled(29), 30)
+        self.assertEqual(clock_saver_seconds_filled(59), 60)
+        self.assertEqual(clock_saver_seconds_filled(60), 1)
+        tx, ty, tw, th, _trx = clock_saver_seconds_track_rect()
+        rects = clock_saver_seconds_segment_rects((tx, ty, tw, th))
+        self.assertEqual(len(rects), 60)
+        widths = [r[2] for r in rects]
+        self.assertLessEqual(max(widths) - min(widths), 1)
+        for a, b in zip(rects, rects[1:]):
+            self.assertLessEqual(a[0] + a[2], b[0])
+        self.assertEqual(rects[0][1], ty)
+        self.assertEqual(rects[-1][0] + rects[-1][2], tx + tw)
+
+    def test_digital_saver_paints_stepped_track(self) -> None:
+        from datetime import datetime
+        from unittest.mock import patch
+
+        from pigeon.np_layout import (
+            clock_saver_seconds_segment_rects,
+            clock_saver_seconds_track_rect,
+        )
+
+        when = datetime(2026, 1, 1, 10, 30, 15)
+        with (
+            patch(
+                "pigeon.widgets.options_settings.clock_widget_analog",
+                return_value=False,
+            ),
+            patch(
+                "pigeon.widgets.clock_saver._resolve_display_time",
+                return_value=when,
+            ),
+        ):
+            frame = cs.render_clock_saver_bgra(layer_opacity=1.0)
+        self.assertEqual(frame.shape[0], cs.DESIGN_H)
+        self.assertEqual(frame.shape[1], cs.DESIGN_W)
+        tx, ty, tw, th, _ = clock_saver_seconds_track_rect()
+        rects = clock_saver_seconds_segment_rects((tx, ty, tw, th))
+        fx, fy, fw, fh = rects[8]
+        ex, ey, ew, eh = rects[40]
+        filled = frame[fy + fh // 2, fx + fw // 2, :3]
+        empty = frame[ey + eh // 2, ex + ew // 2, :3]
+        self.assertGreater(int(filled.max()), 20)
+        self.assertLess(int(empty.max()), 12)
+
+    def test_digital_time_baseline_sits_near_seconds_bar(self) -> None:
+        from datetime import datetime
+        from unittest.mock import patch
+
+        from pigeon.np_layout import clock_saver_seconds_track_rect
+
+        when = datetime(2026, 1, 1, 10, 30, 15)
+        with (
+            patch(
+                "pigeon.widgets.options_settings.clock_widget_analog",
+                return_value=False,
+            ),
+            patch(
+                "pigeon.widgets.clock_saver._resolve_display_time",
+                return_value=when,
+            ),
+        ):
+            frame = cs.render_clock_saver_bgra(layer_opacity=1.0)
+        _tx, bar_y, tw, _th, _ = clock_saver_seconds_track_rect()
+        band = frame[0:bar_y, cs.DESIGN_W // 2 - 200 : cs.DESIGN_W // 2 + 200, :3]
+        ink = np.where(band.max(axis=2) > 40)
+        self.assertGreater(int(ink[0].size), 0)
+        bottom = int(ink[0].max())
+        self.assertGreater(bottom, bar_y - 80)
+        self.assertLessEqual(bottom, bar_y - 4)
+        self.assertGreater(int(tw), 200)
+
+    def test_volume_line_grows_from_center(self) -> None:
+        g25 = cs.clock_saver_volume_line_geometry(
+            fraction=0.25, canvas_w=1280, text_w=80, max_width=1066
+        )
+        g50 = cs.clock_saver_volume_line_geometry(
+            fraction=0.50, canvas_w=1280, text_w=80, max_width=1066
+        )
+        g100 = cs.clock_saver_volume_line_geometry(
+            fraction=1.0, canvas_w=1280, text_w=80, max_width=1066
+        )
+        g0 = cs.clock_saver_volume_line_geometry(
+            fraction=0.0, canvas_w=1280, text_w=80, max_width=1066
+        )
+        for line_l, line_r, gap_l, gap_r in (g0, g25, g50, g100):
+            cx = 640
+            self.assertEqual(cx - line_l, line_r - cx)
+            self.assertEqual(cx - gap_l, gap_r - cx)
+            self.assertGreaterEqual(gap_l, line_l)
+            self.assertLessEqual(gap_r, line_r)
+        self.assertLess(g25[1] - g25[0], g50[1] - g50[0])
+        self.assertLess(g50[1] - g50[0], g100[1] - g100[0])
+        self.assertEqual(g0[0], g0[2])
+        self.assertEqual(g0[1], g0[3])
+        self.assertEqual(cs.clock_saver_volume_label("-22.5 dB"), "-22.5")
+        self.assertEqual(cs.clock_saver_volume_label("mute"), "MUTE")
+        self.assertEqual(cs.clock_saver_volume_label(""), "")
+        self.assertTrue(cs.clock_saver_volume_line_visible("-22.5 dB"))
+        self.assertFalse(cs.clock_saver_volume_line_visible("mute"))
+        self.assertFalse(cs.clock_saver_volume_line_visible(""))
+        strip = cs.clock_saver_volume_strip_bgra(
+            "-22.5 dB", width=1190, height=130
+        )
+        self.assertEqual(strip.shape[0], 130)
+        self.assertEqual(strip.shape[1], 1190)
+        self.assertGreater(int(strip[:, :, 3].max()), 8)
+        mute = cs.clock_saver_volume_strip_bgra("MUTE", width=400, height=80)
+        self.assertGreater(int(mute[:, :, 3].max()), 8)
+        self.assertEqual(cs.step_clock_saver_volume("-22.5 dB", "volume_up"), "-22.0 dB")
+        self.assertEqual(cs.step_clock_saver_volume("-22.5 dB", "volume_down"), "-23.0 dB")
+        self.assertEqual(cs.step_clock_saver_volume("40", "volume_up"), "41")
+        self.assertEqual(cs.step_clock_saver_volume("-22.5 dB", "mute_toggle"), "MUTE")
+        self.assertEqual(
+            cs.step_clock_saver_volume("MUTE", "mute_toggle", unmute_to="-22.5 dB"),
+            "-22.5 dB",
+        )
+
+    def test_digital_saver_paints_centered_volume_line(self) -> None:
+        from datetime import datetime
+        from unittest.mock import patch
+
+        from pigeon.np_layout import clock_saver_seconds_track_rect
+
+        when = datetime(2026, 1, 1, 10, 30, 15)
+        with (
+            patch(
+                "pigeon.widgets.options_settings.clock_widget_analog",
+                return_value=False,
+            ),
+            patch(
+                "pigeon.widgets.clock_saver._resolve_display_time",
+                return_value=when,
+            ),
+        ):
+            quiet = cs.render_clock_saver_bgra(layer_opacity=1.0, volume="")
+            loud = cs.render_clock_saver_bgra(layer_opacity=1.0, volume="100")
+            mid = cs.render_clock_saver_bgra(layer_opacity=1.0, volume="40")
+        _tx, bar_y, track_w, _th, _ = clock_saver_seconds_track_rect()
+        band_y0, band_y1 = 300, 400
+        cx = cs.DESIGN_W // 2
+
+        def _extent(frame: np.ndarray) -> tuple[int, int] | None:
+            ink = frame[band_y0:band_y1, 8 : cs.DESIGN_W - 8, :3].max(axis=2) > 40
+            cols = np.where(ink.any(axis=0))[0]
+            if cols.size == 0:
+                return None
+            return 8 + int(cols.min()), 8 + int(cols.max())
+
+        self.assertIsNone(_extent(quiet))
+        loud_ext = _extent(loud)
+        mid_ext = _extent(mid)
+        self.assertIsNotNone(loud_ext)
+        self.assertIsNotNone(mid_ext)
+        assert loud_ext is not None and mid_ext is not None
+        loud_span = loud_ext[1] - loud_ext[0]
+        mid_span = mid_ext[1] - mid_ext[0]
+        self.assertGreater(loud_span, mid_span)
+        self.assertGreater(loud_span, int(track_w) - 8)
+        self.assertAlmostEqual((loud_ext[0] + loud_ext[1]) / 2.0, cx, delta=2)
+        self.assertAlmostEqual((mid_ext[0] + mid_ext[1]) / 2.0, cx, delta=2)
+
+    def test_mute_hides_line_and_off_hides_all(self) -> None:
+        from datetime import datetime
+        from unittest.mock import patch
+
+        when = datetime(2026, 1, 1, 10, 30, 15)
+        with (
+            patch(
+                "pigeon.widgets.options_settings.clock_widget_analog",
+                return_value=False,
+            ),
+            patch(
+                "pigeon.widgets.clock_saver._resolve_display_time",
+                return_value=when,
+            ),
+        ):
+            quiet = cs.render_clock_saver_bgra(layer_opacity=1.0, volume="")
+            muted = cs.render_clock_saver_bgra(layer_opacity=1.0, volume="mute")
+            loud = cs.render_clock_saver_bgra(layer_opacity=1.0, volume="-22.5 dB")
+        band_y0, band_y1 = 300, 400
+        cx = cs.DESIGN_W // 2
+
+        def _extent(frame: np.ndarray) -> tuple[int, int] | None:
+            ink = frame[band_y0:band_y1, 8 : cs.DESIGN_W - 8, :3].max(axis=2) > 40
+            cols = np.where(ink.any(axis=0))[0]
+            if cols.size == 0:
+                return None
+            return 8 + int(cols.min()), 8 + int(cols.max())
+
+        self.assertIsNone(_extent(quiet))
+        mute_ext = _extent(muted)
+        loud_ext = _extent(loud)
+        self.assertIsNotNone(mute_ext)
+        self.assertIsNotNone(loud_ext)
+        assert mute_ext is not None and loud_ext is not None
+        self.assertLess(mute_ext[1] - mute_ext[0], 280)
+        self.assertGreater(loud_ext[1] - loud_ext[0], mute_ext[1] - mute_ext[0] + 200)
+        self.assertAlmostEqual((mute_ext[0] + mute_ext[1]) / 2.0, cx, delta=8)
+
+    def test_volume_line_centers_between_temp_and_time(self) -> None:
+        from datetime import datetime
+        from unittest.mock import patch
+
+        from pigeon.np_layout import clock_saver_seconds_track_rect
+
+        when = datetime(2026, 1, 1, 10, 30, 15)
+        path = cs.default_clock_saver_svg_path()
+        root = cs._svg_tree_from_path(path)
+        wx_svg = cs._apply_clock_saver_svg_state(root, color_hex="#58ff00")
+        wx_bottom = cs.clock_saver_svg_y_to_design_y(wx_svg, cs.DESIGN_H)
+        _tx, bar_y, _tw, _th, _ = clock_saver_seconds_track_rect()
+        with (
+            patch(
+                "pigeon.widgets.options_settings.clock_widget_analog",
+                return_value=False,
+            ),
+            patch(
+                "pigeon.widgets.clock_saver._resolve_display_time",
+                return_value=when,
+            ),
+        ):
+            quiet = cs.render_clock_saver_bgra(layer_opacity=1.0, volume="")
+            loud = cs.render_clock_saver_bgra(layer_opacity=1.0, volume="-38.5 dB")
+        delta = np.abs(loud.astype(np.int16) - quiet.astype(np.int16)).max(axis=2)
+        rows = np.where(delta[:, 8 : cs.DESIGN_W - 8] > 20)[0]
+        self.assertGreater(int(rows.size), 0)
+        vol_cy = float(rows.min() + rows.max()) / 2.0
+        time_ink = np.where(
+            quiet[int(wx_bottom) : int(bar_y), 200 : cs.DESIGN_W - 200, :3].max(axis=2)
+            > 40
+        )[0]
+        self.assertGreater(int(time_ink.size), 0)
+        time_top = float(wx_bottom) + float(time_ink.min())
+        mid = (float(wx_bottom) + time_top) / 2.0
+        self.assertGreater(vol_cy, wx_bottom + 8)
+        self.assertLess(vol_cy, time_top - 8)
+        self.assertAlmostEqual(vol_cy, mid, delta=16)
+
+    def test_volume_hold_ignores_stale_poll_during_grace(self) -> None:
+        hold = cs.ClockSaverVolumeHold(grace_s=2.0)
+        hold.remember("-38.5 dB", source="poll", now=100.0)
+        hold.remember("-38.0 dB", source="nudge", now=100.5)
+        self.assertTrue(hold.is_stale_poll("-38.5 dB", now=101.0))
+        self.assertEqual(
+            hold.pick(["-38.5 dB", "-38.5 dB"], now=101.0),
+            "-38.0 dB",
+        )
+        self.assertEqual(
+            hold.pick(["-37.5 dB"], now=101.0),
+            "-37.5 dB",
+        )
+        hold.remember("-38.0 dB", source="nudge", now=200.0)
+        self.assertEqual(
+            hold.pick(["-38.5 dB"], now=203.0),
+            "-38.5 dB",
+        )
+        hold.remember("-22.5 dB", source="poll", now=300.0)
+        self.assertEqual(hold.pick(["-22.5 dB"], now=300.0, receiver_off=True), "")
+        self.assertEqual(hold.hold, "")
+
+    def test_wake_hold_keeps_nudge_past_default_grace(self) -> None:
+        hold = cs.ClockSaverVolumeHold(grace_s=2.0)
+        hold.remember("-30.5 dB", source="poll", now=10.0)
+        hold.remember("-30.0 dB", source="nudge", now=10.1, hold_s=12.0)
+        self.assertTrue(hold.is_stale_poll("-30.5 dB", now=13.0))
+        self.assertEqual(hold.pick(["-30.5 dB"], now=13.0), "-30.0 dB")
+        self.assertEqual(hold.pick(["-30.5 dB"], now=23.0), "-30.5 dB")
+
+    def test_volume_line_hold_then_fade(self) -> None:
+        reveal = cs.VolumeLineReveal(hold_s=3.0, fade_s=0.75)
+        reveal.note("-13.0 dB", now=100.0)
+        self.assertEqual(reveal.opacity(now=100.0), 0.0)
+        reveal.note("-12.5 dB", now=101.0)
+        self.assertEqual(reveal.opacity(now=102.0), 1.0)
+        self.assertEqual(reveal.opacity(now=104.0), 1.0)
+        self.assertTrue(reveal.fading(now=104.2))
+        mid = reveal.opacity(now=104.375)
+        self.assertGreater(mid, 0.2)
+        self.assertLess(mid, 0.8)
+        self.assertEqual(reveal.opacity(now=106.0), 0.0)
+        self.assertFalse(reveal.fading(now=106.0))
+
+    def test_live_poll_wins_over_nudge_when_avr_moved(self) -> None:
+        hold = cs.ClockSaverVolumeHold(grace_s=2.0)
+        hold.remember("-30.5 dB", source="poll", now=50.0)
+        hold.remember("-30.0 dB", source="nudge", now=50.2)
+        self.assertEqual(hold.pick(["-13.0 dB"], now=50.4), "-13.0 dB")
+
+    def test_analog_saver_omits_seconds_bar(self) -> None:
+        from unittest.mock import patch
+
+        from pigeon.np_layout import clock_saver_seconds_track_rect
+        from pigeon.widgets.view_circles import render_centered_clock_widget_bgra
+
+        with patch(
+            "pigeon.widgets.options_settings.clock_widget_analog",
+            return_value=True,
+        ):
+            frame = cs.render_clock_saver_bgra(layer_opacity=1.0)
+        direct = render_centered_clock_widget_bgra()
+        tx, ty, tw, th, _ = clock_saver_seconds_track_rect()
+        self.assertEqual(
+            frame[ty : ty + th, tx : tx + tw].tobytes(),
+            direct[ty : ty + th, tx : tx + tw].tobytes(),
+        )
+
+
+class ClockSaverTriggerTests(unittest.TestCase):
+    def test_pause_does_not_arm_before_thirty_seconds(self) -> None:
+        from pigeon.clock_saver_policy import (
+            CLOCK_SAVER_PAUSED_AFTER_S,
+            clock_saver_due_for_pause,
+            next_paused_since_mono,
+            pause_hold_s,
+            should_hold_paused_screen,
+        )
+
+        self.assertEqual(CLOCK_SAVER_PAUSED_AFTER_S, 30.0)
+        self.assertFalse(clock_saver_due_for_pause(True, 29.9))
+        self.assertTrue(clock_saver_due_for_pause(True, 30.0))
+        self.assertFalse(clock_saver_due_for_pause(False, 90.0))
+        started = next_paused_since_mono(True, 100.0, 0.0)
+        self.assertEqual(started, 100.0)
+        self.assertEqual(next_paused_since_mono(True, 125.0, started), 100.0)
+        self.assertAlmostEqual(pause_hold_s(True, 129.9, started), 29.9)
+        self.assertAlmostEqual(pause_hold_s(True, 130.0, started), 30.0)
+        self.assertEqual(next_paused_since_mono(False, 140.0, started), 0.0)
+        self.assertTrue(
+            should_hold_paused_screen(
+                paused_with_content=True,
+                has_backdrop=True,
+                clock_saver_active=False,
+            )
+        )
+        self.assertFalse(
+            should_hold_paused_screen(
+                paused_with_content=True,
+                has_backdrop=True,
+                clock_saver_active=True,
+            )
+        )
+
+    def test_no_content_and_same_title_skip_tmdb(self) -> None:
+        from pigeon.clock_saver_policy import (
+            clock_saver_due_for_no_content,
+            tmdb_should_skip_refetch_on_resume,
+        )
+
+        self.assertTrue(
+            clock_saver_due_for_no_content(
+                playing=False,
+                paused_with_content=False,
+                content_idle=True,
+            )
+        )
+        self.assertFalse(
+            clock_saver_due_for_no_content(
+                playing=False,
+                paused_with_content=True,
+                content_idle=False,
+            )
+        )
+        self.assertFalse(
+            clock_saver_due_for_no_content(
+                playing=True,
+                paused_with_content=False,
+                content_idle=False,
+            )
+        )
+        self.assertTrue(
+            tmdb_should_skip_refetch_on_resume(
+                content_key="show|auto|Show",
+                prev_content_key="show|auto|Show",
+                has_tmdb_identity=True,
+            )
+        )
+        self.assertFalse(
+            tmdb_should_skip_refetch_on_resume(
+                content_key="other|auto|Other",
+                prev_content_key="show|auto|Show",
+                has_tmdb_identity=True,
+            )
+        )
 
 
 class WeatherCacheTests(unittest.TestCase):

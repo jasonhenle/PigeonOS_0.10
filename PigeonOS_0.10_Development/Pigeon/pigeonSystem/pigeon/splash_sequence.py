@@ -46,16 +46,30 @@ def _natural_png_sort_key(p: Path) -> tuple[object, ...]:
     return tuple(parts) + (p.stem.lower(), p.name.lower())
 
 
+def _is_playable_splash_png(path: Path) -> bool:
+    """True for a real splash frame — not a macOS AppleDouble / dotfile sidecar."""
+    if not path.is_file() or path.suffix.lower() != ".png":
+        return False
+    name = path.name
+    # ``._widget_pigeon_splash_00000.png`` (rsync from macOS) sorts next to the
+    # real frame and plays as a blank hitch every other tick.
+    if name.startswith("."):
+        return False
+    return True
+
+
 # Tiny PNGs are empty AE pad frames; skip a full decode on the startup trim pass.
 _SPLASH_EMPTY_MAX_BYTES = 4096
 
 
-def _splash_frame_is_empty(path: Path) -> bool:
+def _splash_frame_is_empty(path: Path, *, decode: bool = False) -> bool:
     try:
         if path.stat().st_size <= _SPLASH_EMPTY_MAX_BYTES:
             return True
     except OSError:
         return True
+    if not decode:
+        return False
     im = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
     if im is None or im.ndim != 3 or im.shape[2] < 4:
         return True
@@ -76,7 +90,7 @@ def splash_effective_frame_count(png_paths: list[Path], *, reveal_frame: int) ->
     start = max(0, min(int(reveal_frame), n - 1))
     last_substantive = start
     for i in range(start, n):
-        if _splash_frame_is_empty(png_paths[i]):
+        if _splash_frame_is_empty(png_paths[i], decode=False):
             break
         last_substantive = i
     return max(start + 1, last_substantive + 1)
@@ -96,7 +110,7 @@ def list_splash_png_paths(assets_root: Path) -> list[Path]:
         if not d.is_dir():
             continue
         try:
-            files = [p for p in d.iterdir() if p.is_file() and p.suffix.lower() == ".png"]
+            files = [p for p in d.iterdir() if _is_playable_splash_png(p)]
         except OSError:
             continue
         if files:
@@ -107,7 +121,7 @@ def list_splash_png_paths(assets_root: Path) -> list[Path]:
         loose: list[Path] = []
         try:
             for p in assets_root.iterdir():
-                if not p.is_file() or p.suffix.lower() != ".png":
+                if not _is_playable_splash_png(p):
                     continue
                 stem = p.stem.lower()
                 if any(stem.startswith(pref) for pref in prefixes):
@@ -184,6 +198,8 @@ def find_splash_video_path(assets_root: Path) -> Path | None:
         # Prefer larger files (avoids grabbing a 0-byte sentinel if one ever exists).
         candidates.sort(key=lambda p: p.name.lower())
         for p in candidates:
+            if p.name.startswith("."):
+                continue
             if p.suffix.lower() not in _SPLASH_VIDEO_EXTS:
                 continue
             stem = p.stem.lower()

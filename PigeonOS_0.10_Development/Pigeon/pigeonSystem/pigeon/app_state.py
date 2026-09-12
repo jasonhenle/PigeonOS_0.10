@@ -43,8 +43,22 @@ def read_app_state() -> dict[str, Any]:
         # Parse per call so every caller gets private objects (safe to mutate).
         data = json.loads(text)
         return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        recovered = _parse_state_text_recover(text)
+        if recovered is not None:
+            return recovered
+        return {}
     except Exception:
         return {}
+
+
+def _parse_state_text_recover(text: str) -> dict[str, Any] | None:
+    """Best-effort parse when the file has trailing junk after a valid object."""
+    try:
+        data, _end = json.JSONDecoder().raw_decode(text.lstrip())
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _atomic_write_state(cur: dict[str, Any]) -> None:
@@ -65,15 +79,24 @@ def write_app_state(**updates: Any) -> None:
     try:
         cur = read_app_state()
         if not cur:
-            # Empty merge base but a sizable file on disk means the read failed
-            # (corrupt/partial JSON). Keep a recovery copy before overwriting so
-            # one bad read cannot silently wipe pairings and settings.
+            # A sizable on-disk file that failed to parse must not be replaced
+            # with ``updates`` alone — that wipes pairings and locations.
             try:
                 p = state_file()
                 if p.is_file() and p.stat().st_size > 2:
-                    p.replace(p.with_suffix(".bad"))
+                    recovered = _parse_state_text_recover(
+                        p.read_text(encoding="utf-8")
+                    )
+                    if recovered:
+                        cur = recovered
+                    else:
+                        try:
+                            p.replace(p.with_suffix(".bad"))
+                        except OSError:
+                            pass
+                        return
             except OSError:
-                pass
+                return
         cur.update(updates)
         _atomic_write_state(cur)
     except Exception:
@@ -316,6 +339,14 @@ def write_saved_streaming_device(
 def read_saved_av_receiver() -> dict[str, str] | None:
     migrate_device_slots_from_legacy_if_needed()
     return _v2_read_primary_av_receiver()
+
+
+def read_saved_av_receiver_display_name() -> str:
+    """Paired AVR name (or label) for chrome that needs a receiver fallback."""
+    row = read_saved_av_receiver()
+    if not isinstance(row, dict):
+        return ""
+    return str(row.get("name") or row.get("label") or "").strip()
 
 
 def write_saved_av_receiver(

@@ -3,8 +3,10 @@
 Layout from ``pigeonAssets/clocksaver.svg``:
   • ``tday_month_year_text`` / ``today_month_year_text`` — Sharp Sans Bold date
   • ``hhmmss_text`` — Digital-7 HH:MM:SS
+  • Digital only: centered volume line + Digital-7 level between temps and HH:MM:SS
   • ``high_temp`` / ``low_temp`` — daily °F for the configured ZIP
   • ``degrees_left_stroke`` / ``degrees_rifght_stroke`` — stroke-only ° marks
+  • Digital only: zone-5 NP status track split into 60 second cells
 """
 
 from __future__ import annotations
@@ -19,7 +21,16 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from pigeon.design import DESIGN_H, DESIGN_W, LEGACY_DESIGN_H, LEGACY_DESIGN_W, GRID_COLS, get_grid_geometry
+from pigeon.design import (
+    DESIGN_H,
+    DESIGN_W,
+    LEGACY_DESIGN_H,
+    LEGACY_DESIGN_W,
+    GRID_COLS,
+    get_grid_geometry,
+    legacy_fit_origin,
+    legacy_fit_scale,
+)
 from pigeon.font_paths import (
     resolve_digital7_font,
     resolve_ui_font_bold,
@@ -52,11 +63,13 @@ _ARTBOARD_H = 481.0
 # stays on the original band (do not follow the relocated weather).
 _DATE_BASELINE_Y_SVG = 91.98
 _WEATHER_GAP_BELOW_DATE_SVG = 24.0
-# Weather cluster only — date / Digital-7 stay put.
-_WEATHER_SCALE = 0.85  # 15% smaller
-_WEATHER_ICON_TOP_SVG = 324.51  # legacy lower bound for time mid only
+# Weather cluster only — date stays put; Digital-7 sits on the seconds bar.
+_WEATHER_SCALE = 1.30
+_WEATHER_ICON_TOP_SVG = 324.51  # legacy lower bound for older mid-band checks
 _HHMMSS_MID_Y_SVG = (_DATE_BASELINE_Y_SVG + _WEATHER_ICON_TOP_SVG) * 0.5
 _HHMMSS_FONT_SIZE_SVG = 231.0
+# Gap from Digital-7 baseline down to the zone-5 seconds track.
+_HHMMSS_GAP_ABOVE_BAR_PX = 20
 # Baked ° / number relationship from clocksaver.svg (high_temp ↔ degrees_left).
 _TEMP_BASELINE_BELOW_DEG_SVG = 338.18 - 310.7
 _TEMP_END_LEFT_OF_DEG_SVG = 2.75
@@ -70,6 +83,12 @@ _HHMMSS_MATCHING_UNITS = 7.0
 _HHMMSS_SIDE_PAD_PX = 28
 # Max fraction of design width the time block may occupy.
 _HHMMSS_MAX_WIDTH_FRAC = 0.92
+
+# Volume line between weather and HH:MM:SS — width grows from the center with level.
+_VOLUME_FONT_SIZE_PX = 72
+_VOLUME_LINE_H_PX = 8
+_VOLUME_GAP_ABOVE_TIME_PX = 20
+_VOLUME_TEXT_PAD_X_PX = 24
 
 
 def _time_color_rgba(now_mono: float) -> tuple[int, int, int, int]:
@@ -233,20 +252,23 @@ def _anchor_temp_to_degree(
     )
 
 
-def _place_weather_under_date(root: ET.Element) -> None:
+def _place_weather_under_date(root: ET.Element) -> float:
     """Center the weather cluster under the date and scale it by ``_WEATHER_SCALE``.
 
     Shapes (°, slash) honor the weather ``<g transform>``. Pillow text overlay
     ignores parent group transforms, so temp labels get absolute translate +
     scaled ``font-size`` baked in.
+
+    Returns the cluster's lowest artboard Y after placement (for the volume line).
     """
+    fallback = _DATE_BASELINE_Y_SVG + _WEATHER_GAP_BELOW_DATE_SVG + 48.0
     weather = _find_by_logical_id(root, "weather")
     if weather is None:
-        return
+        return fallback
     bounds = _weather_local_bounds(weather)
     if bounds is None:
-        return
-    min_x, min_y, max_x, _max_y = bounds
+        return fallback
+    min_x, min_y, max_x, max_y = bounds
     cx = (min_x + max_x) * 0.5
     target_top = _DATE_BASELINE_Y_SVG + _WEATHER_GAP_BELOW_DATE_SVG
     target_cx = _ARTBOARD_CX
@@ -272,6 +294,7 @@ def _place_weather_under_date(root: ET.Element) -> None:
         )
         fs = _svg_float(el, "font-size", _TEMP_FONT_SIZE_SVG)
         el.set("font-size", f"{fs * s:.2f}")
+    return target_top + max(0.0, max_y - min_y) * s
 
 
 def _set_visible(el: ET.Element | None, visible: bool) -> None:
@@ -330,6 +353,31 @@ def _ensure_degree_strokes(root: ET.Element, color_hex: str) -> None:
             el.set("stroke-width", "3")
 
 
+def clock_saver_weather_bottom_svg(root: ET.Element) -> float:
+    """Lowest SVG-space Y of the high/low temp numerals (after placement)."""
+    bottom = 0.0
+    for lid in ("high_temp", "low_temp"):
+        el = _find_by_logical_id(root, lid)
+        if el is None:
+            continue
+        _tx, ty = _parse_translate_xy(el)
+        fs = _svg_float(el, "font-size", _TEMP_FONT_SIZE_SVG)
+        bottom = max(bottom, ty + fs * 0.25)
+    if bottom <= 0.0:
+        return _DATE_BASELINE_Y_SVG + _WEATHER_GAP_BELOW_DATE_SVG + 48.0
+    return bottom
+
+
+def clock_saver_svg_y_to_design_y(y_svg: float, canvas_h: int = DESIGN_H) -> float:
+    """Map clocksaver.svg artboard Y onto the letterboxed design canvas."""
+    y_legacy = float(y_svg) * (float(LEGACY_DESIGN_H) / _ARTBOARD_H)
+    _ox, oy = legacy_fit_origin()
+    # ``legacy_fit_origin`` assumes DESIGN_H; scale if the canvas differs.
+    s = legacy_fit_scale() * (float(canvas_h) / float(DESIGN_H))
+    oy = oy * (float(canvas_h) / float(DESIGN_H))
+    return oy + y_legacy * s
+
+
 def _date_label(now) -> str:
     # Prefer "Monday, August 18" (no leading zero on day).
     try:
@@ -378,7 +426,7 @@ def _svg_tree_from_path(path: Path) -> ET.Element:
     return copy.deepcopy(template)
 
 
-def _apply_clock_saver_svg_state(root: ET.Element, *, color_hex: str) -> None:
+def _apply_clock_saver_svg_state(root: ET.Element, *, color_hex: str) -> float:
     now = _resolve_display_time()
     date_el = _find_by_logical_id(
         root, "today_month_year_text", "tday_month_year_text"
@@ -413,7 +461,7 @@ def _apply_clock_saver_svg_state(root: ET.Element, *, color_hex: str) -> None:
         low_el,
         _find_by_logical_id(root, "degrees_right_stroke", "degrees_rifght_stroke"),
     )
-    _place_weather_under_date(root)
+    weather_bottom_svg = _place_weather_under_date(root)
 
     # Hide baked black plate — callers already paint a black stage.
     _set_visible(_find_by_logical_id(root, "Layer_1", "layer_1"), False)
@@ -425,6 +473,7 @@ def _apply_clock_saver_svg_state(root: ET.Element, *, color_hex: str) -> None:
 
     _paint_cycle_color(root, color_hex)
     _ensure_degree_strokes(root, color_hex)
+    return weather_bottom_svg
 
 
 def _apply_layer_opacity(bgra: np.ndarray, op: float) -> np.ndarray:
@@ -578,8 +627,266 @@ def _draw_pair_in_region(
     for glyph in pair:
         adv = _hhmmss_advance(matching_w, glyph)
         cx = x + adv // 2
-        draw.text((cx, cy), glyph, font=font, fill=color, anchor="mm")
+        draw.text((cx, cy), glyph, font=font, fill=color, anchor="ms")
         x += adv
+
+
+def clock_saver_volume_label(raw: object | None) -> str:
+    """Digital-7 readout for the saver volume gap. Empty when nothing to show."""
+    from pigeon.widgets.playback_overlay import volume_widget_value_text
+
+    label = volume_widget_value_text(raw)
+    if not label:
+        return ""
+    if label.strip().lower() in ("mute", "muted"):
+        return "MUTE"
+    return label
+
+
+def clock_saver_volume_line_visible(raw: object | None) -> bool:
+    """True when the saver should paint the volume arms (not mute / empty / off)."""
+    label = clock_saver_volume_label(raw)
+    return bool(label) and label != "MUTE"
+
+
+def step_clock_saver_volume(
+    raw: object,
+    action: str,
+    *,
+    unmute_to: object | None = None,
+) -> str:
+    """Optimistic next volume string after ``volume_up`` / ``volume_down`` / ``mute_toggle``.
+
+    Denon-style dB readouts step 0.5; bare 0–100 levels step 1. ``MUTE`` stays
+    muted on down, and unmute uses ``unmute_to`` when provided.
+    """
+    act = str(action or "").strip().lower()
+    label = clock_saver_volume_label(raw)
+    src = str(raw or "").strip()
+    if act == "mute_toggle":
+        if label == "MUTE":
+            restored = clock_saver_volume_label(unmute_to) if unmute_to is not None else ""
+            if restored and restored != "MUTE":
+                return str(unmute_to).strip()
+            return "-80.0 dB"
+        return "MUTE"
+    if act not in ("volume_up", "volume_down"):
+        return src
+    delta = 1 if act == "volume_up" else -1
+    if label == "MUTE":
+        if delta < 0:
+            return "MUTE"
+        restored = clock_saver_volume_label(unmute_to) if unmute_to is not None else ""
+        if restored and restored != "MUTE":
+            return step_clock_saver_volume(unmute_to, act)
+        return "-80.0 dB"
+    db_src = bool(re.search(r"dB", src, flags=re.I) or (label[:1] in "+-"))
+    if db_src:
+        try:
+            db = float(re.sub(r"[^0-9.+-]", "", label) or "0")
+        except ValueError:
+            db = -80.0
+        db = max(-80.0, min(0.0, db + (0.5 * delta)))
+        return f"{db:.1f} dB"
+    digits = re.fullmatch(r"\d{1,3}", label)
+    if digits:
+        n = max(0, min(100, int(label) + delta))
+        return str(n)
+    return src
+
+
+def _volume_levels_match(a: object, b: object) -> bool:
+    la = clock_saver_volume_label(a)
+    lb = clock_saver_volume_label(b)
+    return bool(la) and la == lb
+
+
+VOLUME_LINE_HOLD_S = 3.0
+VOLUME_LINE_FADE_S = 0.75
+
+
+def volume_line_fade_opacity(
+    now: float,
+    last_change_mono: float,
+    *,
+    hold_s: float = VOLUME_LINE_HOLD_S,
+    fade_s: float = VOLUME_LINE_FADE_S,
+) -> float:
+    """1 while the volume arms should stay up, then a smooth fade to 0.
+
+    The numeric readout is independent — callers keep drawing the dB label.
+    """
+    if float(last_change_mono) <= 0.0:
+        return 0.0
+    age = float(now) - float(last_change_mono)
+    hold = max(0.0, float(hold_s))
+    fade = max(0.05, float(fade_s))
+    if age < hold:
+        return 1.0
+    t = (age - hold) / fade
+    if t >= 1.0:
+        return 0.0
+    t = max(0.0, min(1.0, t))
+    return 1.0 - (t * t * (3.0 - 2.0 * t))
+
+
+class VolumeLineReveal:
+    """Show volume arms for 3s after the AVR level changes, then fade them out."""
+
+    def __init__(
+        self,
+        *,
+        hold_s: float = VOLUME_LINE_HOLD_S,
+        fade_s: float = VOLUME_LINE_FADE_S,
+    ) -> None:
+        self.last_change_mono = 0.0
+        self.last_label = ""
+        self.hold_s = float(hold_s)
+        self.fade_s = float(fade_s)
+
+    def note(self, raw: object, *, now: float | None = None) -> None:
+        label = clock_saver_volume_label(raw)
+        if not label:
+            return
+        if not self.last_label:
+            self.last_label = label
+            return
+        if label == self.last_label:
+            return
+        self.last_label = label
+        self.last_change_mono = time.monotonic() if now is None else float(now)
+
+    def opacity(self, now: float | None = None) -> float:
+        t = time.monotonic() if now is None else float(now)
+        return volume_line_fade_opacity(
+            t, self.last_change_mono, hold_s=self.hold_s, fade_s=self.fade_s
+        )
+
+    def fading(self, now: float | None = None) -> bool:
+        t = time.monotonic() if now is None else float(now)
+        if self.last_change_mono <= 0.0:
+            return False
+        age = t - self.last_change_mono
+        return self.hold_s <= age < (self.hold_s + self.fade_s)
+
+
+class ClockSaverVolumeHold:
+    """Last shown saver volume. Knob steps win until the AVR poll catches up."""
+
+    def __init__(self, *, grace_s: float = 2.0) -> None:
+        self.hold = ""
+        self.pre_mute = ""
+        self.before_nudge = ""
+        self.nudge_until = 0.0
+        self.grace_s = float(grace_s)
+
+    def in_nudge_grace(self, now: float | None = None) -> bool:
+        t = time.monotonic() if now is None else float(now)
+        return bool(self.hold) and t < float(self.nudge_until or 0.0)
+
+    def clear(self) -> None:
+        self.hold = ""
+        self.before_nudge = ""
+        self.nudge_until = 0.0
+
+    def is_stale_poll(self, raw: object, *, now: float | None = None) -> bool:
+        """True when a poll still reports the pre-knob level during grace."""
+        if not self.in_nudge_grace(now):
+            return False
+        s = str(raw or "").strip()
+        if not s or not clock_saver_volume_label(s):
+            return True
+        return _volume_levels_match(s, self.before_nudge)
+
+    def remember(
+        self,
+        raw: object,
+        *,
+        source: str = "poll",
+        now: float | None = None,
+        hold_s: float | None = None,
+    ) -> str:
+        s = str(raw or "").strip()
+        label = clock_saver_volume_label(s) if s else ""
+        t = time.monotonic() if now is None else float(now)
+        if source == "nudge" and label:
+            prev = str(self.hold or "")
+            if clock_saver_volume_label(prev) != "MUTE":
+                self.before_nudge = prev
+            if label != "MUTE":
+                self.pre_mute = s
+            self.hold = s
+            grace = float(hold_s) if hold_s is not None else self.grace_s
+            self.nudge_until = t + max(0.2, grace)
+            return s
+        if not label:
+            return str(self.hold or "")
+        if self.in_nudge_grace(t) and _volume_levels_match(s, self.before_nudge):
+            return str(self.hold or s)
+        if label != "MUTE":
+            self.pre_mute = s
+        self.hold = s
+        if source == "poll":
+            self.nudge_until = 0.0
+        return s
+
+    def pick(
+        self,
+        candidates: list[object],
+        *,
+        now: float | None = None,
+        receiver_off: bool = False,
+    ) -> str:
+        t = time.monotonic() if now is None else float(now)
+        if receiver_off:
+            self.clear()
+            return ""
+        live = ""
+        for raw in candidates:
+            s = str(raw or "").strip()
+            if s and clock_saver_volume_label(s):
+                live = s
+                break
+        if self.in_nudge_grace(t):
+            if not live or _volume_levels_match(live, self.before_nudge):
+                return str(self.hold or live)
+            return self.remember(live, source="poll", now=t)
+        if live:
+            return self.remember(live, source="poll", now=t)
+        return str(self.hold or "")
+
+
+def clock_saver_volume_line_geometry(
+    *,
+    fraction: float,
+    canvas_w: int,
+    text_w: int,
+    max_width: int,
+    gap_pad_x: int = _VOLUME_TEXT_PAD_X_PX,
+) -> tuple[int, int, int, int]:
+    """Centered volume bar.
+
+    Returns ``(line_left, line_right, gap_left, gap_right)``. Arms occupy
+    ``[line_left, gap_left)`` and ``[gap_right, line_right)``. At fraction 0
+    the span equals the text gap, so no arms are drawn.
+    """
+    cx = int(canvas_w) // 2
+    frac = max(0.0, min(1.0, float(fraction)))
+    pad = max(0, int(gap_pad_x))
+    gap = max(int(text_w) + 2 * pad, 1)
+    if gap % 2:
+        gap += 1
+    max_span = max(gap, int(max_width))
+    if max_span % 2:
+        max_span += 1
+    span = gap + int(round((max_span - gap) * frac))
+    if span % 2:
+        span += 1
+    line_left = cx - span // 2
+    line_right = line_left + span
+    gap_left = cx - gap // 2
+    gap_right = gap_left + gap
+    return line_left, line_right, gap_left, gap_right
 
 
 def _draw_hhmmss_fixed_cells(
@@ -587,6 +894,9 @@ def _draw_hhmmss_fixed_cells(
     time_text: str,
     *,
     color: tuple[int, int, int, int],
+    volume: object | None = None,
+    weather_bottom: float | None = None,
+    line_opacity: float = 1.0,
 ) -> None:
     """Paint ``HH:MM:SS`` as three pairs between two screen-locked colons.
 
@@ -598,9 +908,8 @@ def _draw_hhmmss_fixed_cells(
     pairs = _parse_hhmmss_pairs(time_text)
     font_path = resolve_digital7_font() or resolve_ui_font_bold()
     canvas_h, canvas_w = int(bgra.shape[0]), int(bgra.shape[1])
-    sy = float(canvas_h) / _ARTBOARD_H
+    sy = float(canvas_w) / _ARTBOARD_W
     prefer_sz = max(24, int(round(_HHMMSS_FONT_SIZE_SVG * sy)))
-    mid_y = int(round(_HHMMSS_MID_Y_SVG * sy))
     max_w = max(
         64,
         int(round(canvas_w * _HHMMSS_MAX_WIDTH_FRAC)) - 2 * _HHMMSS_SIDE_PAD_PX,
@@ -618,7 +927,13 @@ def _draw_hhmmss_fixed_cells(
     draw = ImageDraw.Draw(img)
     matching_w, _cell_h = _cell_metrics(draw, font, _HHMMSS_CHAR_SET)
     regions, colon_cx = _hhmmss_locked_scaffold(matching_w, canvas_w)
-    cy = mid_y
+    if canvas_h == int(DESIGN_H):
+        from pigeon.np_layout import clock_saver_seconds_track_rect
+
+        _tx, bar_y, _tw, _th, _trx = clock_saver_seconds_track_rect()
+        cy = int(bar_y) - int(_HHMMSS_GAP_ABOVE_BAR_PX)
+    else:
+        cy = int(round(_HHMMSS_MID_Y_SVG * float(canvas_h) / _ARTBOARD_H))
 
     for region, pair in zip(regions, pairs):
         _draw_pair_in_region(
@@ -631,13 +946,192 @@ def _draw_hhmmss_fixed_cells(
             color=color,
         )
     for cx in colon_cx:
-        draw.text((cx, cy), ":", font=font, fill=color, anchor="mm")
+        draw.text((cx, cy), ":", font=font, fill=color, anchor="ms")
+
+    _draw_clock_saver_volume_line(
+        draw,
+        volume=volume,
+        color=color,
+        font_path=font_path,
+        canvas_w=canvas_w,
+        time_cy=cy,
+        time_font=font,
+        weather_bottom=weather_bottom,
+        line_opacity=line_opacity,
+    )
 
     out = np.asarray(img)
     bgra[:, :, 0] = out[:, :, 2]
     bgra[:, :, 1] = out[:, :, 1]
     bgra[:, :, 2] = out[:, :, 0]
     bgra[:, :, 3] = out[:, :, 3]
+
+
+def _draw_clock_saver_volume_line(
+    draw: ImageDraw.ImageDraw,
+    *,
+    volume: object | None,
+    color: tuple[int, int, int, int],
+    font_path: str | None,
+    canvas_w: int,
+    time_cy: int,
+    time_font: ImageFont.ImageFont,
+    weather_bottom: float | None = None,
+    line_opacity: float = 1.0,
+) -> None:
+    """Centered volume stroke with a Digital-7 level in the middle break."""
+    label = clock_saver_volume_label(volume)
+    if not label:
+        return
+    from pigeon.np_layout import clock_saver_seconds_track_rect
+    from pigeon.widgets.playback_overlay import volume_fraction_from_display_line
+
+    time_box = draw.textbbox((0, int(time_cy)), "0", font=time_font, anchor="ms")
+    time_top = int(time_box[1])
+    vol_sz = max(
+        18,
+        int(round(_VOLUME_FONT_SIZE_PX * float(canvas_w) / float(DESIGN_W))),
+    )
+    vol_font = _load_font(font_path, vol_sz)
+    tb = draw.textbbox((0, 0), label, font=vol_font)
+    text_w = max(1, int(tb[2] - tb[0]))
+    text_h = max(1, int(tb[3] - tb[1]))
+    try:
+        _tx, _ty, track_w, _th, _trx = clock_saver_seconds_track_rect()
+        max_w = int(track_w)
+    except Exception:
+        max_w = int(round(float(canvas_w) * 0.83))
+    line_l, line_r, gap_l, gap_r = clock_saver_volume_line_geometry(
+        fraction=volume_fraction_from_display_line(volume),
+        canvas_w=int(canvas_w),
+        text_w=text_w,
+        max_width=max_w,
+    )
+    line_h = max(2, int(round(_VOLUME_LINE_H_PX * float(canvas_w) / float(DESIGN_W))))
+    cluster_h = max(text_h, line_h)
+    wx_bottom = float(weather_bottom) if weather_bottom is not None else 0.0
+    if wx_bottom > 0.0 and wx_bottom + cluster_h < time_top:
+        cy_vol = (wx_bottom + time_top) / 2.0
+    else:
+        cluster_bottom = time_top - int(_VOLUME_GAP_ABOVE_TIME_PX)
+        cy_vol = cluster_bottom - cluster_h / 2.0
+    arm_a = int(round(float(color[3]) * max(0.0, min(1.0, float(line_opacity)))))
+    if arm_a > 0 and clock_saver_volume_line_visible(volume):
+        line_y0 = int(round(cy_vol - line_h / 2.0))
+        line_y1 = line_y0 + line_h - 1
+        radius = max(1, line_h // 2)
+        arm_color = (int(color[0]), int(color[1]), int(color[2]), arm_a)
+        for x0, x1 in ((line_l, gap_l), (gap_r, line_r)):
+            arm_w = int(x1) - int(x0)
+            if arm_w < 2:
+                continue
+            draw.rounded_rectangle(
+                [int(x0), line_y0, int(x1) - 1, line_y1],
+                radius=radius,
+                fill=arm_color,
+            )
+    draw.text((int(canvas_w) // 2, cy_vol), label, font=vol_font, fill=color, anchor="mm")
+
+
+def clock_saver_volume_strip_bgra(
+    volume: object | None,
+    *,
+    width: int,
+    height: int,
+    color: tuple[int, int, int, int] | None = None,
+    line_opacity: float = 1.0,
+) -> np.ndarray:
+    """Digital-7 volume + arms sized to a now-playing strip (zone 4)."""
+    w = max(1, int(width))
+    h = max(1, int(height))
+    out = np.zeros((h, w, 4), dtype=np.uint8)
+    label = clock_saver_volume_label(volume)
+    if not label:
+        return out
+    from pigeon.widgets.playback_overlay import volume_fraction_from_display_line
+
+    rgba = color if color is not None else (255, 255, 255, 255)
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    font_path = resolve_digital7_font() or resolve_ui_font_bold()
+    vol_sz = max(
+        18,
+        min(
+            int(round(h * 0.62)),
+            int(round(_VOLUME_FONT_SIZE_PX * float(w) / float(DESIGN_W))),
+        ),
+    )
+    vol_font = _load_font(font_path, vol_sz)
+    tb = draw.textbbox((0, 0), label, font=vol_font)
+    text_w = max(1, int(tb[2] - tb[0]))
+    max_w = max(text_w + 8, int(round(w * 0.92)))
+    line_l, line_r, gap_l, gap_r = clock_saver_volume_line_geometry(
+        fraction=volume_fraction_from_display_line(volume),
+        canvas_w=w,
+        text_w=text_w,
+        max_width=max_w,
+    )
+    line_h = max(2, int(round(_VOLUME_LINE_H_PX * float(w) / float(DESIGN_W))))
+    cy_vol = h / 2.0
+    arm_a = int(round(float(rgba[3]) * max(0.0, min(1.0, float(line_opacity)))))
+    if arm_a > 0 and clock_saver_volume_line_visible(volume):
+        line_y0 = int(round(cy_vol - line_h / 2.0))
+        line_y1 = line_y0 + line_h - 1
+        radius = max(1, line_h // 2)
+        arm_color = (int(rgba[0]), int(rgba[1]), int(rgba[2]), arm_a)
+        for x0, x1 in ((line_l, gap_l), (gap_r, line_r)):
+            arm_w = int(x1) - int(x0)
+            if arm_w < 2:
+                continue
+            draw.rounded_rectangle(
+                [int(x0), line_y0, int(x1) - 1, line_y1],
+                radius=radius,
+                fill=arm_color,
+            )
+    draw.text((w // 2, cy_vol), label, font=vol_font, fill=rgba, anchor="mm")
+    arr = np.asarray(img)
+    out[:, :, 0] = arr[:, :, 2]
+    out[:, :, 1] = arr[:, :, 1]
+    out[:, :, 2] = arr[:, :, 0]
+    out[:, :, 3] = arr[:, :, 3]
+    return out
+
+
+def _draw_clock_saver_seconds_bar(
+    bgra: np.ndarray,
+    now,
+    *,
+    fill_bgr: tuple[int, int, int],
+) -> None:
+    """Paint the zone-5 track as 60 stepped second cells. Analog callers skip this."""
+    from pigeon.np_layout import (
+        clock_saver_seconds_filled,
+        clock_saver_seconds_segment_rects,
+        clock_saver_seconds_track_rect,
+    )
+    from pigeon.widgets.view_circles import _draw_rounded_bar_bgra
+
+    tx, ty, tw, th, trx = clock_saver_seconds_track_rect()
+    rects = clock_saver_seconds_segment_rects((float(tx), float(ty), float(tw), float(th)))
+    if not rects:
+        return
+    filled = clock_saver_seconds_filled(int(getattr(now, "second", 0)))
+    seg_w = min(r[2] for r in rects)
+    radius = max(1, min(int(trx), seg_w // 2, int(th) // 2))
+    # Upcoming cells stay invisible — only elapsed seconds are painted.
+    for i, (x, y, w, h) in enumerate(rects):
+        if i >= filled:
+            break
+        _draw_rounded_bar_bgra(
+            bgra,
+            x=x,
+            y=y,
+            w=w,
+            h=h,
+            fill_bgr=fill_bgr,
+            radius=radius,
+            fill_opacity=1.0,
+        )
 
 
 def clock_saver_time_design_rect() -> tuple[int, int, int, int]:
@@ -660,6 +1154,8 @@ def render_clock_saver_bgra(
     layer_opacity: float = 1.0,
     assets_dir: Path | str | None = None,
     svg_path: Path | str | None = None,
+    volume: object | None = None,
+    line_opacity: float = 1.0,
 ) -> np.ndarray:
     """Full 1280×800 BGRA idle face: digital clocksaver or centered clock widget."""
     try:
@@ -686,11 +1182,15 @@ def render_clock_saver_bgra(
     if not path.is_file():
         # Soft fallback: time-only band if art is missing.
         return _legacy_time_only_bgra(
-            color=color, layer_opacity=layer_opacity, time_text=time_text
+            color=color,
+            layer_opacity=layer_opacity,
+            time_text=time_text,
+            volume=volume,
+            line_opacity=line_opacity,
         )
 
     root = _svg_tree_from_path(path)
-    _apply_clock_saver_svg_state(root, color_hex=color_hex)
+    weather_bottom_svg = _apply_clock_saver_svg_state(root, color_hex=color_hex)
     from pigeon.np_layout import letterbox_legacy_ui
     from pigeon.widgets.settings_svg_text import rasterize_settings_svg_bgra
 
@@ -700,8 +1200,22 @@ def render_clock_saver_bgra(
         height=LEGACY_DESIGN_H,
         font_mode="preferences",
     )
-    _draw_hhmmss_fixed_cells(native, time_text, color=color)
-    return letterbox_legacy_ui(_apply_layer_opacity(native, layer_opacity))
+    framed = letterbox_legacy_ui(native)
+    weather_bottom = clock_saver_svg_y_to_design_y(
+        weather_bottom_svg, int(framed.shape[0])
+    )
+    _draw_hhmmss_fixed_cells(
+        framed,
+        time_text,
+        color=color,
+        volume=volume,
+        weather_bottom=weather_bottom,
+        line_opacity=line_opacity,
+    )
+    _draw_clock_saver_seconds_bar(
+        framed, now, fill_bgr=(int(color[2]), int(color[1]), int(color[0]))
+    )
+    return _apply_layer_opacity(framed, layer_opacity)
 
 
 def _legacy_time_only_bgra(
@@ -709,14 +1223,22 @@ def _legacy_time_only_bgra(
     color: tuple[int, int, int, int],
     layer_opacity: float,
     time_text: str | None = None,
+    volume: object | None = None,
+    line_opacity: float = 1.0,
 ) -> np.ndarray:
     bgra = np.zeros((LEGACY_DESIGN_H, LEGACY_DESIGN_W, 4), dtype=np.uint8)
     when = _resolve_display_time()
     text = time_text or _time_label(when)
-    _draw_hhmmss_fixed_cells(bgra, text, color=color)
     from pigeon.np_layout import letterbox_legacy_ui
 
-    return letterbox_legacy_ui(_apply_layer_opacity(bgra, layer_opacity))
+    framed = letterbox_legacy_ui(bgra)
+    _draw_hhmmss_fixed_cells(
+        framed, text, color=color, volume=volume, line_opacity=line_opacity
+    )
+    _draw_clock_saver_seconds_bar(
+        framed, when, fill_bgr=(int(color[2]), int(color[1]), int(color[0]))
+    )
+    return _apply_layer_opacity(framed, layer_opacity)
 
 
 def clock_saver_composite_bgra(
@@ -727,6 +1249,8 @@ def clock_saver_composite_bgra(
     date_layer_opacity: float | None = None,
     date_anchor_row: int | None = None,
     date_anchor_col: int | None = None,
+    volume: object | None = None,
+    line_opacity: float = 1.0,
 ) -> tuple[
     tuple[np.ndarray, tuple[int, int, int, int]],
     tuple[np.ndarray, tuple[int, int, int, int]],
@@ -741,7 +1265,9 @@ def clock_saver_composite_bgra(
     """
     _ = (shadow_bgr, date_layer_opacity, date_anchor_row, date_anchor_col)
     t_op = float(layer_opacity if time_layer_opacity is None else time_layer_opacity)
-    frame = render_clock_saver_bgra(layer_opacity=t_op)
+    frame = render_clock_saver_bgra(
+        layer_opacity=t_op, volume=volume, line_opacity=line_opacity
+    )
     full_rect = (0, 0, int(DESIGN_W), int(DESIGN_H))
     return (frame, full_rect), (_EMPTY_PATCH.copy(), (0, 0, 1, 1))
 

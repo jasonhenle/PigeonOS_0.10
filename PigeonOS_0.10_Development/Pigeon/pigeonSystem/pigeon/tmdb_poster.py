@@ -284,6 +284,9 @@ _KIDS_STREAMING_BUNDLE_NEEDLES: tuple[str, ...] = (
 def is_degenerate_tmdb_query(q: str) -> bool:
     """
     True if ``q`` should not be sent to TMDb alone (streaming app name, splash branding, etc.).
+
+    Short real titles (``It``, ``Up``, ``Us``) are valid. OCR glyph noise is filtered
+    at OCR ingestion, not here — player metadata must still trigger a search.
     """
     raw = (q or "").strip()
     if not raw or len(raw) < 2:
@@ -298,13 +301,6 @@ def is_degenerate_tmdb_query(q: str) -> bool:
         return True
     if n.replace(" ", "").isdigit():
         return True
-    try:
-        from pigeon.ocr_clues import looks_like_ocr_junk
-
-        if looks_like_ocr_junk(raw):
-            return True
-    except ImportError:
-        pass
     return False
 
 

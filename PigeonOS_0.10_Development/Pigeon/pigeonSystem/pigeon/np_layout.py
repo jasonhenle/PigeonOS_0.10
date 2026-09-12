@@ -9,6 +9,7 @@ measurement — 44.5 + 398 = 442.5 and 442.5 + 398 ≈ 840, matching the column 
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 import numpy as np
@@ -92,7 +93,11 @@ POSTER_16X9_VIEW_W = float(NOW_PLAYING_ZONES[6].w)
 POSTER_16X9_VIEW_H = float(NOW_PLAYING_ZONES[6].h)
 _POSTER_16X9_W = POSTER_16X9_VIEW_W - _POSTER_16X9_INSET_L - _POSTER_16X9_INSET_R
 _POSTER_16X9_H = _POSTER_16X9_W * 9.0 / 16.0
-_POSTER_16X9_Y = (POSTER_16X9_VIEW_H - _POSTER_16X9_H) / 2.0
+# Same vertical center as the zone-3 volume disc (not the geometric mid of zone 6).
+_POSTER_16X9_Y = min(
+    max(0.0, VOLUME_LOCAL_CY - _POSTER_16X9_H / 2.0),
+    POSTER_16X9_VIEW_H - _POSTER_16X9_H,
+)
 # 8px radius on the 267×150 widget art → ~21.3px at the 16×9 slot width.
 _POSTER_16X9_RX = 8.0 * (_POSTER_16X9_W / 267.0)
 POSTER_16X9_LOCAL = (
@@ -150,6 +155,9 @@ STATUS_BAR_VIEW_H = 130.0
 STATUS_BAR_VIEW_Y0 = 36.5
 # remaining_icon rounded rect in full artboard space, then shifted by VIEW_Y0.
 STATUS_BAR_TRACK = (68.62, 10.16, 1066.81, 65.49, 13.07)
+# Digital clock saver: same zone-5 track, stepped into 60 second cells.
+CLOCK_SAVER_SECONDS_SEGMENTS = 60
+CLOCK_SAVER_SECONDS_GAP_PX = 3.0
 STATUS_BAR_SERVICE_LOCAL = (3.1, 122.01)
 # Authored mid-bar X is unused: elapsed parks at SERVICE_LOCAL and rides the fill.
 STATUS_BAR_ELAPSED_LOCAL = (574.31, 122.01)
@@ -159,8 +167,22 @@ STATUS_BAR_TIME_SIZE_PX = 39
 STATUS_BAR_PAUSED_SIZE_PX = 58
 # Gap between the service name and the traveling elapsed readout.
 STATUS_BAR_LABEL_GAP_PX = 24.0
-# Crossfade parked elapsed → service + traveling elapsed.
+# Keep elapsed just short of the remaining label before it fades away.
+STATUS_BAR_ELAPSED_COLLIDE_GAP_PX = 16.0
+# Fade elapsed over this many extra pixels of playhead travel.
+STATUS_BAR_ELAPSED_FADE_PX = 56.0
+# Crossfade service in once traveling elapsed has cleared it.
 STATUS_BAR_HANDOFF_S = 0.45
+
+# Current-time readout hangs from the top of the frame and may overlap
+# the widget row slightly so the type can read larger than the 34px margin.
+NP_HEADER_CLOCK_BASELINE_Y = 34.0
+NP_HEADER_CLOCK_SIZE_PX = 64
+NP_HEADER_CLOCK_TOP_PAD_PX = 6.0
+NP_HEADER_CLOCK_BG_PAD_X = 22.0
+NP_HEADER_CLOCK_BG_PAD_Y = 10.0
+NP_HEADER_CLOCK_BG_RADIUS = 16.0
+NP_HEADER_CLOCK_BG_OPACITY = 1.0
 
 # Clock widget viewBox + header / digital baselines (widget-local).
 CLOCK_VIEW_W = 400.0
@@ -197,11 +219,30 @@ TT_COUNTDOWN_DIVIDER_LOCAL = (41.37, 310.0, 315.26, 40.0)  # x, y, w, h
 TT_COUNTDOWN_TT_INSET_X = 12.0
 TT_COUNTDOWN_TT_TOP_Y = 34.0
 TT_COUNTDOWN_TEXT_SIZE_PX = 80
-TT_COUNTDOWN_CARD_RADIUS = 28.0
-# Black card hugs the TT+TRT group. Padding matches divider thickness (~20–25).
+# Inset used when a tall 16×9 TT sits beside the countdown.
 TT_COUNTDOWN_BG_PAD = 25.0
 # TT art darker than this luminance is recolored pure white before display.
 TT_COUNTDOWN_DARK_TT_LUMINANCE_MAX = 0.25
+
+# Skeleton shimmer for widgets still waiting on TMDb / artwork.
+WIDGET_SHIMMER_PERIOD_S = 1.35
+WIDGET_SHIMMER_STEPS = 48
+WIDGET_SHIMMER_BAND_FRAC = 0.42
+WIDGET_SHIMMER_OPACITY = 0.92
+WIDGET_SHIMMER_RADIUS = 18.0
+
+
+def widget_shimmer_phase(now_mono: float | None = None) -> float:
+    """0..1 sweep position for the loading shimmer."""
+    t = time.monotonic() if now_mono is None else float(now_mono)
+    return (t / max(0.05, float(WIDGET_SHIMMER_PERIOD_S))) % 1.0
+
+
+def widget_shimmer_step(now_mono: float | None = None) -> int:
+    """Quantized shimmer frame so the NP cache can animate without a full rebuild."""
+    return int(widget_shimmer_phase(now_mono) * WIDGET_SHIMMER_STEPS) % int(
+        WIDGET_SHIMMER_STEPS
+    )
 
 
 def tt_countdown_tt_box() -> tuple[float, float, float, float]:
@@ -252,8 +293,8 @@ def tt_countdown_16x9_tt_box() -> tuple[float, float, float, float]:
     - top edge   = bottom of ``top_divider``
     - bottom     = top of ``horizontal_divider``
 
-    Landscape TTs width-fit this box. The seated TT+TRT group then lifts so
-    the TT top rests on ``top_divider``'s bottom — see
+    Landscape TTs width-fit this box. The seated TT+TRT group then shifts so
+    the pair is vertically centered in the widget — see
     ``tt_countdown_16x9_content_lift``.
     """
     lx, _ly, lw, _lh = TT_COUNTDOWN_16X9_LEFT_DIVIDER_LOCAL
@@ -309,6 +350,31 @@ def tt_countdown_16x9_portrait_rects(
     return (tt_x, tt_y, tw, th), (trt_x, trt_y, trt_w, trt_h)
 
 
+def tt_countdown_centered_art_rect(
+    src_w: float,
+    src_h: float,
+    *,
+    view_w: float,
+    view_h: float,
+    pad: float = TT_COUNTDOWN_BG_PAD,
+) -> tuple[float, float, float, float]:
+    """Widget-local (x, y, w, h) for art fitted and centered in the view.
+
+    Music album art uses this instead of the landscape TT box + TRT pair.
+    """
+    inset = max(0.0, float(pad))
+    max_w = max(1.0, float(view_w) - 2.0 * inset)
+    max_h = max(1.0, float(view_h) - 2.0 * inset)
+    sw = max(1e-6, float(src_w))
+    sh = max(1e-6, float(src_h))
+    scale = min(max_w / sw, max_h / sh)
+    tw = sw * scale
+    th = sh * scale
+    x = (float(view_w) - tw) / 2.0
+    y = (float(view_h) - th) / 2.0
+    return (x, y, tw, th)
+
+
 def tt_countdown_content_center_shift(
     *,
     tt_height: float,
@@ -350,17 +416,48 @@ def tt_countdown_portrait_content_lift(
 def tt_countdown_16x9_content_lift(
     tt_height: float, *, trt_height: float = 0.0
 ) -> float:
-    """Lift the seated landscape group so TT top sits on ``top_divider``'s bottom.
+    """Shift the seated landscape group so TT+TRT are vertically centered."""
+    _hx, seat_y, _hw, gap = TT_COUNTDOWN_16X9_HORIZONTAL_DIVIDER_LOCAL
+    return tt_countdown_content_center_shift(
+        tt_height=tt_height,
+        trt_height=trt_height,
+        seat_y=seat_y,
+        gap=gap,
+        view_h=TT_COUNTDOWN_16X9_VIEW_H,
+    )
 
-    Content is first seated on the horizontal divider (TT bottom at its top,
-    TRT under it). ``trt_height`` is unused — the group top is the TT top.
-    """
-    del trt_height
-    _tx, ty, _tw, th = TT_COUNTDOWN_16X9_TOP_DIVIDER_LOCAL
-    _hx, seat_y, _hw, _hh = TT_COUNTDOWN_16X9_HORIZONTAL_DIVIDER_LOCAL
-    desired_top = ty + th
-    group_top = float(seat_y) - max(0.0, float(tt_height))
-    return max(0.0, group_top - desired_top)
+
+def layout_shows_tt_countdown_and_volume(
+    assignments: tuple[str, ...] | list[str],
+) -> bool:
+    """True when the live layout has both a TT countdown and a volume disc."""
+    names = [str(n or "").strip() for n in list(assignments)[:5]]
+    has_vol = "volume" in names
+    has_tt = any(n in ("tt_countdown", TT_COUNTDOWN_16X9_WIDGET) for n in names)
+    return has_vol and has_tt
+
+
+def tt_countdown_volume_align_dy(
+    *,
+    plate_top: float,
+    plate_bottom: float,
+    volume_cy: float,
+    zone_top: float,
+    zone_bottom: float,
+) -> float:
+    """Y delta that centers the TT+TRT group on the volume disc, clamped to the zone."""
+    top = float(plate_top)
+    bottom = float(plate_bottom)
+    height = bottom - top
+    if height <= 0.0:
+        return 0.0
+    desired_top = float(volume_cy) - height / 2.0
+    max_top = float(zone_bottom) - height
+    min_top = float(zone_top)
+    if max_top < min_top:
+        return 0.0
+    clamped_top = min(max(desired_top, min_top), max_top)
+    return clamped_top - top
 
 
 def tt_countdown_16x9_time_anchor(*, lift: float = 0.0) -> tuple[float, float]:
@@ -431,37 +528,6 @@ def tabular_time_layout(
         cells.append((ch, x, cell_w))
         x += cell_w
     return tuple(cells), x
-
-
-def volume_readout_y_shift(
-    *,
-    has_source: bool,
-    value_baseline_y: float = VOLUME_VALUE_LOCAL[1],
-    value_h: float = 0.0,
-    scale_baseline_y: float = VOLUME_SCALE_LOCAL[1],
-    scale_h: float = 0.0,
-    container_cy: float = VOLUME_LOCAL_CY,
-) -> float:
-    """Y delta that vertically centers value+scale in ``volume_container``.
-
-    When ``volume_source_text`` is present, keep the authored layout (delta 0).
-    Otherwise shift both baselines by the same amount so their combined ink box
-    is centered on the disc — the gap between value and scale does not change.
-    """
-    if has_source:
-        return 0.0
-    tops: list[float] = []
-    bottoms: list[float] = []
-    if value_h > 0:
-        tops.append(float(value_baseline_y) - float(value_h))
-        bottoms.append(float(value_baseline_y))
-    if scale_h > 0:
-        tops.append(float(scale_baseline_y) - float(scale_h))
-        bottoms.append(float(scale_baseline_y))
-    if not tops:
-        return 0.0
-    mid = (min(tops) + max(bottoms)) / 2.0
-    return float(container_cy) - mid
 
 
 WIDGET_FILENAMES: dict[str, str] = {
@@ -710,22 +776,34 @@ def design_rect_from_local(
     )
 
 
-def status_bar_elapsed_travel_x(
+def status_bar_playhead_x(
+    *,
+    track_x: float,
+    track_w: float,
+    progress: float,
+) -> float:
+    """X of the played / unplayed transition."""
+    vis = max(0.0, min(float(track_w), float(progress) * float(track_w)))
+    return float(track_x) + vis
+
+
+def status_bar_elapsed_center_x(
     *,
     track_x: float,
     track_w: float,
     progress: float,
     elapsed_w: float,
     remaining_left_x: float | None = None,
-    gap: float = STATUS_BAR_LABEL_GAP_PX,
+    gap: float = STATUS_BAR_ELAPSED_COLLIDE_GAP_PX,
 ) -> float:
-    """Left edge of elapsed right-aligned to the played leading edge (not parked)."""
-    vis = max(0.0, min(float(track_w), float(progress) * float(track_w)))
-    w = max(0.0, float(elapsed_w))
-    x = float(track_x) + vis - w
-    if remaining_left_x is not None and w > 0.0:
-        x = min(x, float(remaining_left_x) - float(gap) - w)
-    return x
+    """Elapsed stays centered on the playhead until just before remaining."""
+    center = status_bar_playhead_x(
+        track_x=track_x, track_w=track_w, progress=progress
+    )
+    half = max(0.0, float(elapsed_w)) * 0.5
+    if remaining_left_x is not None and half > 0.0:
+        center = min(center, float(remaining_left_x) - float(gap) - half)
+    return center
 
 
 def status_bar_elapsed_left_x(
@@ -734,23 +812,71 @@ def status_bar_elapsed_left_x(
     track_w: float,
     progress: float,
     elapsed_w: float,
-    park_x: float,
     remaining_left_x: float | None = None,
-    gap: float = STATUS_BAR_LABEL_GAP_PX,
+    gap: float = STATUS_BAR_ELAPSED_COLLIDE_GAP_PX,
+    park_x: float | None = None,
 ) -> float:
-    """Left edge of elapsed: parked at ``park_x`` until the fill carries it right.
-
-    Elapsed is right-aligned to the played leading edge so it travels with the bar.
-    """
-    x = status_bar_elapsed_travel_x(
+    """Left edge of elapsed centered on the playhead."""
+    _ = park_x
+    return status_bar_elapsed_center_x(
         track_x=track_x,
         track_w=track_w,
         progress=progress,
         elapsed_w=elapsed_w,
         remaining_left_x=remaining_left_x,
         gap=gap,
+    ) - max(0.0, float(elapsed_w)) * 0.5
+
+
+def status_bar_elapsed_opacity(
+    *,
+    track_x: float,
+    track_w: float,
+    progress: float,
+    elapsed_w: float,
+    remaining_left_x: float | None,
+    gap: float = STATUS_BAR_ELAPSED_COLLIDE_GAP_PX,
+    fade_px: float = STATUS_BAR_ELAPSED_FADE_PX,
+) -> float:
+    """1 while there is room; 0 once the playhead would collide with remaining."""
+    if remaining_left_x is None or float(elapsed_w) <= 0.0:
+        return 1.0
+    playhead = status_bar_playhead_x(
+        track_x=track_x, track_w=track_w, progress=progress
     )
-    return max(float(park_x), x)
+    half = float(elapsed_w) * 0.5
+    room = float(remaining_left_x) - float(gap) - (playhead + half)
+    fade = max(1.0, float(fade_px))
+    if room >= fade:
+        return 1.0
+    if room <= 0.0:
+        return 0.0
+    return room / fade
+
+
+def now_playing_header_clock_text(now) -> str:
+    """Top-of-NP clock: ``10:23PM`` (no leading zero, no space)."""
+    hour = int(getattr(now, "hour", 0)) % 12
+    if hour == 0:
+        hour = 12
+    minute = int(getattr(now, "minute", 0))
+    suffix = "AM" if int(getattr(now, "hour", 0)) < 12 else "PM"
+    return f"{hour}:{minute:02d}{suffix}"
+
+
+def header_clock_center_x(
+    assignments: tuple[str, ...] | list[str] | None = None,
+) -> float:
+    """Horizontal center for the NP header clock.
+
+    Aligns with wide TT / album art (zone 6 or 7) when that card is on;
+    otherwise the frame midpoint.
+    """
+    wide = tt_countdown_16x9_zone(assignments or ())
+    if wide in (6, 7):
+        z = NOW_PLAYING_ZONES[int(wide)]
+        return float(z.x) + float(z.w) * 0.5
+    return float(DESIGN_W) * 0.5
 
 
 def status_bar_service_has_room(
@@ -764,6 +890,57 @@ def status_bar_service_has_room(
     if service_w <= 0:
         return False
     return float(elapsed_x) >= float(service_x) + float(service_w) + float(gap)
+
+
+def clock_saver_seconds_filled(second: int) -> int:
+    """How many of the 60 cells are on for clock second ``0..59``.
+
+    The current second's cell fills on the tick and stays until the next
+    second. ``:00`` shows 1 cell; ``:59`` shows all 60.
+    """
+    return (int(second) % 60) + 1
+
+
+def clock_saver_seconds_track_rect() -> tuple[int, int, int, int, int]:
+    """Design-space ``(x, y, w, h, radius)`` of the NP zone-5 status track."""
+    return design_rect_from_local(
+        NOW_PLAYING_ZONES[5],
+        STATUS_BAR_TRACK,
+        view_w=STATUS_BAR_VIEW_W,
+        view_h=STATUS_BAR_VIEW_H,
+    )
+
+
+def clock_saver_seconds_segment_rects(
+    track_xywh: tuple[float, float, float, float],
+    *,
+    count: int = CLOCK_SAVER_SECONDS_SEGMENTS,
+    gap: float = CLOCK_SAVER_SECONDS_GAP_PX,
+) -> list[tuple[int, int, int, int]]:
+    """``count`` equal cells across *track_xywh* with a fixed gap between them."""
+    x, y, w, h = (float(v) for v in track_xywh)
+    n = max(1, int(count))
+    g = max(0.0, float(gap))
+    usable = float(w) - g * (n - 1)
+    if usable < n:
+        g = 0.0
+        usable = float(w)
+    seg = usable / float(n)
+    yi = int(round(y))
+    hi = max(1, int(round(h)))
+    xs = [x + i * (seg + g) for i in range(n)]
+    rects: list[tuple[int, int, int, int]] = []
+    for i, x0 in enumerate(xs):
+        x1 = (x + w) if i == n - 1 else xs[i + 1] - g
+        rects.append(
+            (
+                int(round(x0)),
+                yi,
+                max(1, int(round(x1) - round(x0))),
+                hi,
+            )
+        )
+    return rects
 
 
 def status_bar_handoff_alphas(t: float) -> tuple[float, float, float]:
@@ -798,6 +975,13 @@ def letterbox_legacy_ui(image: np.ndarray) -> np.ndarray:
         # Already at design size or another raster — contain-fit into design.
         return scale_uniform_letterbox(src, int(DESIGN_W), int(DESIGN_H))
     return scale_uniform_letterbox(src, int(DESIGN_W), int(DESIGN_H))
+
+
+def is_native_design_frame(image: np.ndarray) -> bool:
+    """True when *image* is already the 1280×800 design canvas."""
+    if image is None or image.size == 0 or image.ndim < 2:
+        return False
+    return int(image.shape[1]) == int(DESIGN_W) and int(image.shape[0]) == int(DESIGN_H)
 
 
 def stamp_legacy_update_mark(image: np.ndarray, *, px: int = LEGACY_UPDATE_MARK_PX) -> None:

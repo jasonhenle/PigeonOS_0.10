@@ -55,6 +55,18 @@ DEFAULT_ZONE_WIDGETS: tuple[str, str, str, str, str] = (
     "status_bar",
 )
 
+# Music: wide album/TT, volume disc in zone 3, track titles in the zone-4 strip.
+DEFAULT_MUSIC_ZONE_WIDGETS: tuple[str, str, str, str, str] = (
+    "tt_countdown_16x9",
+    "",
+    "volume",
+    "cast_info",
+    "status_bar",
+)
+
+# Bump to rewrite persisted NP layouts / clocksaver defaults once.
+NP_ZONE_LAYOUT_GENERATION = 167
+
 # Spec catalog — which widgets may occupy each zone.
 ZONE_WIDGET_CATALOG: dict[int, tuple[str, ...]] = {
     1: (
@@ -86,8 +98,9 @@ ZONE_WIDGET_CATALOG: dict[int, tuple[str, ...]] = {
         "volume",
         "now_playing",
         "cast_info",
+        "clock_saver_volume",
     ),
-    4: ("cast_info",),
+    4: ("cast_info", "clock_saver_volume"),
     5: ("status_bar", "cast_info"),
 }
 
@@ -102,6 +115,7 @@ _WIDGET_SELECTOR_ORDER: tuple[str, ...] = (
     "now_playing",
     "status_bar",
     "cast_info",
+    "clock_saver_volume",
 )
 
 # Match settings_main EXIT geometry on the preferences artboard (viewBox +339,+440).
@@ -160,10 +174,27 @@ def _layer_key(el: ET.Element) -> str:
     return re.sub(r"\s+", "_", raw)
 
 
+def _defaults_for_mode(content_mode: str | None) -> tuple[str, str, str, str, str]:
+    mode = str(content_mode or "").strip().lower()
+    if mode == "music":
+        return DEFAULT_MUSIC_ZONE_WIDGETS
+    return DEFAULT_ZONE_WIDGETS
+
+
+def _state_key_for_mode(content_mode: str | None) -> str:
+    mode = str(content_mode or "").strip().lower()
+    if mode == "music":
+        return "now_playing_zone_widgets_music"
+    return "now_playing_zone_widgets"
+
+
 def _normalize_zone_widgets(
     values: tuple[str, ...] | list[str] | dict[int, str] | None,
+    *,
+    defaults: tuple[str, str, str, str, str] | None = None,
 ) -> tuple[str, str, str, str, str]:
-    base = list(DEFAULT_ZONE_WIDGETS)
+    base_defaults = list(defaults or DEFAULT_ZONE_WIDGETS)
+    base = list(base_defaults)
     if isinstance(values, dict):
         for z, name in values.items():
             try:
@@ -185,52 +216,116 @@ def _normalize_zone_widgets(
             out.append("")
             continue
         catalog = ZONE_WIDGET_CATALOG.get(zone, ())
-        out.append(name if name in catalog else DEFAULT_ZONE_WIDGETS[i])
+        out.append(name if name in catalog else base_defaults[i])
     return (out[0], out[1], out[2], out[3], out[4])
 
 
-def read_now_playing_zone_widgets() -> tuple[str, str, str, str, str]:
+def read_now_playing_zone_widgets(
+    content_mode: str | None = None,
+) -> tuple[str, str, str, str, str]:
+    defaults = _defaults_for_mode(content_mode)
+    key = _state_key_for_mode(content_mode)
     try:
         from pigeon.app_state import read_app_state
 
-        raw = read_app_state().get("now_playing_zone_widgets")
+        raw = read_app_state().get(key)
     except Exception:
         raw = None
     if isinstance(raw, dict):
-        return _normalize_zone_widgets(raw)
+        return _normalize_zone_widgets(raw, defaults=defaults)
     if isinstance(raw, list):
-        return _normalize_zone_widgets(raw)
-    return DEFAULT_ZONE_WIDGETS
+        return _normalize_zone_widgets(raw, defaults=defaults)
+    return defaults
 
 
 def write_now_playing_zone_widgets(
     values: tuple[str, ...] | list[str] | dict[int, str],
     *,
     persist: bool = True,
+    content_mode: str | None = None,
 ) -> tuple[str, str, str, str, str]:
     """Normalize zone widgets; optionally persist to app state.
 
     Live widget-nav preview should pass ``persist=False`` so the Pi SD card is
     not rewritten on every Left/Right. Persist on activate / BACK / exit.
     """
-    norm = _normalize_zone_widgets(values)
+    defaults = _defaults_for_mode(content_mode)
+    key = _state_key_for_mode(content_mode)
+    norm = _normalize_zone_widgets(values, defaults=defaults)
     if not persist:
         return norm
     try:
         from pigeon.app_state import write_app_state
 
         write_app_state(
-            now_playing_zone_widgets={
-                "1": norm[0],
-                "2": norm[1],
-                "3": norm[2],
-                "4": norm[3],
-                "5": norm[4],
+            **{
+                key: {
+                    "1": norm[0],
+                    "2": norm[1],
+                    "3": norm[2],
+                    "4": norm[3],
+                    "5": norm[4],
+                }
             }
         )
     except Exception:
         pass
     return norm
+
+
+def read_np_header_clock() -> bool:
+    try:
+        from pigeon.app_state import read_app_state
+
+        raw = read_app_state().get("np_header_clock")
+    except Exception:
+        raw = None
+    if raw is None:
+        return True
+    return bool(raw)
+
+
+def write_np_header_clock(on: bool, *, persist: bool = True) -> bool:
+    flag = bool(on)
+    if not persist:
+        return flag
+    try:
+        from pigeon.app_state import write_app_state
+
+        write_app_state(np_header_clock=flag)
+    except Exception:
+        pass
+    return flag
+
+
+def ensure_now_playing_layout_defaults() -> None:
+    """Once per generation: video/music zone defaults, header clock, digital °F."""
+    try:
+        from pigeon.app_state import read_app_state, write_app_state
+
+        gen = int(read_app_state().get("np_zone_layout_generation") or 0)
+    except Exception:
+        return
+    if gen >= int(NP_ZONE_LAYOUT_GENERATION):
+        return
+    write_now_playing_zone_widgets(DEFAULT_ZONE_WIDGETS)
+    write_now_playing_zone_widgets(
+        DEFAULT_MUSIC_ZONE_WIDGETS, content_mode="music"
+    )
+    write_np_header_clock(True)
+    try:
+        from pigeon.widgets.options_settings import read_options, write_options
+
+        opts = read_options()
+        opts["clock_format"] = "digital"
+        opts["temp_format"] = "f"
+        write_options(opts)
+    except Exception:
+        pass
+    try:
+        write_app_state(np_zone_layout_generation=int(NP_ZONE_LAYOUT_GENERATION))
+    except Exception:
+        pass
 
 
 def zone0_date_align(
@@ -1386,8 +1481,9 @@ def _draw_preferences_volume_bgra(
     centers: dict[int, tuple[float, float]],
     state: MainSettingsState | None = None,
 ) -> None:
-    """Zones 1–3 volume: UI-color level pie + centered dB (no config label here)."""
+    """Zones 1–3 volume: UI-color level pie + centered number (no dB suffix)."""
     from pigeon.widgets import view_circles as vc
+    from pigeon.widgets.playback_overlay import volume_widget_value_text
 
     if not centers:
         return
@@ -1453,7 +1549,7 @@ def _draw_preferences_volume_bgra(
         )
         if vol:
             vol_p, _, _ = vc._volume_readout_patch(
-                vol,
+                volume_widget_value_text(vol),
                 inner_r=inner_r,
                 max_size_px=_PREFS_VOLUME_SIZE_PX,
             )
@@ -2210,7 +2306,7 @@ def _draw_preferences_tt_countdown_bgra(
     bgra: np.ndarray,
     state: MainSettingsState,
 ) -> None:
-    """Schematic tt_countdown preview: hugged plate, demo title, demo countdown."""
+    """Schematic tt_countdown preview: demo title and countdown, no plate."""
     from pigeon.np_layout import apply_tt_countdown_16x9_override
 
     assignments = apply_tt_countdown_16x9_override(
@@ -2227,22 +2323,23 @@ def _draw_preferences_tt_countdown_bgra(
     from pigeon.np_layout import (
         TT_COUNTDOWN_16X9_VIEW_H,
         TT_COUNTDOWN_16X9_VIEW_W,
-        TT_COUNTDOWN_BG_PAD,
-        TT_COUNTDOWN_CARD_RADIUS,
         TT_COUNTDOWN_TEXT_SIZE_PX,
         TT_COUNTDOWN_VIEW_H,
         TT_COUNTDOWN_VIEW_W,
+        VOLUME_LOCAL_CY,
+        VOLUME_VIEW_H,
+        layout_shows_tt_countdown_and_volume,
         tt_countdown_16x9_content_lift,
         tt_countdown_16x9_time_anchor,
         tt_countdown_16x9_tt_box,
         tt_countdown_portrait_content_lift,
         tt_countdown_time_anchor,
         tt_countdown_tt_box,
+        tt_countdown_volume_align_dy,
     )
     from pigeon.widgets.view_circles import (
         _load_sharp_semibold,
         _paste_patch_bgra,
-        _rounded_rect_mask,
         _text_patch_font,
         _tt_countdown_time_patch,
     )
@@ -2314,21 +2411,32 @@ def _draw_preferences_tt_countdown_bgra(
         by0 = min(b[1] for b in boxes)
         bx1 = max(b[0] + b[2] for b in boxes)
         by1 = max(b[1] + b[3] for b in boxes)
-        pad = TT_COUNTDOWN_BG_PAD * s
-        card_w = max(1, int(round((bx1 - bx0) + 2.0 * pad)))
-        card_h = max(1, int(round((by1 - by0) + 2.0 * pad)))
-        card = np.zeros((card_h, card_w, 4), dtype=np.uint8)
-        card[:, :, 3] = _rounded_rect_mask(
-            card_w,
-            card_h,
-            max(1, int(round(TT_COUNTDOWN_CARD_RADIUS * s))),
-        )
-        _paste_patch_bgra(
-            bgra,
-            card,
-            int(round(bx0 - pad)),
-            int(round(by0 - pad)),
-        )
+        view_cy = cy0 + chh / 2.0
+        dy_center = view_cy - (by0 + by1) / 2.0
+        if abs(dy_center) >= 0.5:
+            by0 += dy_center
+            by1 += dy_center
+            tt_py += dy_center
+            trt_py += dy_center
+        if layout_shows_tt_countdown_and_volume(assignments):
+            vol_zone = next(
+                (i + 1 for i, n in enumerate(assignments[:3]) if n == "volume"),
+                None,
+            )
+            if vol_zone is not None and vol_zone in _PREFS_POSTER_FRAMES:
+                _vfx, vfy, _vfw, vfh, _ = _PREFS_POSTER_FRAMES[vol_zone]
+                vol_cy = (vfy + VOLUME_LOCAL_CY / VOLUME_VIEW_H * vfh - vb_y) * sy
+                zone_top = (fy - vb_y) * sy
+                zone_bot = zone_top + fh * sy
+                dy_align = tt_countdown_volume_align_dy(
+                    plate_top=by0,
+                    plate_bottom=by1,
+                    volume_cy=vol_cy,
+                    zone_top=zone_top,
+                    zone_bottom=zone_bot,
+                )
+                tt_py += dy_align
+                trt_py += dy_align
         _paste_patch_bgra(
             bgra,
             title_patch,
@@ -2549,14 +2657,19 @@ def clear_preferences_render_caches() -> None:
 
 
 __all__ = [
+    "DEFAULT_MUSIC_ZONE_WIDGETS",
     "DEFAULT_ZONE_WIDGETS",
+    "NP_ZONE_LAYOUT_GENERATION",
     "ZONE_WIDGET_CATALOG",
     "apply_preferences_svg_state",
     "default_preferences_svg_path",
+    "ensure_now_playing_layout_defaults",
     "preferences_widget_focus_ring",
     "preferences_zone_focus_ring",
+    "read_np_header_clock",
     "read_now_playing_zone_widgets",
     "render_preferences_settings_bgra",
+    "write_np_header_clock",
     "write_now_playing_zone_widgets",
     "zone0_date_align",
 ]

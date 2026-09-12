@@ -9,7 +9,8 @@ SYSTEM_DIR="${ROOT}/pigeonSystem"
 VENV_REBUILD_REASON=""
 
 if command -v flock >/dev/null 2>&1; then
-  LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/pigeon-$(id -u).lock"
+  # Always /tmp so systemd and the labwc session share one lock.
+  LOCK_FILE="/tmp/pigeon-$(id -u).lock"
   exec 9>"${LOCK_FILE}"
   if ! flock -n 9; then
     echo "pigeon: another Pigeon instance is already running." >&2

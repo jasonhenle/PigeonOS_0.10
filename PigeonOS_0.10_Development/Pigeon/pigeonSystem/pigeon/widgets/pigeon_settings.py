@@ -1098,7 +1098,10 @@ def factory_reset_pigeon_persisted_state() -> None:
     )
     from pigeon.runtime_paths import pigeon_state_dir
     from pigeon.widgets.preferences_settings import (
+        DEFAULT_MUSIC_ZONE_WIDGETS,
         DEFAULT_ZONE_WIDGETS,
+        NP_ZONE_LAYOUT_GENERATION,
+        write_np_header_clock,
         write_now_playing_zone_widgets,
     )
     from pigeon.widgets.ui_color_settings import write_ui_color_keys
@@ -1115,6 +1118,9 @@ def factory_reset_pigeon_persisted_state() -> None:
     pop_app_state_keys(
         "settings_ui_colors",
         "now_playing_zone_widgets",
+        "now_playing_zone_widgets_music",
+        "np_header_clock",
+        "np_zone_layout_generation",
         "display_par_mode",
         "roku_ecp_base_url",
         "tmdb_quality_ok_count",
@@ -1127,6 +1133,16 @@ def factory_reset_pigeon_persisted_state() -> None:
         persist=True,
     )
     write_now_playing_zone_widgets(DEFAULT_ZONE_WIDGETS)
+    write_now_playing_zone_widgets(
+        DEFAULT_MUSIC_ZONE_WIDGETS, content_mode="music"
+    )
+    write_np_header_clock(True)
+    try:
+        from pigeon.app_state import write_app_state
+
+        write_app_state(np_zone_layout_generation=int(NP_ZONE_LAYOUT_GENERATION))
+    except Exception:
+        pass
     try:
         purge_directory_contents(pigeon_pulled_media_dir())
     except Exception:

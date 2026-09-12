@@ -139,6 +139,26 @@ def receiver_audio_config_display_line(incoming: str, config: str) -> str:
     return inc or cfg
 
 
+def volume_widget_format_label(
+    incoming: str,
+    config: str,
+    receiver_name: str = "",
+) -> str:
+    """Caption above the volume disc: known audio format, else receiver name."""
+    line = receiver_audio_config_display_line(incoming, config)
+    if line:
+        return line
+    return str(receiver_name or "").strip()
+
+
+def volume_widget_value_text(raw: object) -> str:
+    """Numeric volume for the disc center — the ``dB`` suffix is never drawn."""
+    line = _receiver_volume_display_line(raw)
+    if not line:
+        return ""
+    return re.sub(r"\s*dB\s*$", "", line, flags=re.I).strip()
+
+
 # Volume unknown / idle placeholders from receiver poll — do not draw (glyphs read as a slab).
 _VOLUME_PLACEHOLDER_CHARS = frozenset("—–-−")  # em dash, en dash, ASCII hyphen, minus sign
 

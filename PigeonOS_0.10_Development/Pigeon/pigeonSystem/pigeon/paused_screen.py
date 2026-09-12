@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import cv2
+import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+from pigeon.compositing import cv_resize_interp
 from pigeon.design import DESIGN_H
 
 PAUSED_SCREEN_TEXT = "paused"
@@ -12,6 +15,43 @@ PAUSED_SCREEN_BAR_BOTTOM_PX = 50
 PAUSED_SCREEN_BAR_PAD_X_PX = 48
 PAUSED_SCREEN_BAR_PAD_Y_PX = 22
 PAUSED_SCREEN_BAR_RADIUS_PX = 28
+
+
+def cover_scale_and_crop(
+    frame_bgr: np.ndarray, target_w: int, target_h: int
+) -> np.ndarray:
+    """Scale so *frame_bgr* fills ``target_w``×``target_h``, then center-crop.
+
+    Square album art on a wide display is cropped top/bottom instead of
+    pillarboxed. Landscape TMDb backdrops crop the sides the same way.
+    """
+    tw = max(1, int(target_w))
+    th = max(1, int(target_h))
+    if frame_bgr is None or getattr(frame_bgr, "size", 0) == 0:
+        return np.zeros((th, tw, 3), dtype=np.uint8)
+    src = np.ascontiguousarray(frame_bgr)
+    if src.ndim == 2:
+        src = cv2.cvtColor(src, cv2.COLOR_GRAY2BGR)
+    elif src.ndim == 3 and src.shape[2] > 3:
+        src = src[:, :, :3]
+    src_h, src_w = int(src.shape[0]), int(src.shape[1])
+    if src_h < 1 or src_w < 1:
+        return np.zeros((th, tw, 3), dtype=np.uint8)
+    scale = max(tw / float(src_w), th / float(src_h))
+    nw = max(1, int(round(src_w * scale)))
+    nh = max(1, int(round(src_h * scale)))
+    resized = cv2.resize(
+        src, (nw, nh), interpolation=cv_resize_interp(src_w, src_h, nw, nh)
+    )
+    x0 = max(0, (nw - tw) // 2)
+    y0 = max(0, (nh - th) // 2)
+    crop = resized[y0 : y0 + th, x0 : x0 + tw]
+    ch, cw = int(crop.shape[0]), int(crop.shape[1])
+    if ch == th and cw == tw:
+        return crop
+    out = np.zeros((th, tw, 3), dtype=np.uint8)
+    out[: min(ch, th), : min(cw, tw)] = crop[: min(ch, th), : min(cw, tw)]
+    return out
 
 
 def paused_screen_scale(cap_h: int, *, design_h: int = DESIGN_H) -> float:

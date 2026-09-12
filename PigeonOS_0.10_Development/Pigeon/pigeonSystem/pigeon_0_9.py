@@ -34,6 +34,7 @@ APPLE_TV_POLL_MS = 3000
 APPLE_TV_IDLE_POLL_MS = 6000
 APPLE_TV_FAIL_POLL_MAX_MS = 15000
 RECEIVER_POLL_MS = 750
+RECEIVER_VOLUME_POLL_MS = 500
 PLAYBACK_UI_TICK_MS = 1000  # fallback first delay only; actual spacing uses monotonic deadlines
 # Title / TMDb logo (views 1/3/5; not view 2 visualizer): 5×2 top-right at grid (1.5, 13); top-aligned in cell.
 TMDB_LOGO_ANCHOR_ROW = 1.5
@@ -174,6 +175,8 @@ render_ui_music_text_patch_bgra = None  # type: ignore[misc, assignment]
 load_pigeon_temp_logo_bgra = None  # type: ignore[misc, assignment]
 StatusBarWidget = None  # type: ignore[misc, assignment]
 clock_saver_composite_bgra = None  # type: ignore[misc, assignment]
+ClockSaverVolumeHold = None  # type: ignore[misc, assignment]
+VolumeLineReveal = None  # type: ignore[misc, assignment]
 PlaybackOverlayWidget = None  # type: ignore[misc, assignment]
 compose_playback_volume_widget_line = None  # type: ignore[misc, assignment]
 PATCH_LAYER_RECEIVER_AUDIO = "receiver_audio"  # type: ignore[misc, assignment]
@@ -230,7 +233,27 @@ try:
 except ImportError as _exc:
     _log_optional_import_failure("core_compositing", _exc)
 
-from pigeon.paused_screen import PAUSED_SCREEN_TEXT, paint_paused_screen_label
+from pigeon.linux_kiosk import (
+    apply_kiosk_fullscreen,
+    enforce_kiosk,
+    linux_kiosk_enabled,
+    release_kiosk,
+    schedule_kiosk_guard,
+    window_covers_display,
+)
+from pigeon.clock_saver_policy import (
+    CLOCK_SAVER_PAUSED_AFTER_S,
+    clock_saver_due_for_no_content,
+    clock_saver_due_for_pause,
+    next_paused_since_mono,
+    should_hold_paused_screen,
+    tmdb_should_skip_refetch_on_resume,
+)
+from pigeon.paused_screen import (
+    PAUSED_SCREEN_TEXT,
+    cover_scale_and_crop,
+    paint_paused_screen_label,
+)
 
 try:
     from pigeon.widgets.clock_calendar import (
@@ -248,7 +271,11 @@ try:
     )
     from pigeon.widgets.logo_tmdb import TmdbLogoWidget
     from pigeon.widgets.status_bar import StatusBarWidget
-    from pigeon.widgets.clock_saver import clock_saver_composite_bgra
+    from pigeon.widgets.clock_saver import (
+        ClockSaverVolumeHold,
+        VolumeLineReveal,
+        clock_saver_composite_bgra,
+    )
 except ImportError as _exc:
     _log_optional_import_failure("clock_status_widgets", _exc)
 
@@ -398,16 +425,19 @@ def _present_frame_to_display(
     Applies pixel-aspect compensation when the panel PAR is non-square (e.g. official
     Pi 7″ touchscreen) so designed circles stay round on glass.
 
-    Screens that are not the rebuilt now-playing layout get a red square at (0, 0).
+    Leftover 800×480 screens get a red square at (0, 0). Native 1280×800
+    frames (now-playing, clock saver, splash) are already at design size
+    and must not be stamped.
     """
     dw = max(1, int(display_w))
     dh = max(1, int(display_h))
     if not native_now_playing:
         try:
-            from pigeon.np_layout import stamp_legacy_update_mark
+            from pigeon.np_layout import is_native_design_frame, stamp_legacy_update_mark
 
-            image = np.ascontiguousarray(image.copy())
-            stamp_legacy_update_mark(image)
+            if not is_native_design_frame(image):
+                image = np.ascontiguousarray(image.copy())
+                stamp_legacy_update_mark(image)
         except Exception:
             pass
     try:
@@ -567,6 +597,7 @@ CLOCK_SAVER_POSITION_STALL_GRACE_S = 5.0
 # frame/title changes also refresh the stamp. When metadata is driving the saver,
 # the HDMI 24-OCR streak rule is ignored.
 CLOCK_SAVER_METADATA_IDLE_AFTER_S = 120.0
+# Pause-hold span is CLOCK_SAVER_PAUSED_AFTER_S (clock_saver_policy).
 
 # Idle composite cadence when video is paused (lower than live playback).
 PAUSED_COMPOSITE_MS = 83  # ~12 FPS
@@ -887,19 +918,69 @@ def main() -> int:
         int(round((DISPLAY_H // 2) * _LAUNCH_WINDOW_SCALE)),
     )
     root.resizable(True, True)
-    try:
-        root.wm_aspect(5, 3, 5, 3)
-    except tk.TclError:
-        pass
-    if sys.platform == "linux" and _env_truthy("PIGEON_PI_FULLSCREEN", default=True):
+    _kiosk_stopped_pids: list[int] = []
+    _kiosk_on = bool(linux_kiosk_enabled())
+    if not _kiosk_on:
         try:
-            root.attributes("-fullscreen", True)
+            root.wm_aspect(5, 3, 5, 3)
         except tk.TclError:
+            pass
+
+    _kiosk_logged = [False]
+
+    def _reassert_kiosk(_event: object | None = None) -> None:
+        if not _kiosk_on:
+            return
+        try:
+            updated = enforce_kiosk(root, _kiosk_stopped_pids, borderless=True)
+        except Exception:
+            updated = list(_kiosk_stopped_pids)
+        _kiosk_stopped_pids[:] = updated
+        if _kiosk_logged[0]:
+            return
+        try:
+            covers = bool(window_covers_display(root))
+        except Exception:
+            covers = False
+        if covers:
+            _kiosk_logged[0] = True
             try:
-                root.state("zoomed")
-            except tk.TclError:
+                sys.stderr.write(
+                    f"pigeon: kiosk {root.winfo_width()}x{root.winfo_height()}"
+                    f"+{root.winfo_rootx()}+{root.winfo_rooty()} "
+                    f"screen={root.winfo_screenwidth()}x{root.winfo_screenheight()}\n"
+                )
+                sys.stderr.flush()
+            except Exception:
                 pass
-    root.protocol("WM_DELETE_WINDOW", root.quit)
+
+    if _kiosk_on:
+        apply_kiosk_fullscreen(root, borderless=False)
+        try:
+            root.bind("<Map>", _reassert_kiosk)
+        except tk.TclError:
+            pass
+        try:
+            root.after(200, _reassert_kiosk)
+            root.after(800, _reassert_kiosk)
+        except tk.TclError:
+            pass
+        schedule_kiosk_guard(root, _kiosk_stopped_pids)
+
+    def _restore_desktop_chrome() -> None:
+        if _kiosk_stopped_pids or _kiosk_on:
+            release_kiosk(list(_kiosk_stopped_pids))
+            _kiosk_stopped_pids.clear()
+
+    def _quit_pigeon() -> None:
+        _restore_desktop_chrome()
+        root.quit()
+
+    root.protocol("WM_DELETE_WINDOW", _quit_pigeon)
+    if _kiosk_on:
+        import atexit
+
+        atexit.register(_restore_desktop_chrome)
     # Ensure unexpected Tk callback errors are surfaced (and don't silently kill UI behavior).
     def _report_callback_exception(exc, val, tb) -> None:  # type: ignore[no-untyped-def]
         # Tk calls this as report_callback_exception(exc, val, tb) — no bound self.
@@ -911,6 +992,8 @@ def main() -> int:
             sys.stderr.flush()
         except Exception:
             pass
+        if _kiosk_on:
+            return
         try:
             messagebox.showerror("Pigeon error", text)
         except Exception:
@@ -960,6 +1043,118 @@ def main() -> int:
     post_splash_mono: list[float | None] = [None]
     _post_splash_startup_hook: list[object] = [None]
 
+    _clock_saver_volume = (
+        ClockSaverVolumeHold() if ClockSaverVolumeHold is not None else None
+    )
+    if _clock_saver_volume is None:
+        class _NullClockSaverVolumeHold:
+            hold = ""
+            pre_mute = ""
+
+            def remember(self, raw, *, source="poll", hold_s=None, now=None):
+                return str(raw or "")
+
+            def pick(self, candidates, *, now=None, receiver_off=False):
+                if receiver_off:
+                    self.hold = ""
+                    return ""
+                for raw in candidates:
+                    s = str(raw or "").strip()
+                    if s:
+                        return s
+                return ""
+
+            def is_stale_poll(self, raw, *, now=None):
+                return False
+
+            def in_nudge_grace(self, now=None):
+                return False
+
+            def clear(self):
+                self.hold = ""
+
+        _clock_saver_volume = _NullClockSaverVolumeHold()
+
+    _volume_lines = VolumeLineReveal() if VolumeLineReveal is not None else None
+    if _volume_lines is None:
+        class _NullVolumeLineReveal:
+            def note(self, raw, *, now=None):
+                return None
+
+            def opacity(self, now=None):
+                return 0.0
+
+            def fading(self, now=None):
+                return False
+
+        _volume_lines = _NullVolumeLineReveal()
+
+    def _note_volume_graphics(raw: object) -> None:
+        try:
+            _volume_lines.note(raw)
+        except Exception:
+            pass
+
+    def _remember_clock_saver_volume(raw: object, *, source: str = "poll") -> str:
+        """Keep the last displayable saver volume; empty / stale polls do not clear it."""
+        return _clock_saver_volume.remember(raw, source=source)
+
+    def _clock_saver_receiver_off() -> bool:
+        """True when the AVR is in standby or not answering — hide the saver volume."""
+        try:
+            if bool(receiver_standby_holder[0]):
+                return True
+        except NameError:
+            pass
+        try:
+            from pigeon.runtime_state import core_state
+
+            rx = core_state().receiver
+            if bool(getattr(rx, "standby", False)):
+                return True
+            if not bool(getattr(rx, "reachable", False)):
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _clock_saver_volume_raw() -> str:
+        """AVR master volume for the saver + NP disc (box 3). Live poll wins."""
+        candidates: list[object] = []
+        try:
+            candidates.append(denon_vol_cache.get("effective"))
+            candidates.append(denon_vol_cache.get("np_hold"))
+        except NameError:
+            pass
+        try:
+            candidates.append(receiver_overlay_state.get("volume"))
+        except NameError:
+            pass
+        try:
+            from pigeon.runtime_state import core_state
+
+            candidates.append(core_state().receiver.volume)
+        except Exception:
+            pass
+        try:
+            st = getattr(view_circles_widget, "_state", None)
+            candidates.append(getattr(st, "volume", ""))
+        except NameError:
+            pass
+        except Exception:
+            pass
+        return _clock_saver_volume.pick(candidates)
+
+    def _clock_saver_layers(**kwargs):
+        if "volume" not in kwargs:
+            kwargs["volume"] = _clock_saver_volume_raw()
+        if "line_opacity" not in kwargs:
+            try:
+                kwargs["line_opacity"] = _volume_lines.opacity()
+            except Exception:
+                kwargs["line_opacity"] = 0.0
+        return clock_saver_composite_bgra(**kwargs)
+
     def _rasterize_clock_saver_window_bgr() -> np.ndarray | None:
         """Full-window BGR clock saver, or None."""
         if clock_saver_composite_bgra is None or alpha_blend_bgra_over_bgr is None:
@@ -968,7 +1163,7 @@ def main() -> int:
             dw = int(DESIGN_W) if int(DESIGN_W) > 0 else int(UI_TARGET_W)
             dh = int(DESIGN_H) if int(DESIGN_H) > 0 else int(UI_TARGET_H)
             canvas = np.zeros((dh, dw, 3), dtype=np.uint8)
-            (time_bgra, t_rect), (date_bgra, d_rect) = clock_saver_composite_bgra(
+            (time_bgra, t_rect), (date_bgra, d_rect) = _clock_saver_layers(
                 shadow_bgr=None,
                 layer_opacity=1.0,
                 time_layer_opacity=1.0,
@@ -989,7 +1184,11 @@ def main() -> int:
                 if patch.shape[0] != roi.shape[0] or patch.shape[1] != roi.shape[1]:
                     continue
                 roi[:] = alpha_blend_bgra_over_bgr(roi, patch)
-            return np.ascontiguousarray(_present_frame_to_display(canvas, WINDOW_W, WINDOW_H))
+            return np.ascontiguousarray(
+                _present_frame_to_display(
+                    canvas, WINDOW_W, WINDOW_H, native_now_playing=True
+                )
+            )
         except Exception:
             return None
 
@@ -1067,6 +1266,7 @@ def main() -> int:
         try:
             _splash_rgb_cache.clear()
             _splash_bgra_cache.clear()
+            _splash_photo_cache.clear()
             splash_photo[0] = None
         except NameError:
             pass
@@ -1125,8 +1325,9 @@ def main() -> int:
         splash_label.pack(expand=True, fill="both")
         splash_photo: list[ImageTk.PhotoImage | None] = [None]
         splash_idx = [0]
-        # Set on the first ``splash_tick`` so setup/prebake time doesn't skip early frames.
+        # Set after a lead buffer is baked so the Pi does not skip/hitch on PNG decode.
         splash_t0: list[float | None] = [None]
+        _splash_wait_deadline: list[float | None] = [None]
         _splash_bg_bgr = (0, 0, 0)
         # Black underlay until frame 90 — early PNG frames are transparent and must not reveal the clock.
         _splash_underlay_bgr[0] = np.zeros((WINDOW_H, WINDOW_W, 3), dtype=np.uint8)
@@ -1216,7 +1417,29 @@ def main() -> int:
         #   * _splash_bgra_cache: BGRA fallback for live composite over clock when RGB not ready.
         _splash_rgb_cache: dict[int, np.ndarray] = {}
         _splash_bgra_cache: dict[int, np.ndarray] = {}
+        _splash_photo_cache: dict[int, ImageTk.PhotoImage] = {}
         _splash_prebake_done = [False]
+
+        def _splash_photo_from_rgb(rgb: np.ndarray) -> ImageTk.PhotoImage:
+            return ImageTk.PhotoImage(image=Image.fromarray(rgb, "RGB"))
+
+        def _splash_prebuild_photos(*, limit: int) -> int:
+            """Turn already-decoded RGB frames into Tk images on the UI thread."""
+            built = 0
+            for ii in range(splash_total_frames):
+                if built >= limit:
+                    break
+                if ii in _splash_photo_cache:
+                    continue
+                rgb = _splash_rgb_cache.get(ii)
+                if rgb is None:
+                    continue
+                try:
+                    _splash_photo_cache[ii] = _splash_photo_from_rgb(rgb)
+                except Exception:
+                    break
+                built += 1
+            return built
         _splash_video_cap_holder: list[cv2.VideoCapture | None] = [None]
 
         def _splash_raw_bgra(ii: int) -> np.ndarray | None:
@@ -1230,15 +1453,14 @@ def main() -> int:
             )
 
         def _splash_bgra_over_bgr_to_rgb(bgra: np.ndarray, under_bgr: np.ndarray) -> np.ndarray:
-            a = bgra[:, :, 3:4].astype(np.float32) / 255.0
+            a = bgra[:, :, 3].astype(np.uint16)
+            inv = 255 - a
             blended = (
-                bgra[:, :, :3].astype(np.float32) * a
-                + under_bgr.astype(np.float32) * (1.0 - a)
-            )
-            rgb = cv2.cvtColor(
-                np.clip(blended, 0, 255).astype(np.uint8),
-                cv2.COLOR_BGR2RGB,
-            )
+                bgra[:, :, :3].astype(np.uint16) * a[:, :, None]
+                + under_bgr.astype(np.uint16) * inv[:, :, None]
+                + 127
+            ) // 255
+            rgb = cv2.cvtColor(blended.astype(np.uint8), cv2.COLOR_BGR2RGB)
             return np.ascontiguousarray(rgb)
 
         def _splash_store_prebaked(ii: int, bgra_window: np.ndarray) -> None:
@@ -1396,16 +1618,7 @@ def main() -> int:
             if under is None or under.ndim != 3 or under.shape[:2] != bgra_out.shape[:2]:
                 rgb = flatten_bgra_over_bg_to_rgb(bgra_out, _splash_bg_bgr)
             else:
-                a = bgra_out[:, :, 3:4].astype(np.float32) / 255.0
-                blended = (
-                    bgra_out[:, :, :3].astype(np.float32) * a
-                    + under.astype(np.float32) * (1.0 - a)
-                )
-                rgb = cv2.cvtColor(
-                    np.clip(blended, 0, 255).astype(np.uint8),
-                    cv2.COLOR_BGR2RGB,
-                )
-                rgb = np.ascontiguousarray(rgb)
+                rgb = _splash_bgra_over_bgr_to_rgb(bgra_out, under)
             splash_photo[0] = ImageTk.PhotoImage(image=Image.fromarray(rgb, "RGB"))
 
         def splash_tick() -> None:
@@ -1427,14 +1640,55 @@ def main() -> int:
             ntot = splash_total_frames
             now = time.monotonic()
             if splash_t0[0] is None:
+                if _splash_wait_deadline[0] is None:
+                    _splash_wait_deadline[0] = now + 3.6
+                # Hold the clock until the reveal neighborhood is warm so the
+                # Pi does not hitch or jump when PNG alpha starts punching through.
+                lead_need = min(ntot, max(48, int(_splash_reveal_i) + 8))
+                lead = 0
+                for k in range(lead_need):
+                    if k in _splash_rgb_cache or k in _splash_bgra_cache:
+                        lead += 1
+                ready0 = 0 in _splash_rgb_cache or 0 in _splash_bgra_cache
+                if ready0 and splash_photo[0] is None:
+                    ph0 = _splash_photo_cache.get(0)
+                    if ph0 is None:
+                        rgb0 = _splash_rgb_cache.get(0)
+                        if rgb0 is not None:
+                            try:
+                                ph0 = _splash_photo_from_rgb(rgb0)
+                                _splash_photo_cache[0] = ph0
+                            except Exception:
+                                ph0 = None
+                    if ph0 is not None:
+                        splash_photo[0] = ph0
+                        try:
+                            splash_label.configure(image=ph0)
+                        except Exception:
+                            pass
+                _splash_prebuild_photos(limit=6)
+                if (
+                    lead < lead_need
+                    and not _splash_prebake_done[0]
+                    and now < float(_splash_wait_deadline[0])
+                ):
+                    root.after(8, splash_tick)
+                    return
                 splash_t0[0] = now
+                try:
+                    sys.stderr.write(
+                        f"pigeon: splash play start frames={ntot} lead={lead}/{lead_need} "
+                        f"photos={len(_splash_photo_cache)} "
+                        f"+{now - _app_startup_mono:.3f}s\n"
+                    )
+                    sys.stderr.flush()
+                except Exception:
+                    pass
             t0 = float(splash_t0[0])
-            if now - t0 > float(SPLASH_MAX_DURATION_S):
+            if float(SPLASH_MAX_DURATION_S) > 0 and now - t0 > float(SPLASH_MAX_DURATION_S):
                 splash_idx[0] = ntot
-            # Wall-clock frame index — skip frames when the UI thread is behind so the
-            # sequence ends on time instead of stretching the last frames.
-            wall_i = int((now - t0) / frame_dt)
-            i = max(int(splash_idx[0]), min(wall_i, ntot))
+            # Strict order. A held frame looks better than a skip on the Pi.
+            i = min(int(splash_idx[0]), ntot)
             if i >= ntot:
                 splash_anim_done[0] = True
                 try:
@@ -1458,13 +1712,8 @@ def main() -> int:
                     rgb_hit = _splash_rgb_cache.get(i)
                     bgra_hit = _splash_bgra_cache.get(i) if rgb_hit is None else None
                 if rgb_hit is None and bgra_hit is None:
-                    # Don't stall the wall clock on a missing frame — skip ahead if later
-                    # frames are already baked, else retry briefly.
-                    for j in range(i + 1, min(i + 8, ntot)):
-                        if j in _splash_rgb_cache or j in _splash_bgra_cache:
-                            splash_idx[0] = j
-                            break
-                    root.after(2, splash_tick)
+                    # Wait for the prebake worker instead of jumping — skips look choppy.
+                    root.after(8, splash_tick)
                     return
 
             # Frame 90+: swap clock under the splash (prewarmed). Before that: black only.
@@ -1494,9 +1743,12 @@ def main() -> int:
             splash_idx[0] = i + 1
 
             try:
-                if rgb_hit is not None:
-                    # Fast path: opaque RGB → Tk's direct blit (no per-pixel alpha work).
-                    splash_photo[0] = ImageTk.PhotoImage(image=Image.fromarray(rgb_hit, "RGB"))
+                ph = _splash_photo_cache.get(i)
+                if ph is None and rgb_hit is not None:
+                    ph = _splash_photo_from_rgb(rgb_hit)
+                    _splash_photo_cache[i] = ph
+                if ph is not None:
+                    splash_photo[0] = ph
                 else:
                     fade_mul = (
                         splash_end_fade_factor(i, ntot, min(_splash_fade_frames, ntot))
@@ -1515,8 +1767,10 @@ def main() -> int:
                 except Exception:
                     pass
             splash_label.configure(image=splash_photo[0])
+            # Warm one upcoming frame only — extra encodes on this tick cause hitching.
+            _splash_prebuild_photos(limit=1)
 
-            # Schedule the next wall-clock frame; if we're behind, run ASAP and skip.
+            # Hold a late frame rather than jumping; catch up on the next tick.
             now2 = time.monotonic()
             next_i = int(splash_idx[0])
             target = t0 + float(next_i) * frame_dt
@@ -2036,7 +2290,7 @@ def main() -> int:
             highlightthickness=1,
             highlightbackground="#553333",
             bd=0,
-            cursor="hand2",
+            cursor="none" if _kiosk_on else "hand2",
             padx=8,
             pady=0,
             command=lambda: None,
@@ -2316,30 +2570,17 @@ def main() -> int:
 
         def _resolve_receiver_lines_for_now_playing() -> tuple[str, str, str]:
             """Incoming/config/volume for View 1, with Denon telnet fallback."""
-            if bool(receiver_standby_holder[0]):
-                # Standby hides source/format, but keep the last/current MV so
-                # the volume widget does not go blank while the AVR still
-                # answers (network-eco / false STANDBY).
-                vol = ""
-                if compose_playback_volume_widget_line is not None:
-                    vol = compose_playback_volume_widget_line(
-                        stream_row=streaming_slot_holder[0],
-                        apple_tv_last_metadata=apple_tv_auto_state.get("last_metadata")
-                        if isinstance(apple_tv_auto_state.get("last_metadata"), dict)
-                        else None,
-                        denon_vol_effective=str(denon_vol_cache.get("effective") or ""),
-                        roku_tv_volume_percent="",
-                    )
-                if not vol:
-                    vol = str(denon_vol_cache.get("np_hold") or "").strip()
-                return "", "", vol
-            inc = str(receiver_overlay_state.get("incoming") or "").strip()
-            cfg = str(receiver_overlay_state.get("config") or "").strip()
-            if not inc and not cfg:
-                fb_inc, fb_cfg = _denon_telnet_audio_fallback()
-                inc, cfg = fb_inc, fb_cfg
-            vol = ""
-            if compose_playback_volume_widget_line is not None:
+            standby = bool(receiver_standby_holder[0])
+            inc = ""
+            cfg = ""
+            if not standby:
+                inc = str(receiver_overlay_state.get("incoming") or "").strip()
+                cfg = str(receiver_overlay_state.get("config") or "").strip()
+                if not inc and not cfg:
+                    fb_inc, fb_cfg = _denon_telnet_audio_fallback()
+                    inc, cfg = fb_inc, fb_cfg
+            vol = _clock_saver_volume_raw()
+            if not vol and compose_playback_volume_widget_line is not None:
                 vol = compose_playback_volume_widget_line(
                     stream_row=streaming_slot_holder[0],
                     apple_tv_last_metadata=apple_tv_auto_state.get("last_metadata")
@@ -2874,6 +3115,8 @@ def main() -> int:
         last_timecode_motion_mono = 0.0
         # ``last_metadata_activity_mono`` is initialized with pigeon user-activity state above.
         last_clock_saver_significant_device_mono = [time.monotonic()]
+        # Monotonic start of the current paused-with-content hold; 0 while not paused.
+        _paused_row_since_mono = [0.0]
         _cs_sig_init = [False]
         _cs_sig_ck: list[str | None] = [None]
         _cs_sig_ds = [""]
@@ -2979,7 +3222,6 @@ def main() -> int:
                 _cs_sig_fp[0] = fp
                 _note_metadata_activity()
                 return
-            vol_bump = vk != _cs_sig_vol[0] and (vk or _cs_sig_vol[0])
             content_bump = fp != _cs_sig_fp[0]
             # Keep legacy ck/ds tracking for diagnostics; content fingerprint is authoritative.
             if ck != _cs_sig_ck[0] and (ck or _cs_sig_ck[0]):
@@ -2993,9 +3235,7 @@ def main() -> int:
             if content_bump:
                 _bump_clock_saver_significant_device()
                 _note_metadata_activity()
-            elif vol_bump:
-                # Volume must not reset the 2-minute metadata-idle saver.
-                _bump_clock_saver_significant_device()
+            # Receiver / player volume must not dismiss the idle clock saver.
 
         def _reset_clock_saver_device_signal_baseline() -> None:
             _cs_sig_init[0] = False
@@ -3144,6 +3384,23 @@ def main() -> int:
             except Exception:
                 return True
 
+        def _refresh_paused_row_stamp(now: float) -> float:
+            """Return seconds the current title has stayed paused; 0 if not paused."""
+            paused = _show_paused_row_overlay()
+            _paused_row_since_mono[0] = next_paused_since_mono(
+                paused, now, float(_paused_row_since_mono[0])
+            )
+            started = float(_paused_row_since_mono[0])
+            if started <= 0.0:
+                return 0.0
+            return max(0.0, float(now) - started)
+
+        def _clock_saver_content_is_idle() -> bool:
+            lm = apple_tv_auto_state.get("last_metadata")
+            if not isinstance(lm, dict):
+                return True
+            return bool(_atv_metadata_is_content_idle(lm))
+
         def _clock_saver_active(now: float) -> bool:
             if clock_saver_composite_bgra is None:
                 return False
@@ -3167,6 +3424,17 @@ def main() -> int:
                     _note_metadata_activity(now)
                 elif startup_ph[0] is None or _splash_reveal_clock[0]:
                     return True
+            paused = _show_paused_row_overlay()
+            paused_age = _refresh_paused_row_stamp(now)
+            if clock_saver_due_for_pause(paused, paused_age):
+                return True
+            if clock_saver_due_for_no_content(
+                playing=_something_playing_now(),
+                paused_with_content=paused,
+                live=bool(apple_tv_playback_clock.get("live_mode")),
+                content_idle=_clock_saver_content_is_idle(),
+            ):
+                return True
             # HDMI-only: 24 consecutive unchanged OCR frames → saver.
             # Ignored while player metadata is driving (position is authoritative).
             if not _metadata_drives_clock_saver():
@@ -3196,6 +3464,7 @@ def main() -> int:
                 sys.stderr.write(
                     f"pigeon: clock_saver meta_idle age={meta_age:.0f}s "
                     f"ui_age={ui_age:.0f}s need={CLOCK_SAVER_METADATA_IDLE_AFTER_S:.0f}s "
+                    f"pause_age={paused_age:.0f}s pause_need={CLOCK_SAVER_PAUSED_AFTER_S:.0f}s "
                     f"active={bool(meta_idle)} boot={bool(_boot_clock_saver_until_playback[0])} "
                     f"scene={bool(scene_enabled)} phase={dev_phase!s}\n"
                 )
@@ -3281,7 +3550,7 @@ def main() -> int:
             return _clock_saver_active(now)
 
         def _toggle_clock_saver_force(event: tk.Event | None = None) -> str | None:
-            """Global [2]: force clock saver on/off (digit 2 is not a display-view hotkey)."""
+            """Shift+2: force clock saver on/off."""
             nonlocal skip_cache
             if event is not None and _widget_accepts_typing(event.widget):
                 return None
@@ -3491,6 +3760,11 @@ def main() -> int:
         # True when the last Denon poll answered but reported OFF/STANDBY — hide all
         # receiver metadata and treat the receiver indicator as inactive.
         receiver_standby_holder: list[bool] = [False]
+        # Volume knob requested PWON; keep sending power-on even if a poll
+        # briefly reports STANDBY again before the AVR finishes waking.
+        receiver_power_on_pending: list[bool] = [False]
+        receiver_power_on_until: list[float] = [0.0]
+        receiver_volume_cmd_busy: list[bool] = [False]
         streaming_badge_state: dict[str, object] = {
             "show": False,
             "filename": "",
@@ -3519,6 +3793,14 @@ def main() -> int:
             view_circles_widget = ViewCirclesWidget(
                 assets_dir=Path(_PROJECT_DIR) / "pigeonAssets",
             )
+            try:
+                from pigeon.widgets.preferences_settings import (
+                    ensure_now_playing_layout_defaults,
+                )
+
+                ensure_now_playing_layout_defaults()
+            except Exception:
+                pass
         main_settings_widget = None
         if _PIGEON_EXT and MainSettingsWidget is not None:
             main_settings_widget = MainSettingsWidget(
@@ -3628,7 +3910,7 @@ def main() -> int:
                     remaining_text = _format_hmmss(int(pair[1]))
             inc, cfg, vol = _resolve_receiver_lines_for_now_playing()
             if _apple_tv_is_off():
-                inc, cfg, vol = "", "", ""
+                inc, cfg = "", ""
             circles_poster_bgra = _circles_poster_bgra()
             has_np = _effective_display_view() == DisplayView.ONE
             sb = streaming_badge_state
@@ -3680,6 +3962,15 @@ def main() -> int:
                 except Exception:
                     pass
             np_active = _np_widgets_content_active(incoming=inc, config=cfg)
+            recv_name = ""
+            try:
+                _avr_row = read_saved_av_receiver()
+                if isinstance(_avr_row, dict):
+                    recv_name = str(
+                        _avr_row.get("name") or _avr_row.get("label") or ""
+                    ).strip()
+            except Exception:
+                recv_name = ""
             if _vv_is_music():
                 lm_music = apple_tv_auto_state.get("last_metadata")
                 song_t = album_t = artist_t = ""
@@ -3712,8 +4003,9 @@ def main() -> int:
                     has_position=_has_playback_position(),
                     content_active=np_active,
                     is_youtube=False,
-                    tt_bgra=None,
+                    tt_bgra=circles_poster_bgra,
                     tt_title=song_t,
+                    receiver_name=recv_name,
                 ):
                     changed = True
             else:
@@ -3782,6 +4074,7 @@ def main() -> int:
                     is_youtube=yt_now,
                     tt_bgra=tt_src,
                     tt_title=tt_fallback,
+                    receiver_name=recv_name,
                 ):
                     changed = True
             if changed:
@@ -5016,8 +5309,23 @@ def main() -> int:
 
         _paused_screen_font_cache: dict[int, ImageFont.FreeTypeFont | ImageFont.ImageFont] = {}
 
+        def _paused_screen_artwork_bgr() -> np.ndarray | None:
+            """Album art as BGR, or None."""
+            bgra = apple_tv_auto_state.get("music_artwork_bgra")
+            if not isinstance(bgra, np.ndarray) or bgra.size == 0:
+                return None
+            if bgra.ndim != 3:
+                return None
+            if bgra.shape[2] >= 4:
+                return np.ascontiguousarray(bgra[:, :, :3])
+            if bgra.shape[2] == 3:
+                return np.ascontiguousarray(bgra)
+            return None
+
         def _paused_screen_backdrop_bgr() -> np.ndarray | None:
-            """Current TMDb backdrop for the full-screen paused treatment."""
+            """Full-screen paused plate: album art for music, else TMDb backdrop."""
+            if _vv_is_music():
+                return _paused_screen_artwork_bgr()
             if backdrop_master_bgr is not None and not backdrop_app_logo_letterbox_fit:
                 return backdrop_master_bgr
             if (
@@ -5030,7 +5338,20 @@ def main() -> int:
         def _paused_screen_active() -> bool:
             if dev_phase != DevPhase.OFF:
                 return False
-            return bool(_show_paused_row_overlay() and _paused_screen_backdrop_bgr() is not None)
+            paused = _show_paused_row_overlay()
+            has_backdrop = _paused_screen_backdrop_bgr() is not None
+            if paused and _vv_is_music():
+                # Music pause still gets the plate even if artwork has not landed.
+                has_backdrop = True
+            saver_on = False
+            if clock_saver_composite_bgra is not None and _clock_saver_user_enabled():
+                now_ps = time.monotonic()
+                saver_on = bool(_clock_saver_active(now_ps) or clock_saver_force_on[0])
+            return should_hold_paused_screen(
+                paused_with_content=paused,
+                has_backdrop=has_backdrop,
+                clock_saver_active=saver_on,
+            )
 
         def _paused_screen_font(px: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
             size = max(24, int(px))
@@ -5060,7 +5381,7 @@ def main() -> int:
                 base = np.zeros((int(cap_h), int(cap_w), 3), dtype=np.uint8)
             else:
                 lit = _apply_brightness(src, PAUSED_SCREEN_BACKDROP_DIM)
-                base = SceneFit(target_w=int(cap_w), target_h=int(cap_h)).scale_and_crop(lit)
+                base = cover_scale_and_crop(lit, int(cap_w), int(cap_h))
             img = Image.fromarray(cv2.cvtColor(base, cv2.COLOR_BGR2RGB))
             font = _paused_screen_font(max(52, int(round(float(cap_h) * 0.13))))
             paint_paused_screen_label(img, text=PAUSED_SCREEN_TEXT, font=font)
@@ -5136,7 +5457,7 @@ def main() -> int:
                         if status_bar_widget is not None
                         else None
                     )
-                    (time_bgra, t_rect), (date_bgra, d_rect) = clock_saver_composite_bgra(
+                    (time_bgra, t_rect), (date_bgra, d_rect) = _clock_saver_layers(
                         shadow_bgr=acc_cs,
                         layer_opacity=float(intro_op),
                         time_layer_opacity=float(intro_op),
@@ -5165,7 +5486,7 @@ def main() -> int:
                     )
                     _cs_dim_v1 = _clock_saver_layer_opacity(now_cs)
                     _clock_saver_dim_pre_digit_canvas(canvas_np, _cs_dim_v1)
-                    (time_bgra, t_rect), (date_bgra, d_rect) = clock_saver_composite_bgra(
+                    (time_bgra, t_rect), (date_bgra, d_rect) = _clock_saver_layers(
                         shadow_bgr=acc_cs,
                         layer_opacity=_cs_dim_v1,
                         time_layer_opacity=1.0,
@@ -5260,7 +5581,7 @@ def main() -> int:
                         _clock_saver_dim_pre_digit_canvas(base, _cs_dim)
                     _time_op = float(intro_op) if intro_op is not None else 1.0
                     _date_op = float(intro_op) if intro_op is not None else _cs_dim
-                    (time_bgra, t_rect), (date_bgra, d_rect) = clock_saver_composite_bgra(
+                    (time_bgra, t_rect), (date_bgra, d_rect) = _clock_saver_layers(
                         shadow_bgr=acc_cs,
                         layer_opacity=_cs_dim,
                         time_layer_opacity=_time_op,
@@ -5657,7 +5978,7 @@ def main() -> int:
                         _clock_saver_dim_pre_digit_canvas(canvas, _cs_dim_d)
                     _time_op_d = float(intro_op) if intro_op is not None else 1.0
                     _date_op_d = float(intro_op) if intro_op is not None else _cs_dim_d
-                    (time_bgra, t_rect), (date_bgra, d_rect) = clock_saver_composite_bgra(
+                    (time_bgra, t_rect), (date_bgra, d_rect) = _clock_saver_layers(
                         shadow_bgr=acc_cs,
                         layer_opacity=_cs_dim_d,
                         time_layer_opacity=_time_op_d,
@@ -8374,7 +8695,7 @@ def main() -> int:
                 padx=6,
                 pady=0,
                 highlightthickness=0,
-                cursor="hand2",
+                cursor="none" if _kiosk_on else "hand2",
             )
 
         def _settings_parse_device_rows(raw: object) -> list[dict[str, str]]:
@@ -12348,6 +12669,15 @@ def main() -> int:
                                 and not apple_tv_auto_state.get("tmdb_missing_art")
                             ):
                                 needs_spawn = True
+                            if tmdb_should_skip_refetch_on_resume(
+                                content_key=content_key,
+                                prev_content_key=prev_key,
+                                has_tmdb_identity=bool(
+                                    apple_tv_auto_state.get("tmdb_key")
+                                    or active_tmdb_title_key
+                                ),
+                            ):
+                                needs_spawn = False
                             if needs_spawn:
                                 spawn_tmdb_poster_fetch(
                                     query, prefer=prefer, force=content_changed
@@ -12411,6 +12741,15 @@ def main() -> int:
                                     and not apple_tv_auto_state.get("tmdb_missing_art")
                                 ):
                                     r_needs = True
+                                if tmdb_should_skip_refetch_on_resume(
+                                    content_key=r_ck,
+                                    prev_content_key=prev_rk,
+                                    has_tmdb_identity=bool(
+                                        apple_tv_auto_state.get("tmdb_key")
+                                        or active_tmdb_title_key
+                                    ),
+                                ):
+                                    r_needs = False
                                 if r_needs:
                                     spawn_tmdb_poster_fetch(
                                         r_q, prefer="auto", force=r_changed
@@ -13071,7 +13410,7 @@ def main() -> int:
             if not _PIGEON_EXT:
                 return None
             ch = getattr(event, "char", "") or ""
-            if ch not in "145":
+            if ch not in "012345678":
                 return None
             nonlocal skip_cache, dev_phase
             st_md = main_settings_widget.state if main_settings_widget is not None else None
@@ -13080,22 +13419,19 @@ def main() -> int:
                 and dev_phase == DevPhase.MAIN_SETTINGS
                 and st_md.show_metadata_debug
             )
-            if md_open and ch != "4":
-                # Inspector is modal: EXIT (or [4] → legacy) are the only ways out.
+            if md_open and ch != "0":
+                # Inspector is modal: EXIT (or [0] to close) are the only ways out.
                 _bump_pigeon_user_activity(event)
                 return "break"
-            if ch == "4" and st_md is not None:
+            if ch == "0" and st_md is not None:
                 if dev_phase == DevPhase.MAIN_SETTINGS and st_md.keyboard is not None:
                     return None
                 if md_open:
-                    # [4] on the inspector → legacy metadata view (view 4).
+                    st_md.close_metadata_debug()
                     st_md.exit_pigeon_settings()
                     main_settings_widget.invalidate()
                     dev_phase = DevPhase.OFF
-                    display_view_holder[0] = DisplayView.FOUR
-                    view_four_subview_holder[0] = 0
                 else:
-                    # [4] anywhere (incl. legacy view 4) → open the inspector.
                     st_md.open_metadata_debug()
                     main_settings_widget.invalidate()
                     if dev_phase != DevPhase.MAIN_SETTINGS:
@@ -13110,12 +13446,18 @@ def main() -> int:
                 _capture_last_view_one_layout_from_live_view()
                 render_once()
                 return "break"
-            if ch == "1" and display_view_holder[0] == DisplayView.ONE:
+            if ch == "2":
                 st_key = int(getattr(event, "state", 0))
                 sh_key = bool(st_key & 0x0001)
-                opt_key = bool(st_key & 0x0008) or bool(st_key & 0x20000)
                 if sh_key:
-                    # Shift+1: cycle view-one layout (full / simple / poster).
+                    return _toggle_clock_saver_force(event)
+            if dev_phase != DevPhase.OFF:
+                _bump_pigeon_user_activity(event)
+                return "break"
+            if ch in "12345678" and display_view_holder[0] == DisplayView.ONE:
+                st_key = int(getattr(event, "state", 0))
+                sh_key = bool(st_key & 0x0001)
+                if ch == "1" and sh_key:
                     _vv_now = _current_view_one_variant()
                     if (
                         _vv_now is not None
@@ -13135,10 +13477,35 @@ def main() -> int:
                     _bump_pigeon_user_activity(event)
                     _capture_last_view_one_layout_from_live_view()
                     return "break"
-                if opt_key:
-                    _bump_pigeon_user_activity(event)
-                    return "break"
+                try:
+                    from pigeon.np_zone_keys import cycle_now_playing_zone
+                    from pigeon.widgets.preferences_settings import (
+                        read_np_header_clock,
+                        read_now_playing_zone_widgets,
+                        write_np_header_clock,
+                        write_now_playing_zone_widgets,
+                    )
+
+                    mode = "music" if _vv_is_music() else "video"
+                    cur = read_now_playing_zone_widgets(content_mode=mode)
+                    header = read_np_header_clock()
+                    nxt, header_on = cycle_now_playing_zone(
+                        cur,
+                        int(ch),
+                        content_mode=mode,
+                        header_clock=header,
+                    )
+                    write_now_playing_zone_widgets(nxt, content_mode=mode)
+                    write_np_header_clock(header_on)
+                    if view_circles_widget is not None:
+                        view_circles_widget.clear_cache()
+                    _sync_now_playing_screen_state()
+                except Exception:
+                    pass
+                skip_cache = None
                 _bump_pigeon_user_activity(event)
+                _capture_last_view_one_layout_from_live_view()
+                render_once()
                 return "break"
             if ch == "4" and display_view_holder[0] == DisplayView.FOUR:
                 view_four_subview_holder[0] = (int(view_four_subview_holder[0]) + 1) % 3
@@ -13150,23 +13517,22 @@ def main() -> int:
                 skip_cache = None
                 _bump_pigeon_user_activity(event)
                 return "break"
-            display_view_holder[0] = DisplayView(int(ch))
-            if ch == "1":
-                view_one_layout_holder[0] = int(ViewOneLayout.PIGEON_FULL)
-            if ch == "4":
-                view_four_subview_holder[0] = 0
-            if ch == "5":
-                view_five_mode_holder[0] = 0
-            skip_cache = None
-            _bump_pigeon_user_activity(event)
-            _capture_last_view_one_layout_from_live_view()
+            if ch in "145":
+                display_view_holder[0] = DisplayView(int(ch))
+                if ch == "1":
+                    view_one_layout_holder[0] = int(ViewOneLayout.PIGEON_FULL)
+                if ch == "4":
+                    view_four_subview_holder[0] = 0
+                if ch == "5":
+                    view_five_mode_holder[0] = 0
+                skip_cache = None
+                _bump_pigeon_user_activity(event)
+                _capture_last_view_one_layout_from_live_view()
+                return "break"
             return "break"
 
-        for _dv_ch in ("1", "4", "5"):
+        for _dv_ch in ("0", "1", "2", "3", "4", "5", "6", "7", "8"):
             root.bind_all(f"<KeyPress-{_dv_ch}>", on_display_view_digit)
-
-        # [2] is free (display views use 1/4/5 only) — force clock saver on/off.
-        root.bind_all("<KeyPress-2>", _toggle_clock_saver_force)
 
         def on_arrow_remote(event: tk.Event) -> str | None:
             if _widget_accepts_typing(event.widget):
@@ -13587,21 +13953,76 @@ def main() -> int:
         def _receiver_volume_worker() -> None:
             while True:
                 host, action = _receiver_volume_queue.get()
+                burst = [action]
+                while True:
+                    try:
+                        _h, nxt = _receiver_volume_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    burst.append(nxt)
+                receiver_volume_cmd_busy[0] = True
+                vol = ""
                 try:
-                    from pigeon.receiver_denon_telnet import send_denon_volume_action
+                    from pigeon.receiver_denon import (
+                        apply_denon_master_volume,
+                        coalesce_receiver_volume_actions,
+                    )
 
-                    ok, msg = send_denon_volume_action(host, action, timeout=1.5)
+                    steps, mutes = coalesce_receiver_volume_actions(burst)
+                    ok, msg, vol = apply_denon_master_volume(
+                        host, steps=steps, mute_toggles=mutes, timeout=4.0
+                    )
+                    if ok:
+                        receiver_standby_holder[0] = False
+                        receiver_power_on_pending[0] = False
+                        try:
+                            from pigeon.runtime_state import update_receiver_runtime
+
+                            update_receiver_runtime(standby=False, reachable=True)
+                        except Exception:
+                            pass
                 except Exception as exc:
                     ok, msg = False, str(exc)
+                finally:
+                    receiver_volume_cmd_busy[0] = False
+                if ok and vol:
+                    confirmed = vol
+
+                    def _apply_confirmed_volume(v: str = confirmed) -> None:
+                        try:
+                            denon_vol_cache["effective"] = v
+                            denon_vol_cache["np_hold"] = v
+                        except NameError:
+                            pass
+                        try:
+                            receiver_overlay_state["volume"] = v
+                        except NameError:
+                            pass
+                        try:
+                            _clock_saver_volume.remember(v, source="poll")
+                            _note_volume_graphics(v)
+                        except Exception:
+                            pass
+                        try:
+                            render_once()
+                        except Exception:
+                            pass
+
+                    try:
+                        root.after(0, _apply_confirmed_volume)
+                    except Exception:
+                        pass
                 if ok:
                     if _volume_rotary_ok_log_count[0] < 8:
-                        sys.stderr.write(f"pigeon: rotary_volume_gpio: receiver {action}: {msg}\n")
+                        sys.stderr.write(
+                            f"pigeon: rotary_volume_gpio: receiver {burst!r}: {msg}\n"
+                        )
                         sys.stderr.flush()
                         _volume_rotary_ok_log_count[0] += 1
                     continue
-                if _volume_rotary_fail_log_count[0] < 8:
+                if _volume_rotary_fail_log_count[0] < 16:
                     sys.stderr.write(
-                        f"pigeon: rotary_volume_gpio: receiver {action} failed: {msg}\n"
+                        f"pigeon: rotary_volume_gpio: receiver {burst!r} failed: {msg}\n"
                     )
                     sys.stderr.flush()
                     _volume_rotary_fail_log_count[0] += 1
@@ -13632,11 +14053,74 @@ def main() -> int:
                     pass
             return True
 
+        def _nudge_clock_saver_volume(action: str) -> None:
+            """Move the saver line immediately; the AVR poll confirms the real level."""
+            nonlocal skip_cache
+            from pigeon.widgets.clock_saver import step_clock_saver_volume
+
+            cur = _clock_saver_volume_raw()
+            if not cur:
+                try:
+                    cur = str(denon_vol_cache.get("np_hold") or "").strip()
+                except NameError:
+                    cur = ""
+                if not cur:
+                    try:
+                        cur = str(_clock_saver_volume.hold or "").strip()
+                    except Exception:
+                        cur = ""
+            nxt = step_clock_saver_volume(
+                cur,
+                action,
+                unmute_to=_clock_saver_volume.pre_mute or None,
+            )
+            if nxt:
+                _clock_saver_volume.remember(nxt, source="nudge")
+                _note_volume_graphics(nxt)
+                try:
+                    receiver_overlay_state["volume"] = nxt
+                except NameError:
+                    pass
+                try:
+                    denon_vol_cache["effective"] = nxt
+                    denon_vol_cache["np_hold"] = nxt
+                except NameError:
+                    pass
+            skip_cache = None
+            saver_up = False
+            try:
+                saver_up = bool(
+                    _clock_saver_for_compose(time.monotonic()) or clock_saver_force_on[0]
+                )
+            except Exception:
+                saver_up = False
+            if not saver_up:
+                try:
+                    if _view_one_uses_now_playing_screen():
+                        _sync_now_playing_screen_state()
+                except Exception:
+                    pass
+            try:
+                render_once()
+            except Exception:
+                pass
+
         def _on_volume_rotary_action(action: str) -> None:
             _bump_pigeon_user_activity()
             if action not in ("volume_up", "volume_down", "mute_toggle"):
                 return
+            try:
+                if receiver_standby_holder[0] or receiver_power_on_pending[0]:
+                    receiver_power_on_pending[0] = True
+                    receiver_power_on_until[0] = time.monotonic() + 12.0
+                    receiver_standby_holder[0] = False
+                    from pigeon.runtime_state import update_receiver_runtime
+
+                    update_receiver_runtime(standby=False, reachable=True)
+            except Exception:
+                pass
             if _queue_receiver_volume_action(action):
+                _nudge_clock_saver_volume(action)
                 return
             try:
                 from pigeon.player_remote import queue_player_remote_action
@@ -13659,6 +14143,7 @@ def main() -> int:
                 )
                 sys.stderr.flush()
                 _volume_rotary_fail_log_count[0] += 1
+            _nudge_clock_saver_volume(action)
 
         _play_pause_gpio_last_mono = [0.0]
 
@@ -13782,13 +14267,18 @@ def main() -> int:
                     )
                 ):
                     return 50 if sys.platform.startswith("linux") else 16
-                # Circles poster searching spinner while TMDb fetch is in flight.
+                # Circles loading shimmer while TMDb / artwork is in flight.
                 if (
                     _view_one_uses_now_playing_screen()
                     and view_circles_widget is not None
                     and view_circles_widget.searching
                 ):
-                    return 50 if sys.platform.startswith("linux") else 16
+                    return 33 if sys.platform.startswith("linux") else 16
+                try:
+                    if _volume_lines.fading():
+                        return 50
+                except Exception:
+                    pass
                 return paused_interval_ms
 
             # With ext + splash, only count this window **after** splash removal.
@@ -14041,6 +14531,7 @@ def main() -> int:
                     f"{int(bool(playback_overlay_flags.get('clock_saver_volume_only')))}"
                     f"{int(bool(playback_overlay_flags.get('clock_saver_netflix_full_overlay')))}"
                     f"{int(bool(playback_overlay_flags.get('badge_live_instead_of_logo')))}"
+                    f"\x1e{_clock_saver_volume_raw()}"
                 )
             (_tmdb_x_bgr, _tmdb_x_alpha, _tmdb_x_caption, _tmdb_x_phase) = _tmdb_quality_toggle_overlay_state(now)
             tmdb_x_animating = _tmdb_x_alpha > 1e-6
@@ -14209,11 +14700,126 @@ def main() -> int:
                     pass
             _render_after_id[0] = root.after(max(1, int(delay_ms)), _invoke_render_after)
 
+        _volume_quick_busy = [False]
+
+        def _commit_receiver_volume(vol: str) -> bool:
+            """Write the box-3 AVR level into the widgets. True if it changed."""
+            line = str(vol or "").strip()
+            if not line:
+                return False
+            try:
+                if _clock_saver_volume.is_stale_poll(line):
+                    return False
+            except Exception:
+                pass
+            prev = ""
+            try:
+                prev = str(denon_vol_cache.get("effective") or "")
+            except NameError:
+                prev = ""
+            try:
+                denon_vol_cache["effective"] = line
+                denon_vol_cache["np_hold"] = line
+            except NameError:
+                pass
+            try:
+                receiver_overlay_state["volume"] = line
+            except NameError:
+                pass
+            _remember_clock_saver_volume(line, source="poll")
+            _note_volume_graphics(line)
+            return prev != line
+
+        def _quick_receiver_volume_poll() -> None:
+            """HTTP AppCommand volume only — keeps the widget in sync with the AVR remote."""
+            if _volume_quick_busy[0]:
+                return
+            host = str(receiver_http_host.get("host") or "").strip()
+            if not host:
+                try:
+                    row = read_saved_av_receiver()
+                    host = str((row or {}).get("address") or "").strip()
+                except Exception:
+                    host = ""
+            if not host:
+                return
+            _volume_quick_busy[0] = True
+
+            def work() -> None:
+                vol = ""
+                src = ""
+                heos: dict[str, object] = {}
+                try:
+                    from pigeon.receiver_denon import (
+                        read_heos_volume,
+                        read_live_receiver_volume,
+                    )
+
+                    vol, src = read_live_receiver_volume(
+                        host, timeout=1.0, telnet_blocking=False
+                    )
+                    heos = read_heos_volume(host, timeout=1.0)
+                except Exception:
+                    vol, src = "", ""
+                    heos = {}
+
+                def apply() -> None:
+                    _volume_quick_busy[0] = False
+                    from pigeon.receiver_denon import heos_level_to_db
+
+                    chosen = ""
+                    if src == "telnet" and vol:
+                        prev_tn = str(denon_vol_cache.get("last_telnet") or "")
+                        denon_vol_cache["last_telnet"] = vol
+                        if vol != prev_tn:
+                            chosen = vol
+                    level = heos.get("level")
+                    if isinstance(level, int):
+                        prev_lv = denon_vol_cache.get("last_heos_level")
+                        denon_vol_cache["last_heos_level"] = level
+                        if not chosen and prev_lv != level:
+                            mapped = heos_level_to_db(level)
+                            if mapped:
+                                chosen = mapped
+                    if not chosen:
+                        return
+                    changed = _commit_receiver_volume(chosen)
+                    if not changed and not _volume_lines.fading():
+                        return
+                    nonlocal skip_cache
+                    skip_cache = None
+                    try:
+                        if _view_one_uses_now_playing_screen() and not (
+                            _clock_saver_for_compose(time.monotonic())
+                            or clock_saver_force_on[0]
+                        ):
+                            _sync_now_playing_screen_state()
+                    except Exception:
+                        pass
+                    try:
+                        render_once()
+                    except Exception:
+                        pass
+
+                try:
+                    root.after(0, apply)
+                except Exception:
+                    _volume_quick_busy[0] = False
+
+            threading.Thread(target=work, daemon=True).start()
+
+        def _receiver_volume_poll_tick() -> None:
+            root.after(RECEIVER_VOLUME_POLL_MS, _receiver_volume_poll_tick)
+            if not _PIGEON_EXT:
+                return
+            _quick_receiver_volume_poll()
+
         def _receiver_poll_tick() -> None:
             root.after(RECEIVER_POLL_MS, _receiver_poll_tick)
             if not _PIGEON_EXT:
                 return
             if receiver_poll_busy["active"]:
+                _quick_receiver_volume_poll()
                 return
 
             # Keep poll host aligned with the saved AV slot (not a stale last_receiver).
@@ -14249,17 +14855,27 @@ def main() -> int:
                 )
                 receiver_overlay_state["incoming"] = new_in
                 receiver_overlay_state["config"] = new_cf
-                receiver_overlay_state["volume"] = new_vol
+                saver_up = bool(_clock_saver_for_compose(time.monotonic()) or clock_saver_force_on[0])
+                stale_poll = _clock_saver_volume.is_stale_poll(new_vol)
+                if (new_vol or not saver_up) and not stale_poll:
+                    receiver_overlay_state["volume"] = new_vol
+                if not stale_poll:
+                    _remember_clock_saver_volume(new_vol, source="poll")
+                    if new_vol:
+                        _note_volume_graphics(new_vol)
                 if overlay_unchanged:
-                    if _view_one_uses_now_playing_screen():
+                    if _view_one_uses_now_playing_screen() and not saver_up:
                         _sync_now_playing_screen_state()
+                    if saver_up and _clock_saver_receiver_off():
+                        skip_cache = None
+                        render_once()
                     return
                 last_device_interaction_mono = time.monotonic()
-                if old_vol_raw != new_vol:
+                if old_vol_raw != new_vol and not saver_up:
                     _bump_clock_saver_significant_device()
                 _warm_playback_overlay_blits()
                 skip_cache = None
-                if _view_one_uses_now_playing_screen():
+                if _view_one_uses_now_playing_screen() and not saver_up:
                     _sync_now_playing_screen_state()
                 render_once()
 
@@ -14276,7 +14892,23 @@ def main() -> int:
                     try:
                         from pigeon.receiver_denon import poll_denon_like_receiver
 
-                        r = poll_denon_like_receiver(host, timeout=5.0)
+                        skip_tn = bool(
+                            receiver_power_on_pending[0]
+                            or receiver_volume_cmd_busy[0]
+                        )
+                        # Fat telnet holds the one-client socket for ~2s and
+                        # starves MVUP plus the live volume poll. Metadata
+                        # telnet is occasional; volume uses a short MV? query.
+                        now_tn = time.monotonic()
+                        due_meta = now_tn - float(
+                            denon_vol_cache.get("telnet_meta_mono") or 0.0
+                        ) >= 8.0
+                        use_tn = (not skip_tn) and due_meta
+                        r = poll_denon_like_receiver(
+                            host, timeout=5.0, include_telnet=use_tn
+                        )
+                        if use_tn:
+                            denon_vol_cache["telnet_meta_mono"] = now_tn
                     except Exception:
                         r = None
 
@@ -14338,21 +14970,40 @@ def main() -> int:
 
                 def _apply_body(rpl: object) -> None:
                     denon_ok = r is not None and r.ok
-                    denon_standby = bool(r is not None and getattr(r, "standby", False))
+                    raw_standby = bool(r is not None and getattr(r, "standby", False))
+                    if (
+                        receiver_power_on_pending[0]
+                        and time.monotonic() > float(receiver_power_on_until[0] or 0.0)
+                    ):
+                        receiver_power_on_pending[0] = False
+                    denon_standby = raw_standby and not receiver_power_on_pending[0]
                     receiver_standby_holder[0] = denon_standby
-                    if denon_standby:
-                        # Hide source/format; keep any master-volume the AVR still
-                        # reported so the widget does not flash empty on eco/STANDBY.
-                        if denon_vol_effective:
+                    accept_vol = True
+                    try:
+                        # Only ignore a poll that is still the pre-knob level.
+                        # A new AVR readout (remote, knob, or HEOS) always wins.
+                        accept_vol = not _clock_saver_volume.is_stale_poll(
+                            denon_vol_effective
+                        )
+                    except Exception:
+                        accept_vol = True
+                    tn_dbg = getattr(r, "telnet_debug", None) or {}
+                    live_mv = bool(
+                        tn_dbg.get("MV") or tn_dbg.get("MV_DB") or tn_dbg.get("MU")
+                    )
+                    if accept_vol and denon_vol_effective and live_mv:
+                        if denon_standby:
+                            denon_vol_cache["effective"] = denon_vol_effective
+                            denon_vol_cache["np_hold"] = denon_vol_effective
+                            denon_vol_cache["mono_usable"] = 0.0
+                        elif denon_ok:
                             denon_vol_cache["effective"] = denon_vol_effective
                             denon_vol_cache["mono_usable"] = time.monotonic()
                             denon_vol_cache["np_hold"] = denon_vol_effective
-                        else:
-                            denon_vol_cache["mono_usable"] = 0.0
-                    elif denon_ok and denon_vol_effective:
-                        denon_vol_cache["effective"] = denon_vol_effective
-                        denon_vol_cache["mono_usable"] = time.monotonic()
-                        denon_vol_cache["np_hold"] = denon_vol_effective
+                    elif denon_standby:
+                        denon_vol_cache["mono_usable"] = 0.0
+                    if denon_ok and not raw_standby:
+                        receiver_power_on_pending[0] = False
                     try:
                         from pigeon.runtime_state import update_receiver_runtime
 
@@ -14360,6 +15011,8 @@ def main() -> int:
                             host=host,
                             reachable=bool(denon_ok and not denon_standby),
                             standby=denon_standby,
+                            muted=str(denon_vol_effective).strip().lower()
+                            in ("mute", "muted"),
                         )
                     except Exception:
                         pass
@@ -14376,7 +15029,7 @@ def main() -> int:
                             str(read_current_location_id() or ""),
                             read_saved_av_receiver(),
                             denon_reachable=denon_ok and not denon_standby,
-                            denon_volume_usable=bool(denon_vol_effective) and not denon_standby,
+                            denon_volume_usable=bool(denon_vol_effective),
                             denon_has_incoming=bool(
                                 r is not None
                                 and not denon_standby
@@ -14391,14 +15044,23 @@ def main() -> int:
                     except Exception:
                         pass
                     _refresh_observed_pairing_led_rows()
+                    overlay_vol = merged_volume
+                    if not accept_vol or not live_mv:
+                        overlay_vol = str(
+                            denon_vol_cache.get("effective")
+                            or denon_vol_cache.get("np_hold")
+                            or getattr(_clock_saver_volume, "hold", "")
+                            or (merged_volume if live_mv else "")
+                        )
+                    if overlay_vol:
+                        _note_volume_graphics(overlay_vol)
                     if denon_standby:
                         receiver_telnet_debug_holder[0] = dict(
                             getattr(r, "telnet_debug", {}) or {}
                         ) if r is not None else {}
-                        held_vol = merged_volume or str(
+                        apply_overlay("", "", overlay_vol or str(
                             denon_vol_cache.get("np_hold") or ""
-                        )
-                        apply_overlay("", "", held_vol)
+                        ))
                         if rpl is not None:
                             _paint_boolean_led(rpl, False)
                     elif r is not None and r.ok:
@@ -14409,12 +15071,12 @@ def main() -> int:
                         poll_cfg = str(r.config or "").strip()
                         if not poll_inc and not poll_cfg:
                             poll_inc, poll_cfg = _denon_telnet_audio_fallback()
-                        apply_overlay(poll_inc, poll_cfg, merged_volume)
+                        apply_overlay(poll_inc, poll_cfg, overlay_vol)
                         if rpl is not None:
                             _paint_boolean_led(rpl, True)
-                    elif merged_volume:
+                    elif overlay_vol:
                         receiver_telnet_debug_holder[0] = {}
-                        apply_overlay("", "", merged_volume)
+                        apply_overlay("", "", overlay_vol)
                         if rpl is not None:
                             _paint_boolean_led(rpl, False)
                     else:
@@ -14448,7 +15110,9 @@ def main() -> int:
                     _splash_underlay_bgr[0] = np.ascontiguousarray(out_bgr)
                 else:
                     _splash_underlay_bgr[0] = np.ascontiguousarray(
-                        _present_frame_to_display(out_bgr, WINDOW_W, WINDOW_H)
+                        _present_frame_to_display(
+                            out_bgr, WINDOW_W, WINDOW_H, native_now_playing=True
+                        )
                     )
             except Exception:
                 pass
@@ -14477,6 +15141,7 @@ def main() -> int:
         render_once()
         _log_view_one_startup_phase(f"first-render ({(time.monotonic() - t_render0) * 1000.0:.0f} ms)")
         root.after(600, _receiver_poll_tick)
+        root.after(700, _receiver_volume_poll_tick)
 
         if _PIGEON_EXT:
             tk.Widget.pack = _tk_pack_orig  # type: ignore[method-assign]
@@ -14518,6 +15183,7 @@ def main() -> int:
     try:
         root.mainloop()
     finally:
+        _restore_desktop_chrome()
         if cap is not None:
             cap.release()
     return 0

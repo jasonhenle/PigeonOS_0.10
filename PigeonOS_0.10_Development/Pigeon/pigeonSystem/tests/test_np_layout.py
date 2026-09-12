@@ -128,6 +128,16 @@ class LegacyMarkTests(unittest.TestCase):
         self.assertEqual(tuple(int(v) for v in img[0, 0]), LEGACY_UPDATE_MARK_BGR)
         self.assertEqual(tuple(int(v) for v in img[20, 20]), (0, 0, 0))
 
+    def test_native_design_frame_is_1280x800(self) -> None:
+        from pigeon.np_layout import is_native_design_frame
+
+        self.assertTrue(
+            is_native_design_frame(np.zeros((DESIGN_H, DESIGN_W, 3), dtype=np.uint8))
+        )
+        self.assertFalse(
+            is_native_design_frame(np.zeros((LEGACY_DESIGN_H, LEGACY_DESIGN_W, 3), dtype=np.uint8))
+        )
+
 
 def _force_default_np_zones() -> None:
     from pigeon.widgets import view_circles as vc
@@ -655,27 +665,56 @@ class StatusBarTimecodeTests(unittest.TestCase):
 
 
 class StatusBarElapsedTravelTests(unittest.TestCase):
-    def test_elapsed_parks_left_then_rides_the_fill(self) -> None:
-        from pigeon.np_layout import status_bar_elapsed_left_x
+    def test_elapsed_centers_on_the_playhead(self) -> None:
+        from pigeon.np_layout import (
+            status_bar_elapsed_center_x,
+            status_bar_elapsed_left_x,
+        )
 
-        park = 10.0
-        early = status_bar_elapsed_left_x(
+        early_c = status_bar_elapsed_center_x(
             track_x=70.0,
             track_w=1000.0,
             progress=0.0,
             elapsed_w=80.0,
-            park_x=park,
         )
-        later = status_bar_elapsed_left_x(
+        later_c = status_bar_elapsed_center_x(
             track_x=70.0,
             track_w=1000.0,
             progress=0.5,
             elapsed_w=80.0,
-            park_x=park,
         )
-        self.assertEqual(early, park)
-        self.assertGreater(later, early)
-        self.assertAlmostEqual(later, 70.0 + 500.0 - 80.0)
+        self.assertAlmostEqual(early_c, 70.0)
+        self.assertAlmostEqual(later_c, 570.0)
+        self.assertAlmostEqual(
+            status_bar_elapsed_left_x(
+                track_x=70.0,
+                track_w=1000.0,
+                progress=0.5,
+                elapsed_w=80.0,
+            ),
+            530.0,
+        )
+
+    def test_elapsed_fades_before_remaining_collision(self) -> None:
+        from pigeon.np_layout import status_bar_elapsed_opacity
+
+        remaining_left = 900.0
+        far = status_bar_elapsed_opacity(
+            track_x=70.0,
+            track_w=1000.0,
+            progress=0.4,
+            elapsed_w=80.0,
+            remaining_left_x=remaining_left,
+        )
+        colliding = status_bar_elapsed_opacity(
+            track_x=70.0,
+            track_w=1000.0,
+            progress=0.95,
+            elapsed_w=80.0,
+            remaining_left_x=remaining_left,
+        )
+        self.assertEqual(far, 1.0)
+        self.assertEqual(colliding, 0.0)
 
     def test_service_waits_until_elapsed_clears_it(self) -> None:
         from pigeon.np_layout import status_bar_service_has_room
@@ -778,25 +817,6 @@ class StatusBarElapsedTravelTests(unittest.TestCase):
         self.assertAlmostEqual(service, 0.4)
         self.assertAlmostEqual(traveling, 0.4)
 
-    def test_travel_x_is_not_clamped_to_park(self) -> None:
-        from pigeon.np_layout import (
-            status_bar_elapsed_left_x,
-            status_bar_elapsed_travel_x,
-        )
-
-        travel = status_bar_elapsed_travel_x(
-            track_x=70.0, track_w=1000.0, progress=0.0, elapsed_w=80.0
-        )
-        parked = status_bar_elapsed_left_x(
-            track_x=70.0,
-            track_w=1000.0,
-            progress=0.0,
-            elapsed_w=80.0,
-            park_x=10.0,
-        )
-        self.assertLess(travel, parked)
-        self.assertEqual(parked, 10.0)
-
     def test_handoff_fades_parked_out_and_traveling_in(self) -> None:
         from pigeon.np_layout import NOW_PLAYING_ZONES, STATUS_BAR_SERVICE_LOCAL
         from pigeon.widgets.view_circles import ViewCirclesWidget
@@ -807,7 +827,7 @@ class StatusBarElapsedTravelTests(unittest.TestCase):
         def _time_row(*, handoff: float) -> np.ndarray:
             widget = ViewCirclesWidget(assets_dir=assets)
             widget.update_state(
-                progress=0.85,
+                progress=0.70,
                 elapsed_text="12:12",
                 remaining_text="-1:00",
                 volume_text="",
@@ -829,20 +849,123 @@ class StatusBarElapsedTravelTests(unittest.TestCase):
         parked = _time_row(handoff=0.0)
         mid = _time_row(handoff=0.5)
         done = _time_row(handoff=1.0)
-        # Mid-bar (past the service slot, before remaining) only has the
-        # traveling elapsed once the handoff starts.
+        # Elapsed stays under the playhead regardless of the service handoff.
         travel_band_parked = parked[:, 820:980]
-        travel_band_mid = mid[:, 820:980]
         travel_band_done = done[:, 820:980]
-        self.assertLess(int(travel_band_parked.max()), 20)
+        self.assertGreater(int(travel_band_parked.max()), 80)
         self.assertGreater(int(travel_band_done.max()), 80)
-        self.assertGreater(int(travel_band_mid.max()), 20)
-        self.assertLess(int(travel_band_mid.max()), int(travel_band_done.max()))
-        # Left slot changes from elapsed to the service name.
+        # Left slot gains the service name as the handoff completes.
         self.assertGreater(
             int(np.abs(parked[:, :220].astype(int) - done[:, :220].astype(int)).max()),
             40,
         )
+        self.assertGreater(int(done[:, :220].max()), int(parked[:, :220].max()))
+        self.assertGreater(int(mid[:, :220].max()), 20)
+
+    def test_late_progress_keeps_remaining_after_elapsed_fades(self) -> None:
+        from pigeon.np_layout import NOW_PLAYING_ZONES, STATUS_BAR_SERVICE_LOCAL
+        from pigeon.widgets.view_circles import ViewCirclesWidget
+
+        _force_default_np_zones()
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+
+        def _row(progress: float) -> np.ndarray:
+            widget = ViewCirclesWidget(assets_dir=assets)
+            widget.update_state(
+                progress=progress,
+                elapsed_text="12:12",
+                remaining_text="-1:00",
+                volume_text="",
+                has_now_playing=True,
+                has_position=True,
+                content_active=True,
+                content_mode="video",
+                service_name="",
+            )
+            canvas = np.zeros((DESIGN_H, DESIGN_W, 3), dtype=np.uint8)
+            widget.overlay_status_bar(canvas)
+            zx, zy, zw, zh = NOW_PLAYING_ZONES[5].xywh
+            y0 = int(round(STATUS_BAR_SERVICE_LOCAL[1])) - 45
+            return canvas[zy + y0 : zy + zh, zx : zx + zw]
+
+        mid = _row(0.45)
+        late = _row(0.98)
+        # Mid-bar has elapsed while the playhead is still clear of remaining.
+        self.assertGreater(int(mid[:, 400:700].max()), 80)
+        # Near the end, elapsed is gone and only remaining stays on the right.
+        self.assertLess(int(late[:, 400:700].max()), 20)
+        self.assertGreater(int(late[:, 980:].max()), 80)
+
+
+class NowPlayingHeaderClockTests(unittest.TestCase):
+    def test_formats_12h_with_ampm(self) -> None:
+        from datetime import datetime
+
+        from pigeon.np_layout import now_playing_header_clock_text
+
+        self.assertEqual(
+            now_playing_header_clock_text(datetime(2026, 9, 7, 22, 23, 0)),
+            "10:23PM",
+        )
+        self.assertEqual(
+            now_playing_header_clock_text(datetime(2026, 9, 7, 0, 5, 0)),
+            "12:05AM",
+        )
+        self.assertEqual(
+            now_playing_header_clock_text(datetime(2026, 9, 7, 12, 0, 0)),
+            "12:00PM",
+        )
+
+    def test_header_clock_centers_on_wide_tt(self) -> None:
+        from pigeon.np_layout import NOW_PLAYING_ZONES, header_clock_center_x
+
+        z6 = NOW_PLAYING_ZONES[6]
+        self.assertAlmostEqual(
+            header_clock_center_x(("tt_countdown_16x9", "", "volume", "cast_info", "status_bar")),
+            z6.x + z6.w / 2.0,
+        )
+
+    def test_paints_large_clock_at_top_of_frame(self) -> None:
+        from datetime import datetime
+        from unittest.mock import patch
+
+        from pigeon.np_layout import (
+            NP_HEADER_CLOCK_BG_PAD_Y,
+            NP_HEADER_CLOCK_SIZE_PX,
+            NP_HEADER_CLOCK_TOP_PAD_PX,
+        )
+        from pigeon.widgets.view_circles import ViewCirclesWidget
+
+        _force_default_np_zones()
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        widget = ViewCirclesWidget(assets_dir=assets)
+        widget.update_state(
+            progress=0.2,
+            elapsed_text="0:10",
+            remaining_text="-1:00",
+            volume_text="",
+            has_now_playing=True,
+            has_position=True,
+            content_active=True,
+            content_mode="video",
+            service_name="",
+        )
+        when = datetime(2026, 9, 7, 22, 23, 0)
+        with patch.object(widget, "_clock_now_for_display", return_value=when):
+            frame = widget.bgra_frame()
+        self.assertIsNotNone(frame)
+        assert frame is not None
+        self.assertGreaterEqual(NP_HEADER_CLOCK_SIZE_PX, 60)
+        pad = int(round(NP_HEADER_CLOCK_TOP_PAD_PX + NP_HEADER_CLOCK_BG_PAD_Y))
+        band = frame[0:90, DESIGN_W // 2 - 160 : DESIGN_W // 2 + 160]
+        ink = np.where(band[:, :, :3].max(axis=2) > 80)
+        self.assertGreater(int(ink[0].size), 0)
+        self.assertLessEqual(int(ink[0].min()), pad + 8)
+        self.assertGreater(int(ink[0].max()) - int(ink[0].min()), 28)
+        # Rounded black chip sits behind the time.
+        mid_y = int(ink[0].min() + (int(ink[0].max()) - int(ink[0].min())) / 2)
+        chip = band[mid_y, 8, :3]
+        self.assertLess(int(chip.max()), 24)
 
 
 class ZoneWidgetAssetTests(unittest.TestCase):
@@ -891,6 +1014,20 @@ class DefaultZoneWidgetTests(unittest.TestCase):
             DEFAULT_ZONE_WIDGETS,
         )
 
+    def test_music_defaults_keep_clock_saver_volume(self) -> None:
+        from pigeon.widgets.preferences_settings import (
+            DEFAULT_MUSIC_ZONE_WIDGETS,
+            _normalize_zone_widgets,
+        )
+
+        self.assertEqual(
+            _normalize_zone_widgets(
+                DEFAULT_MUSIC_ZONE_WIDGETS,
+                defaults=DEFAULT_MUSIC_ZONE_WIDGETS,
+            ),
+            DEFAULT_MUSIC_ZONE_WIDGETS,
+        )
+
     def test_canonical_zone_widget_aliases(self) -> None:
         from pigeon.np_layout import canonical_zone_widget, is_status_bar_widget
 
@@ -902,35 +1039,88 @@ class DefaultZoneWidgetTests(unittest.TestCase):
         self.assertFalse(is_status_bar_widget("now_playing", 1))
 
 
-class VolumeReadoutShiftTests(unittest.TestCase):
-    def test_keeps_authored_layout_when_source_is_present(self) -> None:
-        from pigeon.np_layout import volume_readout_y_shift
+class VolumeWidgetCaptionTests(unittest.TestCase):
+    def test_format_label_prefers_audio_format(self) -> None:
+        from pigeon.widgets.playback_overlay import volume_widget_format_label
 
         self.assertEqual(
-            volume_readout_y_shift(has_source=True, value_h=90.0, scale_h=70.0),
-            0.0,
+            volume_widget_format_label("dolby atmos", "auro3d", "Denon"),
+            "DOLBY ATMOS > AURO3D",
+        )
+        self.assertEqual(
+            volume_widget_format_label("dolby atmos", "", "Denon"),
+            "DOLBY ATMOS",
         )
 
-    def test_centers_value_and_scale_as_a_pair(self) -> None:
+    def test_format_label_falls_back_to_receiver_name(self) -> None:
+        from pigeon.widgets.playback_overlay import volume_widget_format_label
+
+        self.assertEqual(
+            volume_widget_format_label("", "", "Denon AVR-X3800H"),
+            "Denon AVR-X3800H",
+        )
+        self.assertEqual(volume_widget_format_label("unknown", "", "Denon"), "Denon")
+
+    def test_value_text_strips_db_suffix(self) -> None:
+        from pigeon.widgets.playback_overlay import volume_widget_value_text
+
+        self.assertEqual(volume_widget_value_text("-22.5 dB"), "-22.5")
+        self.assertEqual(volume_widget_value_text("-58.5dB"), "-58.5")
+        self.assertNotIn("dB", volume_widget_value_text("-22.5 dB"))
+        self.assertNotIn("db", volume_widget_value_text("-22.5 dB").lower())
+
+    def test_readout_patch_fills_inner_disc_with_padding(self) -> None:
+        from pigeon.np_layout import VOLUME_INNER_R
+        from pigeon.widgets.view_circles import _VOLUME_TEXT_INNER_FIT, _volume_readout_patch
+
+        patch, w, h = _volume_readout_patch("-22.5", inner_r=VOLUME_INNER_R)
+        self.assertGreater(w, 1)
+        self.assertGreater(h, 1)
+        half_diag = ((w / 2.0) ** 2 + (h / 2.0) ** 2) ** 0.5
+        self.assertLessEqual(half_diag, VOLUME_INNER_R + 2.0)
+        self.assertGreater(half_diag, VOLUME_INNER_R * _VOLUME_TEXT_INNER_FIT * 0.55)
+
+    def test_format_sits_above_circle_and_value_is_centered(self) -> None:
         from pigeon.np_layout import (
+            NOW_PLAYING_ZONES,
+            VOLUME_INNER_R,
+            VOLUME_LOCAL_CX,
             VOLUME_LOCAL_CY,
-            VOLUME_SCALE_LOCAL,
-            VOLUME_VALUE_LOCAL,
-            volume_readout_y_shift,
+            VOLUME_OUTER_R,
         )
+        from pigeon.widgets.view_circles import ViewCirclesWidget
 
-        value_h = 90.0
-        scale_h = 70.0
-        dy = volume_readout_y_shift(
-            has_source=False, value_h=value_h, scale_h=scale_h
+        _force_default_np_zones()
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        widget = ViewCirclesWidget(assets_dir=assets)
+        widget.update_state(
+            progress=0.4,
+            elapsed_text="",
+            remaining_text="",
+            volume_text="-22.5 dB",
+            incoming_audio="dolby atmos",
+            playback_config="",
+            has_now_playing=True,
+            has_position=True,
+            content_active=True,
+            receiver_name="Denon AVR-X3800H",
         )
-        top = min(VOLUME_VALUE_LOCAL[1] - value_h, VOLUME_SCALE_LOCAL[1] - scale_h) + dy
-        bottom = max(VOLUME_VALUE_LOCAL[1], VOLUME_SCALE_LOCAL[1]) + dy
-        self.assertAlmostEqual((top + bottom) / 2.0, VOLUME_LOCAL_CY)
-        self.assertAlmostEqual(
-            (VOLUME_SCALE_LOCAL[1] + dy) - (VOLUME_VALUE_LOCAL[1] + dy),
-            VOLUME_SCALE_LOCAL[1] - VOLUME_VALUE_LOCAL[1],
-        )
+        frame = widget.bgra_frame()
+        self.assertIsNotNone(frame)
+        assert frame is not None
+        z = NOW_PLAYING_ZONES[3]
+        zx, zy, zw, zh = int(z.x), int(z.y), int(z.w), int(z.h)
+        crop = frame[zy : zy + zh, zx : zx + zw]
+        gray = crop[:, :, :3].max(axis=2)
+        ink = gray > 40
+        cx = int(round(VOLUME_LOCAL_CX))
+        cy = int(round(VOLUME_LOCAL_CY))
+        outer_top = int(round(VOLUME_LOCAL_CY - VOLUME_OUTER_R))
+        above = ink[: max(1, outer_top - 4), :]
+        self.assertTrue(above.any(), "audio format should paint above the disc")
+        r = int(round(VOLUME_INNER_R * 0.55))
+        disc = ink[cy - r : cy + r, cx - r : cx + r]
+        self.assertTrue(disc.any(), "volume number should sit in the disc center")
 
 
 class SixteenByNinePosterTests(unittest.TestCase):
@@ -1047,6 +1237,18 @@ class SixteenByNinePosterTests(unittest.TestCase):
 
         _w, _h = POSTER_16X9_LOCAL[2], POSTER_16X9_LOCAL[3]
         self.assertAlmostEqual(_w / _h, 16.0 / 9.0, places=4)
+
+    def test_16x9_poster_centers_on_volume_disc(self) -> None:
+        from pigeon.np_layout import (
+            POSTER_16X9_LOCAL,
+            POSTER_16X9_VIEW_H,
+            VOLUME_LOCAL_CY,
+        )
+
+        _x, y, _w, h, _rx = POSTER_16X9_LOCAL
+        self.assertAlmostEqual(y + h / 2.0, VOLUME_LOCAL_CY, delta=1.0)
+        self.assertGreaterEqual(y, -0.01)
+        self.assertLessEqual(y + h, POSTER_16X9_VIEW_H + 0.01)
 
     def test_youtube_title_draws_in_zone4_like_music(self) -> None:
         from pigeon.widgets.view_circles import ViewCirclesWidget, _zone4_title_xywh
@@ -1543,7 +1745,7 @@ class TtCountdown16x9WidgetTests(unittest.TestCase):
         )
         self.assertTrue(svg.is_file(), msg=str(svg))
 
-    def test_background_card_hugs_content(self) -> None:
+    def test_background_plate_is_not_drawn(self) -> None:
         from pigeon.np_layout import NOW_PLAYING_ZONES
         from pigeon.widgets import view_circles as vc
         from pigeon.widgets.view_circles import ViewCirclesWidget
@@ -1578,15 +1780,19 @@ class TtCountdown16x9WidgetTests(unittest.TestCase):
         self.assertIsNotNone(frame)
         assert frame is not None
         z6 = NOW_PLAYING_ZONES[6]
-        zx, zy, zw, zh = z6.xywh
+        zx, zy, zw, zh = (int(v) for v in z6.xywh)
         region = frame[zy : zy + zh, zx : zx + zw, :3]
-        # Hugged plate: zone corners show artwork; a black island wraps the ink.
-        self.assertGreater(int(region[2, 2].max()), 12)
-        self.assertGreater(int(region[2, -3].max()), 12)
-        dark = region.max(axis=2) < 10
-        self.assertGreater(int(dark.sum()), 400)
-        self.assertLess(int(dark.sum()), int(zw * zh * 0.85))
-        self.assertGreater(int((region.max(axis=2) > 200).sum()), 500)
+        luma = region.max(axis=2)
+        self.assertGreater(int(luma[2, 2]), 12)
+        self.assertGreater(int(luma[2, -3]), 12)
+        ink_rows = np.where(luma.max(axis=1) > 200)[0]
+        self.assertGreater(len(ink_rows), 0)
+        mid = int(ink_rows[len(ink_rows) // 2])
+        top_ref = int(luma[2, 2])
+        # Zone edges stay on the open artwork field — no full-width plate.
+        self.assertLess(abs(int(luma[mid, 4]) - top_ref), 24)
+        self.assertLess(abs(int(luma[mid, -5]) - top_ref), 24)
+        self.assertGreater(int((luma > 200).sum()), 500)
 
     def test_svg_has_divider_guides(self) -> None:
         import xml.etree.ElementTree as ET
@@ -1666,27 +1872,33 @@ class TtCountdown16x9WidgetTests(unittest.TestCase):
         self.assertAlmostEqual(ax, hx + hw / 2.0)
         self.assertAlmostEqual(ay, hy + hh)
 
-    def test_content_group_lifts_to_top_divider(self) -> None:
+    def test_content_group_centers_in_widget(self) -> None:
         from pigeon.np_layout import (
             TT_COUNTDOWN_16X9_HORIZONTAL_DIVIDER_LOCAL,
-            TT_COUNTDOWN_16X9_TOP_DIVIDER_LOCAL,
+            TT_COUNTDOWN_16X9_VIEW_H,
+            TT_COUNTDOWN_DIVIDER_LOCAL,
+            TT_COUNTDOWN_VIEW_H,
             tt_countdown_16x9_content_lift,
             tt_countdown_16x9_time_anchor,
+            tt_countdown_portrait_content_lift,
         )
 
         short_h = 80.0
         trt_h = 40.0
         lift = tt_countdown_16x9_content_lift(short_h, trt_height=trt_h)
-        _tx, ty, _tw, th = TT_COUNTDOWN_16X9_TOP_DIVIDER_LOCAL
         _hx, hy, _hw, hh = TT_COUNTDOWN_16X9_HORIZONTAL_DIVIDER_LOCAL
         group_top = hy - short_h - lift
-        self.assertAlmostEqual(group_top, ty + th)
+        group_bot = hy + hh + trt_h - lift
+        self.assertAlmostEqual(
+            (group_top + group_bot) / 2.0, TT_COUNTDOWN_16X9_VIEW_H / 2.0
+        )
         _ax, ay = tt_countdown_16x9_time_anchor(lift=lift)
         self.assertAlmostEqual(ay, hy + hh - lift)
-        self.assertGreater(lift, 0.0)
-        # A TT that already fills the box does not lift.
-        box_h = hy - (ty + th)
-        self.assertAlmostEqual(tt_countdown_16x9_content_lift(box_h), 0.0)
+        lift_p = tt_countdown_portrait_content_lift(short_h, trt_height=trt_h)
+        _dx, seat_y, _dw, gap = TT_COUNTDOWN_DIVIDER_LOCAL
+        p_top = seat_y - short_h - lift_p
+        p_bot = seat_y + gap + trt_h - lift_p
+        self.assertAlmostEqual((p_top + p_bot) / 2.0, TT_COUNTDOWN_VIEW_H / 2.0)
 
     def test_portrait_tt_sits_beside_trt(self) -> None:
         from pigeon.np_layout import (
@@ -1706,6 +1918,126 @@ class TtCountdown16x9WidgetTests(unittest.TestCase):
         trt_cy = trt_r[1] + trt_r[3] / 2.0
         self.assertAlmostEqual(tt_cy, trt_cy, places=4)
         self.assertGreater(tt_r[3], TT_COUNTDOWN_16X9_VIEW_H * 0.7)
+
+    def test_centered_art_fits_square_in_wide_view(self) -> None:
+        from pigeon.np_layout import (
+            TT_COUNTDOWN_16X9_VIEW_H,
+            TT_COUNTDOWN_16X9_VIEW_W,
+            tt_countdown_centered_art_rect,
+        )
+
+        x, y, w, h = tt_countdown_centered_art_rect(
+            80, 80, view_w=TT_COUNTDOWN_16X9_VIEW_W, view_h=TT_COUNTDOWN_16X9_VIEW_H
+        )
+        self.assertAlmostEqual(w, h, places=4)
+        self.assertAlmostEqual(x + w / 2.0, TT_COUNTDOWN_16X9_VIEW_W / 2.0, places=4)
+        self.assertAlmostEqual(y + h / 2.0, TT_COUNTDOWN_16X9_VIEW_H / 2.0, places=4)
+        self.assertLess(y, 30.0)
+        self.assertGreater(h, TT_COUNTDOWN_16X9_VIEW_H * 0.85)
+
+    def test_volume_align_centers_plate_on_disc(self) -> None:
+        from pigeon.np_layout import (
+            layout_shows_tt_countdown_and_volume,
+            tt_countdown_volume_align_dy,
+        )
+
+        self.assertTrue(
+            layout_shows_tt_countdown_and_volume(
+                ("tt_countdown_16x9", "", "volume", "cast_info", "status_bar")
+            )
+        )
+        self.assertFalse(
+            layout_shows_tt_countdown_and_volume(
+                ("tt_countdown", "poster", "clock", "cast_info", "status_bar")
+            )
+        )
+        dy = tt_countdown_volume_align_dy(
+            plate_top=100.0,
+            plate_bottom=200.0,
+            volume_cy=288.52,
+            zone_top=34.0,
+            zone_bottom=522.0,
+        )
+        self.assertAlmostEqual(150.0 + dy, 288.52)
+        dy_top = tt_countdown_volume_align_dy(
+            plate_top=100.0,
+            plate_bottom=400.0,
+            volume_cy=50.0,
+            zone_top=34.0,
+            zone_bottom=522.0,
+        )
+        self.assertAlmostEqual(100.0 + dy_top, 34.0)
+        dy_bot = tt_countdown_volume_align_dy(
+            plate_top=100.0,
+            plate_bottom=200.0,
+            volume_cy=500.0,
+            zone_top=34.0,
+            zone_bottom=522.0,
+        )
+        self.assertAlmostEqual(200.0 + dy_bot, 522.0)
+
+    def test_plate_aligns_to_volume_disc_center(self) -> None:
+        from pigeon.np_layout import (
+            NOW_PLAYING_ZONES,
+            NP_HEADER_CLOCK_BG_PAD_Y,
+            NP_HEADER_CLOCK_SIZE_PX,
+            NP_HEADER_CLOCK_TOP_PAD_PX,
+            VOLUME_LOCAL_CY,
+        )
+        from pigeon.widgets import view_circles as vc
+        from pigeon.widgets.view_circles import ViewCirclesWidget, _zone_volume_center
+
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        widget = ViewCirclesWidget(assets_dir=assets)
+        vc._default_zone_widget_assignments = lambda: (  # type: ignore[method-assign]
+            "tt_countdown_16x9",
+            "",
+            "volume",
+            "cast_info",
+            "status_bar",
+        )
+        tt = np.zeros((80, 400, 4), dtype=np.uint8)
+        tt[:, :, :] = (255, 255, 255, 255)
+        poster = np.full((90, 160, 3), (0, 180, 80), dtype=np.uint8)
+        widget.update_state(
+            progress=0.25,
+            elapsed_text="0:30:00",
+            remaining_text="1:30:00",
+            volume_text="-22.5 dB",
+            has_now_playing=True,
+            has_position=True,
+            content_active=True,
+            content_mode="video",
+            poster_bgra=poster,
+            service_name="Peacock",
+            tt_bgra=tt,
+            tt_title="The Drama",
+        )
+        frame = widget.bgra_frame()
+        self.assertIsNotNone(frame)
+        assert frame is not None
+        z6 = NOW_PLAYING_ZONES[6]
+        zx, zy, zw, zh = (int(v) for v in z6.xywh)
+        region = frame[zy : zy + zh, zx : zx + zw, :3]
+        luma = region.max(axis=2)
+        # Skip the header-clock chip that overlaps the top of zone 6.
+        skip = max(
+            12,
+            int(
+                round(
+                    NP_HEADER_CLOCK_TOP_PAD_PX
+                    + NP_HEADER_CLOCK_SIZE_PX
+                    + NP_HEADER_CLOCK_BG_PAD_Y * 2.0
+                    - z6.y
+                )
+            ),
+        )
+        ink_rows = np.where(luma[skip:, :].max(axis=1) > 200)[0] + skip
+        self.assertGreater(len(ink_rows), 10)
+        content_cy = zy + (int(ink_rows[0]) + int(ink_rows[-1])) / 2.0
+        _vcx, vcy = _zone_volume_center(3)
+        self.assertAlmostEqual(content_cy, vcy, delta=12.0)
+        self.assertAlmostEqual(vcy, z6.y + VOLUME_LOCAL_CY, delta=1.0)
 
     def test_zone_1_or_2_opens_slot_6_zone_3_opens_slot_7(self) -> None:
         from pigeon.np_layout import (
@@ -1752,7 +2084,7 @@ class TtCountdown16x9WidgetTests(unittest.TestCase):
         vc._default_zone_widget_assignments = lambda: (  # type: ignore[method-assign]
             "tt_countdown_16x9",
             "poster",
-            "volume",
+            "clock",
             "cast_info",
             "status_bar",
         )
@@ -1826,6 +2158,316 @@ class TtCountdown16x9WidgetTests(unittest.TestCase):
         left = bright[:, : zw // 2]
         right = bright[:, zw // 2 :]
         self.assertGreater(int(left.sum()), int(right.sum()))
+
+
+class WidgetShimmerTests(unittest.TestCase):
+    def test_phase_and_step_wrap(self) -> None:
+        from pigeon.np_layout import WIDGET_SHIMMER_STEPS, widget_shimmer_phase, widget_shimmer_step
+
+        self.assertGreaterEqual(widget_shimmer_phase(0.0), 0.0)
+        self.assertLess(widget_shimmer_phase(0.0), 1.0)
+        self.assertEqual(widget_shimmer_step(0.0), 0)
+        self.assertEqual(
+            widget_shimmer_step(1_000.0) % WIDGET_SHIMMER_STEPS,
+            widget_shimmer_step(1_000.0),
+        )
+
+    def test_patch_highlight_moves(self) -> None:
+        from pigeon.widgets.view_circles import _shimmer_patch_bgra
+
+        a = _shimmer_patch_bgra(200, 40, radius=10, phase=0.15)
+        b = _shimmer_patch_bgra(200, 40, radius=10, phase=0.75)
+        self.assertEqual(a.shape, (40, 200, 4))
+        self.assertGreater(int(a[:, :, 3].max()), 80)
+        self.assertFalse(np.array_equal(a, b))
+        self.assertGreater(int(a.max()) - int(a.min()), 8)
+
+    def test_loading_keeps_one_empty_cast_slot(self) -> None:
+        from pigeon.widgets.view_circles import _effective_zone_widgets
+
+        zones = (
+            "tt_countdown_16x9",
+            "",
+            "volume",
+            "cast_info",
+            "status_bar",
+        )
+        hidden = _effective_zone_widgets(
+            has_position=True,
+            cast_count=0,
+            content_active=True,
+            zone_widgets=zones,
+        )
+        self.assertEqual(hidden[3], "")
+        loading = _effective_zone_widgets(
+            has_position=True,
+            cast_count=0,
+            content_active=True,
+            loading_cast=True,
+            zone_widgets=zones,
+        )
+        self.assertEqual(loading[3], "cast_info")
+        self.assertEqual(loading[0], "tt_countdown_16x9")
+
+    def test_searching_paints_shimmer_on_tt_and_cast(self) -> None:
+        from pigeon.widgets import view_circles as vc
+        from pigeon.widgets.view_circles import ViewCirclesWidget
+
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        widget = ViewCirclesWidget(assets_dir=assets)
+        vc._default_zone_widget_assignments = lambda: (  # type: ignore[method-assign]
+            "tt_countdown_16x9",
+            "",
+            "volume",
+            "cast_info",
+            "status_bar",
+        )
+        widget.update_state(
+            progress=0.2,
+            elapsed_text="0:10",
+            remaining_text="1:30:00",
+            volume_text="-22.5 dB",
+            has_now_playing=True,
+            has_position=True,
+            content_active=True,
+            content_mode="video",
+            searching=True,
+            cast=[],
+            tt_bgra=None,
+            tt_title="",
+            service_name="Peacock",
+        )
+        self.assertTrue(widget._tt_widget_loading())
+        self.assertTrue(widget._cast_widget_loading())
+        self.assertEqual(widget._assignments()[3], "cast_info")
+        frame = widget.bgra_frame()
+        self.assertIsNotNone(frame)
+        assert frame is not None
+        z6 = NOW_PLAYING_ZONES[6]
+        z4 = NOW_PLAYING_ZONES[4]
+        tt_region = frame[
+            int(z6.y) : int(z6.y + z6.h),
+            int(z6.x) : int(z6.x + z6.w),
+            3,
+        ]
+        cast_region = frame[
+            int(z4.y) : int(z4.y + z4.h),
+            int(z4.x) : int(z4.x + z4.w),
+            3,
+        ]
+        self.assertGreater(int(tt_region.max()), 40)
+        self.assertGreater(int(cast_region.max()), 40)
+
+    def test_shimmer_does_not_bust_the_static_cache(self) -> None:
+        from unittest.mock import patch
+
+        from pigeon.widgets import view_circles as vc
+        from pigeon.widgets.view_circles import ViewCirclesWidget
+
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        widget = ViewCirclesWidget(assets_dir=assets)
+        vc._default_zone_widget_assignments = lambda: (  # type: ignore[method-assign]
+            "tt_countdown_16x9",
+            "",
+            "volume",
+            "cast_info",
+            "status_bar",
+        )
+        widget.update_state(
+            progress=0.2,
+            elapsed_text="0:10",
+            remaining_text="1:30:00",
+            volume_text="-22.5 dB",
+            has_now_playing=True,
+            has_position=True,
+            content_active=True,
+            content_mode="video",
+            searching=True,
+            cast=[],
+            tt_bgra=None,
+            tt_title="",
+            service_name="Peacock",
+        )
+        with patch(
+            "pigeon.widgets.view_circles.widget_shimmer_phase", return_value=0.1
+        ):
+            first = widget.bgra_frame()
+            self.assertIsNotNone(first)
+            assert first is not None
+            a = first.copy()
+            sig = widget._cache_sig()
+        with patch(
+            "pigeon.widgets.view_circles.widget_shimmer_phase", return_value=0.8
+        ):
+            widget.tick()
+            b = widget.bgra_frame()
+            self.assertEqual(sig, widget._cache_sig())
+        self.assertIsNotNone(b)
+        assert b is not None
+        self.assertFalse(np.array_equal(a, b))
+
+    def test_searching_youtube_shimmers_poster(self) -> None:
+        from pigeon.widgets import view_circles as vc
+        from pigeon.widgets.view_circles import ViewCirclesWidget, _poster_geometry
+
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        widget = ViewCirclesWidget(assets_dir=assets)
+        vc._default_zone_widget_assignments = lambda: (  # type: ignore[method-assign]
+            "clock",
+            "poster",
+            "volume",
+            "cast_info",
+            "status_bar",
+        )
+        widget.update_state(
+            progress=0.1,
+            elapsed_text="0:10",
+            remaining_text="-1:00",
+            volume_text="-18.0 dB",
+            has_now_playing=True,
+            has_position=True,
+            content_active=True,
+            content_mode="video",
+            searching=True,
+            is_youtube=True,
+            service_name="YouTube",
+        )
+        self.assertEqual(widget._poster_zone(), 6)
+        frame = widget.bgra_frame()
+        self.assertIsNotNone(frame)
+        assert frame is not None
+        px, py, pw, ph, _prx = _poster_geometry("video", zone=6)
+        plate = frame[py : py + ph, px : px + pw, 3]
+        self.assertGreater(int(plate.max()), 40)
+
+
+class MusicTtAlbumArtTests(unittest.TestCase):
+    def test_music_tt_patch_uses_album_art_without_whitening(self) -> None:
+        from pigeon.np_layout import NOW_PLAYING_ZONES
+        from pigeon.widgets import view_circles as vc
+        from pigeon.widgets.view_circles import ViewCirclesWidget
+
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        widget = ViewCirclesWidget(assets_dir=assets)
+        vc._default_zone_widget_assignments = lambda: (  # type: ignore[method-assign]
+            "tt_countdown_16x9",
+            "",
+            "volume",
+            "cast_info",
+            "status_bar",
+        )
+        album = np.zeros((80, 80, 4), dtype=np.uint8)
+        album[:, :] = (12, 18, 22, 255)
+        widget.update_state(
+            progress=0.2,
+            elapsed_text="0:10",
+            remaining_text="-3:00",
+            volume_text="-22.5 dB",
+            has_now_playing=True,
+            has_position=True,
+            content_active=True,
+            content_mode="music",
+            song_title="Never Gonna Give You Up",
+            artist_title="Rick Astley",
+            poster_bgra=album,
+            tt_title="Never Gonna Give You Up",
+        )
+        src = widget._tt_source_bgra()
+        self.assertIsNotNone(src)
+        self.assertIs(src, widget._poster_bgra)
+        z = NOW_PLAYING_ZONES[6]
+        patch = widget._tt_countdown_tt_patch(z, wide=True)
+        self.assertIsNotNone(patch)
+        assert patch is not None
+        vis = patch[:, :, 3] > 16
+        self.assertGreater(int(vis.sum()), 50)
+        # Near-black cover stays dark; TT whitening would push RGB to 255.
+        self.assertLess(int(patch[vis][:, :3].max()), 80)
+
+    def test_music_album_art_is_centered_without_countdown(self) -> None:
+        from pigeon.np_layout import NOW_PLAYING_ZONES
+        from pigeon.widgets import view_circles as vc
+        from pigeon.widgets.view_circles import ViewCirclesWidget
+
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        widget = ViewCirclesWidget(assets_dir=assets)
+        vc._default_zone_widget_assignments = lambda: (  # type: ignore[method-assign]
+            "tt_countdown_16x9",
+            "",
+            "volume",
+            "cast_info",
+            "status_bar",
+        )
+        album = np.full((80, 80, 4), (0, 200, 40, 255), dtype=np.uint8)
+        widget.update_state(
+            progress=0.2,
+            elapsed_text="0:10",
+            remaining_text="-3:00",
+            volume_text="-22.5 dB",
+            has_now_playing=True,
+            has_position=True,
+            content_active=True,
+            content_mode="music",
+            song_title="Never Gonna Give You Up",
+            artist_title="Rick Astley",
+            poster_bgra=album,
+            tt_title="Never Gonna Give You Up",
+        )
+        frame = widget.bgra_frame()
+        self.assertIsNotNone(frame)
+        assert frame is not None
+        z6 = NOW_PLAYING_ZONES[6]
+        zx, zy, zw, zh = (int(v) for v in z6.xywh)
+        region = frame[zy : zy + zh, zx : zx + zw]
+        match = (
+            (region[:, :, 1] > 150)
+            & (region[:, :, 0] < 40)
+            & (region[:, :, 2] < 80)
+            & (region[:, :, 3] > 200)
+        )
+        ys, xs = np.where(match)
+        self.assertGreater(len(xs), 200)
+        self.assertAlmostEqual(float(xs.mean()), zw / 2.0, delta=36)
+        # Countdown used to sit on the right; skip the header-clock band at the top.
+        mid_right = region[int(zh * 0.28) : int(zh * 0.78), int(zw * 0.86) :, :3]
+        self.assertLess(int((mid_right.max(axis=2) > 200).sum()), 80)
+
+    def test_music_track_titles_draw_in_zone4(self) -> None:
+        from pigeon.widgets import view_circles as vc
+        from pigeon.widgets.view_circles import ViewCirclesWidget, _zone4_title_xywh
+
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        widget = ViewCirclesWidget(assets_dir=assets)
+        vc._default_zone_widget_assignments = lambda: (  # type: ignore[method-assign]
+            "tt_countdown_16x9",
+            "",
+            "volume",
+            "cast_info",
+            "status_bar",
+        )
+        album = np.full((40, 40, 4), (30, 30, 30, 255), dtype=np.uint8)
+        widget.update_state(
+            progress=0.2,
+            elapsed_text="0:10",
+            remaining_text="-3:00",
+            volume_text="-22.5 dB",
+            has_now_playing=True,
+            has_position=True,
+            content_active=True,
+            content_mode="music",
+            song_title="Hello",
+            artist_title="Adele",
+            album_title="25",
+            poster_bgra=album,
+        )
+        self.assertEqual(widget._assignments()[2], "volume")
+        self.assertEqual(widget._assignments()[3], "cast_info")
+        frame = widget.bgra_frame()
+        self.assertIsNotNone(frame)
+        assert frame is not None
+        zx, zy, zw, zh = _zone4_title_xywh()
+        region = frame[zy : zy + zh, zx : zx + zw]
+        self.assertGreater(int((region[:, :, :3].max(axis=2) > 180).sum()), 200)
 
 
 if __name__ == "__main__":

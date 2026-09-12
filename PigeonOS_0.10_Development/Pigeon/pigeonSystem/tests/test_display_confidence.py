@@ -12,6 +12,8 @@ if _SYS_ROOT not in sys.path:
 
 from pigeon import display_confidence as dc  # noqa: E402
 from pigeon import hdmi_ocr as ho  # noqa: E402
+from pigeon.ocr_clues import looks_like_ocr_junk  # noqa: E402
+from pigeon.tmdb_poster import is_degenerate_tmdb_query  # noqa: E402
 from pigeon.widgets.view_circles import (  # noqa: E402
     _effective_zone_widgets,
     _layout_is_fullscreen_clock,
@@ -47,6 +49,32 @@ class PlayerMetadataTests(unittest.TestCase):
         self.assertFalse(
             dc.content_should_stay_active(md, hdmi_on=True, hdmi_present=False)
         )
+
+    def test_short_movie_titles_are_adequate(self) -> None:
+        for title in ("It", "Up", "Us", "Her", "Elf", "Ted", "It 2017"):
+            md = {"query": title, "identity_source": "pyatv"}
+            self.assertFalse(is_degenerate_tmdb_query(title), title)
+            self.assertFalse(looks_like_ocr_junk(title), title)
+            self.assertFalse(dc.is_placeholder_identity(title), title)
+            self.assertTrue(dc.player_metadata_adequate(md), title)
+            self.assertFalse(dc.ocr_is_in_charge(md), title)
+
+
+class ShortTitleQueryTests(unittest.TestCase):
+    def test_ocr_glyph_noise_is_still_junk(self) -> None:
+        self.assertTrue(looks_like_ocr_junk("S S Sh"))
+        self.assertTrue(looks_like_ocr_junk("S S"))
+        self.assertTrue(looks_like_ocr_junk(""))
+        self.assertTrue(looks_like_ocr_junk("M"))
+
+    def test_service_names_stay_degenerate(self) -> None:
+        self.assertTrue(is_degenerate_tmdb_query("Netflix"))
+        self.assertTrue(is_degenerate_tmdb_query("disney+"))
+        self.assertTrue(is_degenerate_tmdb_query("2017"))
+
+    def test_chapter_two_still_passes(self) -> None:
+        self.assertFalse(is_degenerate_tmdb_query("It: Chapter Two"))
+        self.assertFalse(looks_like_ocr_junk("It: Chapter Two"))
 
 
 class OcrScheduleTests(unittest.TestCase):

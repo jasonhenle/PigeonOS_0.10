@@ -1038,7 +1038,7 @@ class MainSettingsState:
         self.pigeon_needs_update_prefetch = True
 
     def open_metadata_debug(self) -> None:
-        """Open the metadata inspector ([4]) on its first page (player)."""
+        """Open the metadata inspector ([0]) on its first page (player)."""
         if not self.show_pigeon_settings:
             self.enter_pigeon_settings()
         self.close_update_popup()
@@ -8352,9 +8352,8 @@ class MainSettingsWidget:
                 self.invalidate()
                 return "pigeon_factory_reset"
             if focused == "info_button":
-                st.open_preferences()
-                self.invalidate()
-                return "preferences_open"
+                # Now-playing zone picker is disabled while that screen is rethought.
+                return "preferences_disabled"
             if focused == "general_button":
                 st.open_options()
                 self.invalidate()

@@ -124,7 +124,7 @@ def clues_agree_with_metadata(clues: OcrClues, metadata: Mapping[str, Any] | Non
         return False
     guess_n = _norm(clues.title_guess)
     guess_tok = _tokens(clues.title_guess)
-    if len(guess_n) < 3:
+    if len(guess_n) < 2:
         return False
     for key in ("query", "title", "series_name", "artist", "ocr_title"):
         field = str(metadata.get(key) or "").strip()
@@ -152,7 +152,11 @@ def _collapse_repeated_words(text: str) -> str:
 
 
 def looks_like_ocr_junk(line: str) -> bool:
-    """True for glyph noise that must not be sent to TMDb (``S S Sh``)."""
+    """True for glyph noise that must not be sent to TMDb (``S S Sh``).
+
+    Real short titles (``It``, ``Up``, ``Us``, ``Her``, ``It 2017``) are not junk.
+    A lone letter or punctuation-only line still is.
+    """
     words = [re.sub(r"[^A-Za-z0-9]", "", w) for w in (line or "").split()]
     words = [w for w in words if w]
     if not words:
@@ -160,10 +164,8 @@ def looks_like_ocr_junk(line: str) -> bool:
     tiny = sum(1 for w in words if len(w) <= 2)
     if tiny >= 2 and tiny >= len(words) * 0.5:
         return True
-    if len(words) <= 2 and all(len(w) <= 3 for w in words):
-        return True
     letters = re.sub(r"[^A-Za-z]", "", line or "")
-    return len(letters) < 3
+    return len(letters) < 2
 
 
 def _clean_line(text: str) -> str:
@@ -223,7 +225,7 @@ def _guess_title(lines: list[str]) -> str | None:
 
 def _title_score(line: str) -> int:
     n = len(line)
-    words = [w for w in line.split() if len(re.sub(r"[^A-Za-z0-9]", "", w)) >= 3]
+    words = [w for w in line.split() if len(re.sub(r"[^A-Za-z0-9]", "", w)) >= 2]
     score = 0
     if 6 <= n <= 48:
         score += 20
@@ -231,7 +233,7 @@ def _title_score(line: str) -> int:
         score += 8
     if 2 <= len(words) <= 8:
         score += 16
-    elif len(words) == 1 and 4 <= len(words[0]) <= 24:
+    elif len(words) == 1 and 2 <= len(words[0]) <= 24:
         score += 10
     if ":" in line and n <= 50:
         score += 8
