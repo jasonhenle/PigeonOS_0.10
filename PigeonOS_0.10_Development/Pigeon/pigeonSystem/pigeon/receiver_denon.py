@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import concurrent.futures
+import ipaddress
+import json
 import platform
 import re
 import select
@@ -15,7 +17,11 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
-from pigeon.receiver_denon_telnet import _denon_mv_to_db, poll_denon_telnet
+from pigeon.receiver_denon_telnet import (
+    _denon_mv_to_db,
+    poll_denon_telnet,
+    query_denon_volume_telnet,
+)
 
 # Same endpoints the Denon 2016+ web UI and denonavr use for main zone snapshot.
 _STATUS_PATHS = (
@@ -70,6 +76,7 @@ def _fetch(host: str, path: str, timeout: float, *, scheme: str = "http") -> str
 # but still answer ``AppCommand.xml`` POST on port 8080 (same as Home Assistant / openHAB).
 _APPCOMMAND_XML = b"""<?xml version="1.0" encoding="utf-8"?>
 <tx>
+  <cmd id="1">GetAllZonePowerStatus</cmd>
   <cmd id="1">GetVolumeLevel</cmd>
   <cmd id="1">GetMuteStatus</cmd>
 </tx>
@@ -120,6 +127,579 @@ def _parse_appcommand_rx(xml_text: str) -> dict[str, str]:
         elif raw == "power" and len(txt) <= 12:
             out.setdefault("Power", txt.upper())
     return out
+
+
+def send_denon_http_command(
+    host: str,
+    command: str,
+    *,
+    timeout: float = 1.5,
+) -> tuple[bool, str]:
+    """Fire a Denon ``formiPhoneAppDirect`` command (does not need the telnet socket).
+
+    Many units answer ``200`` with an empty body on ``:8080`` and ``403`` on ``:80``.
+    """
+    h = _normalize_host(host)
+    cmd = str(command or "").strip()
+    if not h or not cmd:
+        return False, "No receiver command."
+    from urllib.parse import quote
+
+    base = h
+    m = re.match(r"^(.+):(\d+)$", h)
+    if m:
+        base = m.group(1)
+    targets: list[str] = []
+    if m and int(m.group(2)) in (80, 8080):
+        targets.append(h)
+    targets.extend((f"{base}:8080", base))
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for t in targets:
+        if t not in seen:
+            seen.add(t)
+            ordered.append(t)
+    last_err = "no endpoint"
+    for target in ordered:
+        url = (
+            f"http://{target}/goform/formiPhoneAppDirect.xml?{quote(cmd, safe='')}"
+        )
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (compatible; Pigeon/0.10; +Denon-AppDirect)",
+                    "Accept": "*/*",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=max(0.3, float(timeout))) as resp:
+                if 200 <= int(getattr(resp, "status", 200) or 200) < 300:
+                    return True, f"Denon HTTP: {cmd}"
+                last_err = f"HTTP {getattr(resp, 'status', '?')}"
+        except Exception as exc:
+            last_err = str(exc)
+            continue
+    return False, last_err
+
+
+def send_denon_control_command(
+    host: str,
+    command: str,
+    *,
+    timeout: float = 1.5,
+) -> tuple[bool, str]:
+    """Telnet with ack. HTTP AppDirect is fire-and-forget only (empty 200)."""
+    from pigeon.receiver_denon_telnet import send_denon_telnet_command
+
+    ok_tn, msg_tn = send_denon_telnet_command(host, command, timeout=timeout)
+    if ok_tn:
+        try:
+            send_denon_http_command(host, command, timeout=min(0.8, timeout))
+        except Exception:
+            pass
+        return True, msg_tn
+    return send_denon_http_command(host, command, timeout=timeout)
+
+
+def read_denon_appcommand_status(
+    host: str,
+    *,
+    timeout: float = 1.2,
+) -> dict[str, str]:
+    """Volume / mute / zone power from ``AppCommand.xml`` (no telnet lock)."""
+    h = _normalize_host(host)
+    if not h:
+        return {}
+    m = re.match(r"^(.+):(\d+)$", h)
+    ip = m.group(1) if m else h
+    ac = _merge_appcommand_status(f"{ip}:8080", timeout, scheme="http")
+    if not ac:
+        ac = _merge_appcommand_status(ip, timeout, scheme="http")
+    return ac or {}
+
+
+def coalesce_receiver_volume_actions(actions: list[str]) -> tuple[int, int]:
+    """Net ``MV`` steps and mute toggles from a knob burst."""
+    steps = 0
+    mutes = 0
+    for raw in actions:
+        act = str(raw or "").strip().lower()
+        if act == "volume_up":
+            steps += 1
+        elif act == "volume_down":
+            steps -= 1
+        elif act == "mute_toggle":
+            mutes += 1
+    return steps, mutes
+
+
+# ip → (pid, monotonic). Bound only to the player whose HEOS ``ip`` matches
+# this host — never list order or model name (one HEOS account can list an
+# S670H and a theater X3800H together).
+_HEOS_PID: dict[str, tuple[int, float]] = {}
+_HEOS_PID_TTL_S = 300.0
+_HEOS_PORT = 1255
+
+
+def _heos_ip(host: str) -> str:
+    h = _normalize_host(host)
+    m = re.match(r"^(.+):(\d+)$", h)
+    return m.group(1) if m else h
+
+
+def _heos_player_ip(row: dict[str, object]) -> str:
+    return str(row.get("ip") or row.get("ipaddr") or "").strip()
+
+
+def pick_heos_player_for_host(
+    host: str, payload: object
+) -> dict[str, object] | None:
+    """Return the HEOS player at ``host``, or None.
+
+    ``player/get_players`` is account-wide. Taking ``payload[0]`` would send
+    volume to whichever AVR HEOS listed first, not the paired receiver.
+    """
+    want = _heos_ip(host)
+    if not want or not isinstance(payload, list):
+        return None
+    matched: list[dict[str, object]] = []
+    for raw in payload:
+        if not isinstance(raw, dict):
+            continue
+        if _heos_player_ip(raw) == want:
+            matched.append(raw)
+    if not matched:
+        return None
+    for row in matched:
+        try:
+            if int(row.get("lineout") or 0) == 0:
+                return row
+        except (TypeError, ValueError):
+            continue
+    return matched[0]
+
+
+def forget_heos_player(host: str) -> None:
+    ip = _heos_ip(host)
+    if ip:
+        _HEOS_PID.pop(ip, None)
+
+
+def _heos_exchange(host: str, command: str, *, timeout: float = 1.5) -> dict[str, object]:
+    """One HEOS CLI line on port 1255 → first JSON object."""
+    ip = _heos_ip(host)
+    cmd = str(command or "").strip()
+    if not ip or not cmd:
+        return {}
+    sock: socket.socket | None = None
+    try:
+        sock = socket.create_connection((ip, _HEOS_PORT), timeout=min(1.0, timeout))
+        sock.settimeout(max(0.4, float(timeout)))
+        sock.sendall((cmd + "\r\n").encode("ascii", errors="ignore"))
+        buf = b""
+        deadline = time.monotonic() + max(0.4, float(timeout))
+        while time.monotonic() < deadline:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+            if b"{" in buf and (b"\r\n" in buf or b"\n" in buf):
+                break
+    except (OSError, socket.timeout):
+        return {}
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+    text = buf.decode("utf-8", errors="replace")
+    start = text.find("{")
+    if start < 0:
+        return {}
+    end = text.find("\n", start)
+    blob = text[start:] if end < 0 else text[start:end]
+    try:
+        data = json.loads(blob)
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def heos_player_id(host: str, *, timeout: float = 1.5) -> int | None:
+    """HEOS pid for the player whose LAN IP is ``host``. Model is ignored."""
+    ip = _heos_ip(host)
+    if not ip:
+        return None
+    cached = _HEOS_PID.get(ip)
+    if cached:
+        pid, ts = cached
+        if pid and (time.monotonic() - ts) < _HEOS_PID_TTL_S:
+            return pid
+        _HEOS_PID.pop(ip, None)
+    data = _heos_exchange(host, "heos://player/get_players", timeout=timeout)
+    row = pick_heos_player_for_host(host, data.get("payload"))
+    if not row:
+        return None
+    try:
+        pid = int(row.get("pid") or 0)
+    except (TypeError, ValueError):
+        return None
+    if pid:
+        _HEOS_PID[ip] = (pid, time.monotonic())
+        return pid
+    return None
+
+
+def _heos_message_fields(message: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for part in str(message or "").split("&"):
+        if "=" not in part:
+            continue
+        key, val = part.split("=", 1)
+        if key:
+            out[key] = val
+    return out
+
+
+def heos_level_to_db(level: int) -> str:
+    """Map a HEOS *player* level (0–98) to a dB string (80 = 0 dB).
+
+    This is the HEOS music-player volume, not AVR master / HDMI volume.
+    When HEOS is stopped the player often reports ``level=0`` (``-80.0 dB``)
+    while the front-panel master level is something else — do not show this
+    on the now-playing volume widget.
+    """
+    try:
+        n = int(level)
+    except (TypeError, ValueError):
+        return ""
+    return f"{n - 80:.1f} dB"
+
+
+def read_heos_volume(host: str, *, timeout: float = 1.2) -> dict[str, object]:
+    """HEOS *player* volume at this host's IP. Empty when HEOS is missing or unbound.
+
+    Not AVR master volume. HDMI / Apple TV listening leaves this at 0 / muted.
+    """
+    pid = heos_player_id(host, timeout=timeout)
+    if not pid:
+        return {}
+    vol = _heos_exchange(host, f"heos://player/get_volume?pid={pid}", timeout=timeout)
+    mute = _heos_exchange(host, f"heos://player/get_mute?pid={pid}", timeout=timeout)
+    fields = _heos_message_fields(
+        str((vol.get("heos") or {}).get("message") or "")
+        if isinstance(vol.get("heos"), dict)
+        else ""
+    )
+    mute_fields = _heos_message_fields(
+        str((mute.get("heos") or {}).get("message") or "")
+        if isinstance(mute.get("heos"), dict)
+        else ""
+    )
+    level: int | None
+    try:
+        level = int(fields["level"]) if "level" in fields else None
+    except (TypeError, ValueError):
+        level = None
+    muted = str(mute_fields.get("state") or "").lower() in ("on", "true", "1")
+    return {"pid": pid, "level": level, "muted": muted}
+
+
+def send_heos_volume_control(
+    host: str,
+    *,
+    steps: int = 0,
+    mute_toggles: int = 0,
+    timeout: float = 1.5,
+) -> tuple[bool, str]:
+    """HEOS CLI volume for the player at this host's IP."""
+    pid = heos_player_id(host, timeout=timeout)
+    if not pid:
+        return False, "No HEOS player."
+    cmds: list[str] = []
+    heos_now = read_heos_volume(host, timeout=min(1.0, timeout))
+    if int(steps) != 0 and bool(heos_now.get("muted")):
+        cmds.append(f"heos://player/set_mute?pid={pid}&state=off")
+    if int(mute_toggles) % 2 == 1:
+        nxt = "off" if bool(heos_now.get("muted")) else "on"
+        cmds.append(f"heos://player/set_mute?pid={pid}&state={nxt}")
+    n = max(-12, min(12, int(steps)))
+    level = heos_now.get("level")
+    if n != 0 and isinstance(level, int):
+        nxt = max(0, min(98, int(level) + n))
+        if nxt != int(level):
+            cmds.append(f"heos://player/set_volume?pid={pid}&level={nxt}")
+    elif n != 0:
+        verb = "volume_up" if n > 0 else "volume_down"
+        cmds.extend([f"heos://player/{verb}?pid={pid}"] * abs(n))
+    if not cmds:
+        return True, "No HEOS volume change."
+    last = {}
+    for cmd in cmds:
+        last = _heos_exchange(host, cmd, timeout=timeout)
+        heos = last.get("heos") if isinstance(last.get("heos"), dict) else {}
+        if str(heos.get("result") or "").lower() != "success":
+            forget_heos_player(host)
+            return False, f"HEOS failed: {cmd}"
+    return True, f"HEOS: {cmds[-1]}"
+
+
+def _volume_fields_line(fields: dict[str, str]) -> str:
+    return _denon_volume_line(fields) if fields else ""
+
+
+def _volume_readout_same(a: str, b: str) -> bool:
+    sa = str(a or "").strip()
+    sb = str(b or "").strip()
+    if not sa or not sb:
+        return False
+    if sa.lower() == sb.lower():
+        return True
+    va = _volume_db_value(sa)
+    vb = _volume_db_value(sb)
+    if va is None or vb is None:
+        return False
+    return abs(va - vb) < 0.05
+
+
+def coalesce_receiver_volume_read(
+    *,
+    telnet_line: str = "",
+    http_line: str = "",
+    last_http: str = "",
+    last_telnet: str = "",
+    held: str = "",
+    last_http_mono: float = 0.0,
+    last_telnet_mono: float = 0.0,
+) -> tuple[str, str]:
+    """Pick a display level from telnet ``MV`` and AppCommand ``GetVolumeLevel``.
+
+    A *moving* source always wins. That covers both S670H failure modes: HTTP
+    frozen at play-start while telnet ``MV`` is live, and a persistent telnet
+    hub stuck on its connect-time ``MV`` while HTTP is live. When the two
+    disagree and neither just moved, prefer the more recently changed source;
+    a tie prefers HTTP (front-panel / HDMI master).
+    """
+    tn = str(telnet_line or "").strip()
+    http = str(http_line or "").strip()
+    prev_http = str(last_http or "").strip()
+    prev_tn = str(last_telnet or "").strip()
+    keep = str(held or "").strip()
+    tn_moved = bool(tn) and (not prev_tn or not _volume_readout_same(tn, prev_tn))
+    http_moved = bool(http) and (
+        not prev_http or not _volume_readout_same(http, prev_http)
+    )
+    if tn and http and not _volume_readout_same(tn, http):
+        if tn_moved and not http_moved:
+            return tn, "telnet"
+        if http_moved and not tn_moved:
+            return http, "appcommand"
+        http_t = float(last_http_mono or 0.0)
+        tn_t = float(last_telnet_mono or 0.0)
+        if http_t > tn_t:
+            return http, "appcommand"
+        if tn_t > http_t:
+            return tn, "telnet"
+        return http, "appcommand"
+    if tn_moved:
+        return tn, "telnet"
+    if http_moved:
+        return http, "appcommand"
+    if keep:
+        return keep, "hold"
+    if tn:
+        return tn, "telnet"
+    return (http, "appcommand") if http else ("", "")
+
+
+def _volume_db_value(line: str) -> float | None:
+    s = str(line or "").strip().lower()
+    if not s or s in ("mute", "muted"):
+        return None
+    m = re.search(r"([+-]?\d+(?:\.\d+)?)", s)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except ValueError:
+        return None
+
+
+def _volume_lines_moved(prev: str, vol: str, *, steps: int = 0) -> bool:
+    """True when master volume moved in the intended direction."""
+    if not prev or not vol:
+        return False
+    if prev.strip().lower() != vol.strip().lower() and (
+        "mute" in prev.lower() or "mute" in vol.lower()
+    ):
+        return True
+    a = _volume_db_value(prev)
+    b = _volume_db_value(vol)
+    if a is None or b is None:
+        return prev.strip() != vol.strip()
+    delta = b - a
+    if int(steps) > 0:
+        return delta >= 0.4
+    if int(steps) < 0:
+        return delta <= -0.4
+    return abs(delta) >= 0.4
+
+
+def observe_receiver_volume(
+    host: str,
+    *,
+    timeout: float = 1.2,
+    telnet_blocking: bool = False,
+    allow_appcommand: bool = False,
+) -> tuple[str, str]:
+    """Return ``(telnet_line, appcommand_line)`` for the caller to coalesce."""
+    from pigeon.receiver_denon_telnet import query_denon_volume_telnet
+
+    h = _normalize_host(host)
+    if not h:
+        return "", ""
+    try:
+        tn = query_denon_volume_telnet(
+            h, timeout=min(0.9, timeout), blocking=telnet_blocking
+        )
+    except Exception:
+        tn = {}
+    tn_line = _volume_fields_line(tn)
+    ac_line = ""
+    if allow_appcommand:
+        ac = read_denon_appcommand_status(h, timeout=min(1.0, timeout))
+        ac_line = _volume_fields_line(ac)
+    return tn_line, ac_line
+
+
+def read_live_receiver_volume(
+    host: str,
+    *,
+    timeout: float = 1.2,
+    telnet_blocking: bool = False,
+    allow_appcommand: bool = False,
+    last_http: str = "",
+    last_telnet: str = "",
+    held: str = "",
+    last_http_mono: float = 0.0,
+    last_telnet_mono: float = 0.0,
+) -> tuple[str, str]:
+    """Live AVR *master* volume. Telnet ``MV`` and AppCommand, then coalesce.
+
+    AppCommand ``GetVolumeLevel`` is the HDMI / front-panel level. HEOS player
+    volume is a different control and is never used here.
+    """
+    tn_line, ac_line = observe_receiver_volume(
+        host,
+        timeout=timeout,
+        telnet_blocking=telnet_blocking,
+        allow_appcommand=allow_appcommand,
+    )
+    if allow_appcommand:
+        return coalesce_receiver_volume_read(
+            telnet_line=tn_line,
+            http_line=ac_line,
+            last_http=last_http,
+            last_telnet=last_telnet,
+            held=held,
+            last_http_mono=last_http_mono,
+            last_telnet_mono=last_telnet_mono,
+        )
+    if tn_line:
+        return tn_line, "telnet"
+    return "", ""
+
+
+def apply_denon_master_volume(
+    host: str,
+    *,
+    steps: int = 0,
+    mute_toggles: int = 0,
+    timeout: float = 3.5,
+) -> tuple[bool, str, str]:
+    """Apply knob steps to master volume on this host.
+
+    Telnet ``MV*`` first; if the reported level does not move, HEOS for the
+    player at this IP. A telnet echo of the *current* ``MV`` is not success.
+    AppCommand ``zone1`` Power is not trusted.
+    """
+    from pigeon.receiver_denon_telnet import (
+        query_denon_volume_telnet,
+        send_denon_telnet_commands,
+    )
+
+    h = _normalize_host(host)
+    if not h:
+        return False, "No receiver host.", ""
+    before = read_denon_appcommand_status(h, timeout=min(1.2, timeout))
+    try:
+        before_tn = query_denon_volume_telnet(h, timeout=0.7, blocking=False)
+    except Exception:
+        before_tn = {}
+    prev = _volume_fields_line(before_tn) or _volume_fields_line(before)
+    n = max(-24, min(24, int(steps)))
+    if before and _denon_power_is_standby(before) and not before_tn:
+        try:
+            send_denon_http_command(h, "PWON", timeout=min(0.8, timeout))
+        except Exception:
+            pass
+    cmds: list[str] = []
+    fields = before_tn or before or {}
+    muted = str(fields.get("Mute") or fields.get("MU") or "").strip().lower() in (
+        "on",
+        "1",
+        "true",
+        "yes",
+    )
+    if int(mute_toggles) % 2 == 1:
+        cmds.append("MUOFF" if muted else "MUON")
+    if n > 0:
+        cmds.extend(["MVUP"] * n)
+    elif n < 0:
+        cmds.extend(["MVDOWN"] * (-n))
+    if not cmds:
+        return True, "No receiver volume change.", prev
+    ok, msg = send_denon_telnet_commands(h, cmds, timeout=max(2.5, float(timeout)))
+    try:
+        after_tn = query_denon_volume_telnet(h, timeout=0.8, blocking=True)
+    except Exception:
+        after_tn = {}
+    after = read_denon_appcommand_status(h, timeout=min(1.2, timeout))
+    vol = _volume_fields_line(after_tn) or _volume_fields_line(after)
+    moved = _volume_lines_moved(prev, vol, steps=n)
+    if ok and moved:
+        return True, msg, vol
+    ok_h, msg_h = send_heos_volume_control(
+        h, steps=n, mute_toggles=mute_toggles, timeout=min(1.8, timeout)
+    )
+    if ok_h:
+        try:
+            after_tn = query_denon_volume_telnet(h, timeout=0.8, blocking=True)
+        except Exception:
+            after_tn = {}
+        after_h = read_denon_appcommand_status(h, timeout=min(1.2, timeout))
+        master = _volume_fields_line(after_tn) or _volume_fields_line(after_h) or vol
+        return True, msg_h, master
+    msg = f"{msg} / {msg_h}"
+    return False, msg, vol or prev
+
+
+def send_denon_volume_control(
+    host: str,
+    action: str,
+    *,
+    timeout: float = 1.5,
+) -> tuple[bool, str]:
+    """``volume_up`` / ``volume_down`` / ``mute_toggle`` with a telnet ack."""
+    act = str(action or "").strip().lower()
+    steps, mutes = coalesce_receiver_volume_actions([act])
+    if act not in ("volume_up", "volume_down", "mute_toggle"):
+        return False, f"Unknown receiver volume action: {action}"
+    ok, msg, _vol = apply_denon_master_volume(
+        host, steps=steps, mute_toggles=mutes, timeout=max(2.5, float(timeout))
+    )
+    return ok, msg
 
 
 def _merge_appcommand_status(host: str, timeout: float, *, scheme: str) -> dict[str, str] | None:
@@ -355,6 +935,63 @@ def _merge_zone_status_with_fallback(
     return None
 
 
+def _denon_power_is_standby(d: dict[str, str]) -> bool:
+    """True when the AVR is off / in standby.
+
+    Telnet ``PW`` is authoritative when present: HTTP ``Power`` on many
+    HEOS-era units stays ``ON`` in network-standby (or ``STANDBY`` while
+    ``PW`` is ``ON``). ``ZM`` (zone-main) is ignored — zone-off is not the
+    same as the AVR having no master volume.
+    """
+    on_tokens = {"ON"}
+    off_tokens = {"OFF", "STANDBY"}
+    pw = _denon_field_ci(d, "PW").upper()
+    if pw:
+        token = pw.replace("/", " ").split()[0]
+        if token in off_tokens:
+            return True
+        if token in on_tokens:
+            return False
+    tokens: list[str] = []
+    for key in ("Power", "ZonePower"):
+        raw = _denon_field_ci(d, key).upper()
+        if not raw:
+            continue
+        token = raw.replace("/", " ").split()[0]
+        tokens.append(token)
+    if any(t in on_tokens for t in tokens):
+        return False
+    return bool(tokens) and all(t in off_tokens for t in tokens)
+
+
+def _denon_volume_line(d: dict[str, str]) -> str:
+    """Master-volume readout (``mute`` / ``-22.5 dB``), including while in standby."""
+    mute = _denon_field_ci(d, "Mute", "MU").strip().lower()
+    muted = mute in ("on", "1", "true", "yes")
+    mv = _denon_field_ci(
+        d,
+        "MV_DB",
+        "MasterVolume",
+        "MasterVolumeDisplay",
+        "VolumeDisplay",
+        "DispVolume",
+        "MainZoneVolume",
+    )
+    if mv and re.fullmatch(r"\d{2,3}", mv.strip()):
+        # Bare 2-3 digit values are Denon volume steps, not dB (e.g. "575" = -22.5dB).
+        mv = _denon_mv_to_db(mv.strip()) or mv
+    if not mv:
+        mv_step = _denon_field_ci(d, "MV")
+        if mv_step and re.fullmatch(r"\d{2,3}", mv_step.strip()):
+            mv = _denon_mv_to_db(mv_step.strip())
+    if muted:
+        return "mute"
+    if not mv:
+        return ""
+    low_mv = mv.lower()
+    return mv if "db" in low_mv or mv.strip().endswith("%") else f"{mv} dB"
+
+
 def _denon_field_ci(d: dict[str, str], *names: str) -> str:
     """
     Read the first non-empty field matching one of ``names``, case-insensitive on keys.
@@ -502,7 +1139,12 @@ def _pick_incoming_audio_format(d: dict[str, str]) -> str:
     return ""
 
 
-def poll_denon_like_receiver(host: str, timeout: float = 4.0) -> ReceiverPollResult:
+def poll_denon_like_receiver(
+    host: str,
+    timeout: float = 4.0,
+    *,
+    include_telnet: bool = True,
+) -> ReceiverPollResult:
     """
     Return overlay strings. On transport/parse failure or no signal: ok=False and empty
     incoming/config/volume lines.
@@ -517,49 +1159,35 @@ def poll_denon_like_receiver(host: str, timeout: float = 4.0) -> ReceiverPollRes
     d = _merge_zone_status_with_fallback(h, timeout, deadline=deadline)
     if not d:
         return ReceiverPollResult(False, "", "", "")
-    # AVR-X3800H and other newer HEOS-era Denon models often expose richer
-    # live audio metadata on Telnet (SI/MS/DC/PS*) than on the XML endpoints.
-    # Merge those keys opportunistically; HTTP/XML remains authoritative.
-    try:
-        telnet_state = poll_denon_telnet(h, timeout=max(0.6, min(1.8, timeout * 0.4)))
-    except Exception:
-        telnet_state = {}
+    # Telnet often carries richer live audio metadata (SI/MS/DC/PS*) than
+    # XML. Merge when the host answers; HTTP/XML remains authoritative.
+    telnet_state: dict[str, str] = {}
+    if include_telnet:
+        try:
+            telnet_state = poll_denon_telnet(h, timeout=max(0.6, min(1.8, timeout * 0.4)))
+        except Exception:
+            telnet_state = {}
+    else:
+        # Full metadata telnet is occasional (one-client socket). Always take a
+        # short PW/MV/MU snapshot so IR / front-panel volume stays live and so
+        # S670H AppCommand ``Power=OFF`` during HDMI does not look like standby.
+        try:
+            telnet_state = query_denon_volume_telnet(
+                h, timeout=min(0.9, max(0.5, timeout * 0.25)), blocking=True
+            )
+        except Exception:
+            telnet_state = {}
     if telnet_state:
         for k, v in telnet_state.items():
             if not v:
                 continue
             d[k] = v
 
-    power = _denon_field_ci(d, "Power", "ZonePower", "PW", "ZM").upper()
-    if power in ("OFF", "STANDBY"):
-        return ReceiverPollResult(True, "", "", "", telnet_state, standby=True)
-
-    # Mute comes from HTTP ``Mute`` or telnet ``MU``; firmware truthy forms vary.
-    mute = _denon_field_ci(d, "Mute", "MU").strip().lower()
-    muted = mute in ("on", "1", "true", "yes")
-    mv = _denon_field_ci(
-        d,
-        "MV_DB",
-        "MasterVolume",
-        "MasterVolumeDisplay",
-        "VolumeDisplay",
-        "DispVolume",
-        "MainZoneVolume",
-    )
-    if mv and re.fullmatch(r"\d{2,3}", mv.strip()):
-        # Bare 2-3 digit values are Denon volume steps, not dB (e.g. "575" = -22.5dB).
-        mv = _denon_mv_to_db(mv.strip()) or mv
-    if not mv:
-        mv_step = _denon_field_ci(d, "MV")
-        if mv_step and re.fullmatch(r"\d{2,3}", mv_step.strip()):
-            mv = _denon_mv_to_db(mv_step.strip())
-    if muted:
-        vol_s = "mute"
-    elif mv:
-        low_mv = mv.lower()
-        vol_s = mv if "db" in low_mv or mv.strip().endswith("%") else f"{mv} dB"
-    else:
-        vol_s = ""
+    vol_s = _denon_volume_line(d)
+    if _denon_power_is_standby(d):
+        # Last-MV is still a real readout when GetVolumeLevel answers in
+        # network-standby. Hide source/format so idle chrome does not look live.
+        return ReceiverPollResult(True, vol_s, "", "", telnet_state, standby=True)
 
     # Incoming = source audio format (codec/signal). Playback = surround/output mode (``MS``).
     # Never use ``SI`` (HDMI input selector such as SAT/CBL) for the widget line.
@@ -780,6 +1408,211 @@ def _dedupe_host_list(hosts: list[str] | None) -> list[str]:
     return out
 
 
+_AVR_MODEL_RE = re.compile(r"avr-?([a-z0-9]+)", re.I)
+_MAC_HEX_RE = re.compile(r"[^0-9a-f]")
+
+
+def receiver_model_key(name: str) -> str:
+    """``AVR-S670H`` / ``Denon AVR-S670H`` → ``s670h``. Brand-only names stay empty."""
+    m = _AVR_MODEL_RE.search(str(name or ""))
+    if not m:
+        return ""
+    return (m.group(1) or "").strip().lower()
+
+
+def _norm_mac12(raw: str) -> str:
+    hexed = _MAC_HEX_RE.sub("", str(raw or "").lower())
+    return hexed if len(hexed) == 12 else ""
+
+
+def paired_receiver_mac(row: dict[str, object] | None) -> str:
+    if not isinstance(row, dict):
+        return ""
+    for key in ("identifier", "id", "mac"):
+        mac = _norm_mac12(str(row.get(key) or ""))
+        if mac:
+            return mac
+    return ""
+
+
+def receiver_identities_match(
+    paired: dict[str, object] | None,
+    *,
+    name: str = "",
+    model: str = "",
+    host: str = "",
+    device_id: str = "",
+) -> bool:
+    """True when a discovered AVR is the paired unit (MAC or model), not just 'Denon'."""
+    _ = host
+    if not isinstance(paired, dict):
+        return False
+    want_mac = paired_receiver_mac(paired)
+    got_mac = _norm_mac12(device_id)
+    if want_mac and got_mac and want_mac == got_mac:
+        return True
+    want_model = receiver_model_key(
+        str(paired.get("name") or paired.get("label") or "")
+    )
+    if not want_model:
+        return False
+    return want_model in (
+        receiver_model_key(name),
+        receiver_model_key(model),
+    )
+
+
+def _prefix_from_netmask(mask: str) -> int | None:
+    s = str(mask or "").strip()
+    if not s:
+        return None
+    try:
+        if s.lower().startswith("0x"):
+            return bin(int(s, 16)).count("1")
+        if "." in s:
+            return ipaddress.IPv4Network(f"0.0.0.0/{s}").prefixlen
+        n = int(s)
+        if 0 <= n <= 32:
+            return n
+    except (TypeError, ValueError):
+        return None
+    return None
+
+
+def _local_ipv4_networks() -> list[ipaddress.IPv4Network]:
+    """LAN prefixes from the OS (``10.0.4.44/22`` stays /22, not a lone /24)."""
+    found: list[ipaddress.IPv4Network] = []
+    seen: set[str] = set()
+
+    def _add(ip: str, prefix: int) -> None:
+        if ip.startswith("127.") or ip.startswith("169.254."):
+            return
+        use = int(prefix)
+        if use < 22:
+            use = 24
+        try:
+            net = ipaddress.IPv4Network(f"{ip}/{use}", strict=False)
+        except ValueError:
+            return
+        key = str(net)
+        if key in seen:
+            return
+        seen.add(key)
+        found.append(net)
+
+    try:
+        out = subprocess.run(
+            ["ip", "-4", "-o", "addr", "show"],
+            capture_output=True,
+            text=True,
+            timeout=0.8,
+            check=False,
+        )
+        for line in (out.stdout or "").splitlines():
+            m = re.search(r"\binet\s+(\d+\.\d+\.\d+\.\d+)/(\d+)", line)
+            if m:
+                _add(m.group(1), int(m.group(2)))
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+
+    if platform.system() == "Darwin":
+        try:
+            out = subprocess.run(
+                ["ifconfig"],
+                capture_output=True,
+                text=True,
+                timeout=0.8,
+                check=False,
+            )
+            cur_ip = ""
+            for line in (out.stdout or "").splitlines():
+                m_ip = re.search(r"\binet\s+(\d+\.\d+\.\d+\.\d+)", line)
+                if m_ip:
+                    cur_ip = m_ip.group(1)
+                m_mask = re.search(r"\bnetmask\s+(\S+)", line)
+                if cur_ip and m_mask:
+                    pref = _prefix_from_netmask(m_mask.group(1))
+                    if pref is not None:
+                        _add(cur_ip, pref)
+                    cur_ip = ""
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            pass
+
+    if not found:
+        for base in _local_class_c_bases():
+            _add(f"{base}.1", 24)
+    return found
+
+
+def ipv4_hosts_for_networks(
+    networks: list[ipaddress.IPv4Network] | None = None,
+    *,
+    max_hosts: int = 2048,
+) -> list[str]:
+    """Host IPv4s to probe (excludes network/broadcast). Caps very wide prefixes."""
+    nets = list(networks or _local_ipv4_networks())
+    out: list[str] = []
+    seen: set[str] = set()
+    for net in nets:
+        for host in net.hosts():
+            s = str(host)
+            if s in seen:
+                continue
+            seen.add(s)
+            out.append(s)
+            if len(out) >= int(max_hosts):
+                return out
+    return out
+
+
+def heos_players_from_hosts(
+    hosts: list[str] | None,
+    *,
+    timeout: float = 1.2,
+) -> list[dict[str, object]]:
+    """Union of ``player/get_players`` from each host that speaks HEOS."""
+    out: list[dict[str, object]] = []
+    seen_pid: set[int] = set()
+    for raw in _dedupe_host_list(hosts):
+        data = _heos_exchange(raw, "heos://player/get_players", timeout=timeout)
+        payload = data.get("payload")
+        if not isinstance(payload, list):
+            continue
+        for row in payload:
+            if not isinstance(row, dict):
+                continue
+            try:
+                pid = int(row.get("pid") or 0)
+            except (TypeError, ValueError):
+                pid = 0
+            if pid and pid in seen_pid:
+                continue
+            if pid:
+                seen_pid.add(pid)
+            out.append(row)
+    return out
+
+
+def pick_heos_player_for_paired_row(
+    paired: dict[str, object] | None,
+    payload: object,
+) -> dict[str, object] | None:
+    """Account-wide HEOS row for the *paired* AVR (model / MAC), not list order."""
+    if not isinstance(paired, dict) or not isinstance(payload, list):
+        return None
+    for raw in payload:
+        if not isinstance(raw, dict):
+            continue
+        if receiver_identities_match(
+            paired,
+            name=str(raw.get("name") or ""),
+            model=str(raw.get("model") or ""),
+            host=str(raw.get("ip") or raw.get("ipaddr") or ""),
+        ):
+            return raw
+    return None
+
+
 def _host_has_explicit_trailing_port(h: str) -> bool:
     """True for ``192.168.1.5:8080`` or ``avr.local:8080``; false for IPv6 like ``::1``."""
     if re.match(r"^\d{1,3}(?:\.\d{1,3}){3}:\d+$", h):
@@ -841,20 +1674,17 @@ def scan_denon_like_receivers_on_lan(
     max_workers: int = 64,
     ssdp_wait: float = 3.5,
     extra_hosts: list[str] | None = None,
+    subnet_sweep: bool = True,
 ) -> tuple[bool, str, list[dict[str, str]]]:
     """
     Discover receivers via SSDP (UPnP), optional ``extra_hosts`` (e.g. IPs from pyatv /
-    AirPlay discovery), plus a sweep of inferred local /24 subnet(s) for Denon/Marantz
-    ``MainZone`` HTTP(S) XML.
+    AirPlay discovery), plus a sweep of the real interface prefix (``/22`` on this
+    LAN, not only the Pi's ``/24``) for Denon/Marantz ``MainZone`` HTTP(S) XML.
 
     Returns ``(ok, message, rows)`` where each row has ``host``, ``name``, ``label``, ``id``.
     """
-    bases = _local_class_c_bases()
-    if not bases:
-        return False, "Could not determine a local subnet to scan.", []
-
     hints = _ssdp_collect_probe_hints(ssdp_wait)
-    ips = [f"{b}.{i}" for b in bases for i in range(1, 255)]
+    ips = ipv4_hosts_for_networks() if subnet_sweep else []
     airplay_or_saved = _dedupe_host_list(extra_hosts)
     by_canonical: dict[str, dict[str, str]] = {}
 
@@ -869,7 +1699,9 @@ def scan_denon_like_receivers_on_lan(
                 futures.append(
                     ex.submit(_probe_host_for_receiver, h, timeout_per_host)
                 )
-            futures.extend(ex.submit(_probe_ip_for_receiver, ip, timeout_per_host) for ip in ips)
+            futures.extend(
+                ex.submit(_probe_ip_for_receiver, ip, timeout_per_host) for ip in ips
+            )
             for fut in concurrent.futures.as_completed(futures, timeout=240):
                 try:
                     row = fut.result()
@@ -896,3 +1728,63 @@ def scan_denon_like_receivers_on_lan(
             [],
         )
     return True, f"Found {len(rows)} receiver(s).", rows
+
+
+def resolve_paired_receiver_host(
+    paired: dict[str, object] | None,
+    *,
+    extra_hosts: list[str] | None = None,
+    subnet_sweep: bool = False,
+    timeout: float = 0.7,
+) -> str:
+    """Return a reachable control IP for the paired AVR, or ``""``.
+
+    Box 3 often saves the AirPlay advertisement IP. That address can go stale
+    (DHCP) or never speak telnet/AppCommand. HEOS ``get_players`` on any other
+    Denon on the account, SSDP, and an optional subnet sweep are used to find
+    the same model / MAC at a live host.
+    """
+    if not isinstance(paired, dict):
+        return ""
+    saved = _canonical_receiver_key(
+        str(paired.get("address") or paired.get("host") or "")
+    )
+    seeds = _dedupe_host_list(list(extra_hosts or []) + ([saved] if saved else []))
+    probed = _probe_host_for_receiver(saved, timeout) if saved else None
+    if probed:
+        return _canonical_receiver_key(str(probed.get("host") or saved))
+
+    hints = _ssdp_collect_probe_hints(min(2.2, max(0.8, timeout * 3)))
+    hint_hosts = [_canonical_receiver_key(h) for h, _s in hints]
+    directory_hosts = _dedupe_host_list(seeds + hint_hosts)
+    for raw in heos_players_from_hosts(directory_hosts, timeout=min(1.2, timeout + 0.4)):
+        if not receiver_identities_match(
+            paired,
+            name=str(raw.get("name") or ""),
+            model=str(raw.get("model") or ""),
+            host=str(raw.get("ip") or raw.get("ipaddr") or ""),
+        ):
+            continue
+        ip = _canonical_receiver_key(str(raw.get("ip") or raw.get("ipaddr") or ""))
+        if not ip:
+            continue
+        hit = _probe_host_for_receiver(ip, timeout)
+        if hit:
+            return _canonical_receiver_key(str(hit.get("host") or ip))
+
+    _ok, _msg, rows = scan_denon_like_receivers_on_lan(
+        timeout_per_host=max(0.25, timeout * 0.6),
+        ssdp_wait=0.0,
+        extra_hosts=directory_hosts,
+        subnet_sweep=bool(subnet_sweep),
+    )
+    for row in rows:
+        if receiver_identities_match(
+            paired,
+            name=str(row.get("name") or ""),
+            model=str(row.get("name") or ""),
+            host=str(row.get("host") or ""),
+            device_id=str(row.get("id") or ""),
+        ):
+            return _canonical_receiver_key(str(row.get("host") or ""))
+    return ""

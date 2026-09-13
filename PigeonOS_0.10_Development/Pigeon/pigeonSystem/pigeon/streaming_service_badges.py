@@ -109,6 +109,19 @@ def _resolve_badge_file(
     return _first_legacy_root_asset(assets_root, legacy)
 
 
+def is_youtube_streaming_service(
+    app_name: str | None = None,
+    app_id: str | None = None,
+    label: str | None = None,
+    filename: str | None = None,
+) -> bool:
+    """True when the foreground app is YouTube (name, bundle, badge, or logo file)."""
+    blob = " ".join(
+        str(x or "") for x in (app_name, app_id, label, filename)
+    ).strip().lower()
+    return "youtube" in blob
+
+
 def resolve_streaming_badge_media(
     assets_dir: str | Path,
     *,

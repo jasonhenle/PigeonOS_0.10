@@ -37,9 +37,9 @@ This downloads the latest **[GitHub Release](https://github.com/jasonhenle/Pigeo
 - **In-app updates:** Settings → **Updates** (pulls from GitHub `main`).
 - **Manual update:** `bash ~/Pigeon_*/installer/pi_update_from_github.sh`
 
-## Display (800×480)
+## Display (1280×800)
 
-Fullscreen by default (`PIGEON_PI_FULLSCREEN=1`). UI is 800×480 (matches the Pi panel).
+Fullscreen by default (`PIGEON_PI_FULLSCREEN=1`). UI is 1280×800; other display shapes are letterboxed or pillarboxed without stretching.
 
 ```bash
 PIGEON_PI_FULLSCREEN=0 ./installer/run_pigeon_0_10.sh

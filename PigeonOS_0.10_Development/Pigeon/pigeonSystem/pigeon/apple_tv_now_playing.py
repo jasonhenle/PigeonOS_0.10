@@ -15,10 +15,15 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import json
 import queue
 import random
+import re
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 import plistlib
 
@@ -405,38 +410,300 @@ def _media_type_is_music(media_type: object) -> bool:
     return mt == "music" or mt.endswith(".music")
 
 
-async def _attach_music_artwork_bytes(atv, metadata: dict[str, object]) -> dict[str, object]:
-    """Best-effort: attach ``artwork_bytes`` when metadata is Music.
+def _metadata_is_youtube(metadata: dict[str, object] | None) -> bool:
+    """True when now-playing metadata is the YouTube app (16×9 thumbnails)."""
+    if not isinstance(metadata, dict):
+        return False
+    try:
+        from pigeon.streaming_service_badges import is_youtube_streaming_service
 
-    Uses ``await atv.metadata.artwork()``. Failures are swallowed — caller still
-    gets title/artist/album. Artwork bytes are JPEG/PNG raw; decode at the host.
+        if is_youtube_streaming_service(
+            app_name=str(metadata.get("app_name") or ""),
+            app_id=str(metadata.get("app_id") or ""),
+            label=str(metadata.get("label") or ""),
+        ):
+            return True
+    except Exception:
+        blob = f"{metadata.get('app_name') or ''} {metadata.get('app_id') or ''}".lower()
+        if "youtube" in blob:
+            return True
+    return youtube_video_id_from_metadata(metadata) is not None
+
+
+_YOUTUBE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+_YOUTUBE_URL_ID_RE = re.compile(
+    r"(?:youtu\.be/|youtube\.com/(?:watch\?v=|embed/|shorts/)|v=)([A-Za-z0-9_-]{11})",
+    re.I,
+)
+_YOUTUBE_JSON_ID_RE = re.compile(r'"videoId":"([A-Za-z0-9_-]{11})"')
+_YT_THUMB_MIN_BYTES = 4000
+_YT_HTTP_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+)
+
+
+def youtube_video_id_from_metadata(metadata: dict[str, object] | None) -> str | None:
+    """Best-effort 11-char YouTube video id from pyatv extras / URLs."""
+    if not isinstance(metadata, dict):
+        return None
+    for key in (
+        "content_identifier",
+        "hash",
+        "itunes_store_identifier",
+        "query",
+        "title",
+        "ocr_title",
+    ):
+        raw = str(metadata.get(key) or "").strip()
+        if not raw:
+            continue
+        url_hit = _YOUTUBE_URL_ID_RE.search(raw)
+        if url_hit:
+            return url_hit.group(1)
+        # Bare ids only from identifier-like fields — titles are usually prose.
+        if key in ("content_identifier", "hash", "itunes_store_identifier"):
+            token = raw.rsplit(":", 1)[-1].rsplit("/", 1)[-1].strip()
+            if _YOUTUBE_ID_RE.match(token):
+                return token
+    return None
+
+
+def youtube_title_from_metadata(metadata: dict[str, object] | None) -> str:
+    """Human title used to search YouTube when pyatv omits a video id."""
+    if not isinstance(metadata, dict):
+        return ""
+    for key in ("title", "query", "ocr_title", "album"):
+        raw = str(metadata.get(key) or "").strip()
+        if raw:
+            return raw
+    return ""
+
+
+def youtube_thumb_identity(metadata: dict[str, object] | None) -> str:
+    """Stable cache key for a YouTube thumb attempt."""
+    vid = youtube_video_id_from_metadata(metadata)
+    if vid:
+        return f"id:{vid}"
+    title = youtube_title_from_metadata(metadata)
+    return f"title:{title.casefold()}" if title else ""
+
+
+def youtube_video_id_from_search_payload(payload: object) -> str | None:
+    """First ``videoId`` in YouTube search HTML or innertube JSON."""
+    if payload is None:
+        return None
+    if isinstance(payload, (bytes, bytearray)):
+        try:
+            payload = payload.decode("utf-8", "ignore")
+        except Exception:
+            return None
+    if isinstance(payload, str):
+        hit = _YOUTUBE_JSON_ID_RE.search(payload)
+        return hit.group(1) if hit else None
+    return _first_video_id_in_obj(payload)
+
+
+def _first_video_id_in_obj(obj: object) -> str | None:
+    if isinstance(obj, dict):
+        for nest_key in ("videoRenderer", "playlistVideoRenderer"):
+            nest = obj.get(nest_key)
+            if isinstance(nest, dict):
+                vid = str(nest.get("videoId") or "").strip()
+                if _YOUTUBE_ID_RE.match(vid):
+                    return vid
+        vid = str(obj.get("videoId") or "").strip()
+        if _YOUTUBE_ID_RE.match(vid) and any(
+            k in obj for k in ("videoRenderer", "title", "thumbnail", "lengthText")
+        ):
+            return vid
+        for value in obj.values():
+            hit = _first_video_id_in_obj(value)
+            if hit:
+                return hit
+    elif isinstance(obj, list):
+        for value in obj:
+            hit = _first_video_id_in_obj(value)
+            if hit:
+                return hit
+    return None
+
+
+def _artwork_bytes_from_result(art: object) -> bytes | None:
+    raw = getattr(art, "bytes", None)
+    if not raw:
+        return None
+    try:
+        data = bytes(raw)
+    except Exception:
+        return None
+    return data if data else None
+
+
+def _youtube_thumbnail_urls(video_id: str) -> tuple[str, ...]:
+    vid = str(video_id or "").strip()
+    if not _YOUTUBE_ID_RE.match(vid):
+        return ()
+    return (
+        f"https://i.ytimg.com/vi/{vid}/maxresdefault.jpg",
+        f"https://i.ytimg.com/vi/{vid}/sddefault.jpg",
+        f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
+    )
+
+
+def _http_get_bytes(url: str, *, timeout_s: float = 6.0, min_bytes: int = 64) -> bytes | None:
+    req = urllib.request.Request(url, headers={"User-Agent": _YT_HTTP_UA})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            data = resp.read()
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError):
+        return None
+    if not data or len(data) < int(min_bytes):
+        return None
+    return data
+
+
+def _http_post_json(url: str, body: dict[str, object], *, timeout_s: float = 6.0) -> object | None:
+    raw = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=raw,
+        headers={
+            "User-Agent": _YT_HTTP_UA,
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            payload = resp.read()
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError):
+        return None
+    try:
+        return json.loads(payload.decode("utf-8", "ignore"))
+    except Exception:
+        return None
+
+
+def _ytimg_bytes_for_video_id(video_id: str) -> bytes | None:
+    for url in _youtube_thumbnail_urls(video_id):
+        data = _http_get_bytes(url, min_bytes=_YT_THUMB_MIN_BYTES)
+        if data:
+            return data
+    return None
+
+
+def search_youtube_video_id(title: str) -> str | None:
+    """Resolve a watch id from a now-playing title (innertube, then results HTML)."""
+    q = str(title or "").strip()
+    if len(q) < 2:
+        return None
+    innertube = _http_post_json(
+        "https://www.youtube.com/youtubei/v1/search?prettyPrint=false",
+        {
+            "context": {
+                "client": {
+                    "clientName": "WEB",
+                    "clientVersion": "2.20240819.00.00",
+                    "hl": "en",
+                    "gl": "US",
+                }
+            },
+            "query": q,
+            "params": "EgIQAQ==",
+        },
+    )
+    hit = youtube_video_id_from_search_payload(innertube)
+    if hit:
+        return hit
+    page = _http_get_bytes(
+        "https://www.youtube.com/results?"
+        + urllib.parse.urlencode({"search_query": q, "sp": "EgIQAQ=="}),
+        min_bytes=64,
+    )
+    return youtube_video_id_from_search_payload(page)
+
+
+def download_youtube_thumbnail_bytes(metadata: dict[str, object] | None) -> bytes | None:
+    """Download a 16×9 YouTube thumb. Safe to call from a worker thread."""
+    if not isinstance(metadata, dict):
+        return None
+    vid = youtube_video_id_from_metadata(metadata)
+    if not vid:
+        vid = search_youtube_video_id(youtube_title_from_metadata(metadata))
+    if not vid:
+        return None
+    return _ytimg_bytes_for_video_id(vid)
+
+
+async def _fetch_youtube_thumbnail_bytes(metadata: dict[str, object]) -> bytes | None:
+    return await asyncio.to_thread(download_youtube_thumbnail_bytes, metadata)
+
+
+async def _artwork_from_pyatv(atv, *, youtube: bool) -> object | None:
+    """Try several artwork sizes; YouTube's 1280×720 request often 404s alone."""
+    attempts: list[tuple[int | None, int | None]]
+    if youtube:
+        attempts = [(None, None), (1280, 720), (640, 360), (400, 400)]
+    else:
+        attempts = [(400, 400), (None, None)]
+    for width, height in attempts:
+        try:
+            if width is None or height is None:
+                art = await atv.metadata.artwork()
+            else:
+                art = await atv.metadata.artwork(width=width, height=height)
+        except Exception:
+            continue
+        if art is not None and _artwork_bytes_from_result(art):
+            return art
+    return None
+
+
+async def _attach_music_artwork_bytes(atv, metadata: dict[str, object]) -> dict[str, object]:
+    """Best-effort: attach ``artwork_bytes`` for Music covers or YouTube 16×9 thumbs.
+
+    Uses ``await atv.metadata.artwork()`` at a few sizes, then YouTube's public
+    thumbnail CDN when pyatv returns nothing. Failures are swallowed — caller
+    still gets title/artist/album. Artwork bytes are JPEG/PNG raw; decode at
+    the host.
     """
     if not isinstance(metadata, dict):
         return metadata
-    if not _media_type_is_music(metadata.get("media_type")):
+    is_music = _media_type_is_music(metadata.get("media_type"))
+    is_youtube = _metadata_is_youtube(metadata)
+    app_blob = (
+        f"{metadata.get('app_name') or ''} {metadata.get('app_id') or ''}".lower()
+    )
+    has_app = bool(app_blob.strip())
+    # YouTube on tvOS often omits the app, or shows as AirPlay.
+    if (
+        not is_music
+        and not is_youtube
+        and has_app
+        and "airplay" not in app_blob
+    ):
         return metadata
     if metadata.get("artwork_bytes"):
         return metadata
-    try:
-        art = await atv.metadata.artwork(width=400, height=400)
-    except Exception:
-        return metadata
-    if art is None:
-        return metadata
-    raw = getattr(art, "bytes", None)
+    art = await _artwork_from_pyatv(atv, youtube=bool(is_youtube and not is_music))
+    raw = _artwork_bytes_from_result(art) if art is not None else None
+    if not raw and is_youtube and not is_music:
+        raw = await _fetch_youtube_thumbnail_bytes(metadata)
     if not raw:
         return metadata
     out = dict(metadata)
-    try:
-        out["artwork_bytes"] = bytes(raw)
-    except Exception:
-        return metadata
+    out["artwork_bytes"] = raw
     try:
         aid = getattr(atv.metadata, "artwork_id", None)
         if aid is not None and str(aid).strip():
             out["artwork_id"] = str(aid).strip()
     except Exception:
         pass
+    if is_youtube and not out.get("artwork_id"):
+        vid = youtube_video_id_from_metadata(metadata)
+        if vid:
+            out["artwork_id"] = vid
     return out
 
 
@@ -476,9 +743,49 @@ def _playing_metadata(playing) -> dict[str, object]:
     return meta
 
 
+# Polls that fail this many times in a row mean the Apple TV is gone / off.
+ATV_OFF_POLL_FAILS = 3
+
+
+def apple_tv_power_is_off(metadata: dict[str, object] | None) -> bool:
+    """True when pyatv reported ``PowerState.Off`` on the last poll."""
+    if not isinstance(metadata, dict):
+        return False
+    raw = str(metadata.get("power_state") or "").strip().lower()
+    if not raw or "unknown" in raw or "offline" in raw:
+        return False
+    return raw == "off" or raw.endswith(".off") or raw.endswith(" off")
+
+
+def apple_tv_should_show_idle_clock(
+    metadata: dict[str, object] | None = None,
+    *,
+    consecutive_fail: int = 0,
+) -> bool:
+    """True when the Apple TV is powered off or unreachable — show the analog clock."""
+    if apple_tv_power_is_off(metadata):
+        return True
+    return int(consecutive_fail or 0) >= ATV_OFF_POLL_FAILS
+
+
+def _attach_power_state(atv, metadata: dict[str, object]) -> None:
+    """Best-effort ``power_state`` from the pyatv Power interface."""
+    try:
+        power = getattr(atv, "power", None)
+        if power is None:
+            return
+        ps = getattr(power, "power_state", None)
+        if ps is None or callable(ps):
+            return
+        metadata["power_state"] = str(ps)
+    except Exception:
+        pass
+
+
 def _metadata_with_app(atv, metadata: dict[str, object]) -> dict[str, object]:
     """Attach ``app_name`` / ``app_id`` (bundle) when the protocol exposes :attr:`pyatv.interface.Metadata.app`."""
     out = dict(metadata)
+    _attach_power_state(atv, out)
     app = None
     try:
         app = atv.metadata.app

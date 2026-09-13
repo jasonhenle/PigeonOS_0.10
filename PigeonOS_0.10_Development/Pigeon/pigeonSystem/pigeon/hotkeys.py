@@ -25,11 +25,14 @@ PIGEON_HOTKEY_ROWS: list[tuple[str, str]] = [
         "else landing brightness pulse (when scene is on).",
     ),
     (
-        "1, 4, 5",
-        "Views: 1 five-zone now-playing (circles); "
-        "4 plain background + rawTitle debug text only; "
-        "5 design grid overlay (19×8) on the composite. "
-        "Clock saver still appears automatically on idle (no dedicated view shortcut).",
+        "1–8",
+        "Now-playing: cycle that zone's widget (off wraps around). "
+        "Colliding zones yield to the one just toggled. "
+        "Shift+2: force clock saver. Shift+1: cycle classic view-one layouts.",
+    ),
+    (
+        "0",
+        "Open / close the metadata inspector.",
     ),
     (
         "Arrow keys (Pigeon_ext)",

@@ -468,6 +468,8 @@ class MainSettingsState:
     wifi_level: int = 3  # stub 0–3
     location_name: str = "ROOM 1"
     selected_wifi_ssid: str = ""
+    live_wifi_ssid: str = ""
+    wifi_logged_out: bool = False
     pending_wifi_ssid: str = ""
     wifi_password: str = ""
     network_password_error: bool = False
@@ -526,8 +528,8 @@ class MainSettingsState:
     preferences_focus_index: int = 0
     preferences_active_zone: int = 0  # 1–5 while in widgets nav; else 0
     preferences_zone_widgets: tuple[str, str, str, str, str] = (
-        "clock",
-        "poster",
+        "tt_countdown_16x9",
+        "",
         "volume",
         "cast_info",
         "status_bar",
@@ -587,7 +589,56 @@ class MainSettingsState:
 
     @property
     def wifi_configured(self) -> bool:
-        return bool(str(self.selected_wifi_ssid or "").strip())
+        return bool(self.displayed_wifi_ssid())
+
+    def displayed_wifi_ssid(self) -> str:
+        """SSID shown on settings_main: live radio, else saved location wifi."""
+        if self.wifi_logged_out:
+            return str(self.selected_wifi_ssid or "").strip()
+        return str(self.live_wifi_ssid or self.selected_wifi_ssid or "").strip()
+
+    def refresh_network_ssid(self) -> None:
+        """Reload saved location wifi and the OS association for the dual bar."""
+        try:
+            from pigeon.app_state import read_location_wifi
+
+            wifi = read_location_wifi()
+        except Exception:
+            wifi = None
+        loc_ssid = ""
+        if wifi is not None:
+            loc_ssid = str(wifi.get("ssid") or "").strip()
+            if loc_ssid:
+                self.wifi_logged_out = False
+                if not str(self.selected_wifi_ssid or "").strip():
+                    self.selected_wifi_ssid = loc_ssid
+                    self.wifi_password = str(wifi.get("password") or "")
+        if self.wifi_logged_out:
+            self.live_wifi_ssid = ""
+            return
+        try:
+            from pigeon.wifi_scan import current_connected_ssid
+
+            self.live_wifi_ssid = str(current_connected_ssid() or "").strip()
+        except Exception:
+            self.live_wifi_ssid = ""
+
+    def reload_location_wifi(self) -> None:
+        """Replace in-memory wifi with the current location record, then probe live."""
+        self.wifi_logged_out = False
+        try:
+            from pigeon.app_state import read_location_wifi
+
+            wifi = read_location_wifi()
+        except Exception:
+            wifi = None
+        if wifi is not None:
+            self.selected_wifi_ssid = str(wifi.get("ssid") or "").strip()
+            self.wifi_password = str(wifi.get("password") or "")
+        else:
+            self.selected_wifi_ssid = ""
+            self.wifi_password = ""
+        self.refresh_network_ssid()
 
     def needs_wifi_setup(self) -> bool:
         """True until the user has chosen a WiFi network (SSID)."""
@@ -987,7 +1038,7 @@ class MainSettingsState:
         self.pigeon_needs_update_prefetch = True
 
     def open_metadata_debug(self) -> None:
-        """Open the metadata inspector ([4]) on its first page (player)."""
+        """Open the metadata inspector ([0]) on its first page (player)."""
         if not self.show_pigeon_settings:
             self.enter_pigeon_settings()
         self.close_update_popup()
@@ -1090,7 +1141,7 @@ class MainSettingsState:
 
         ring = ui_color_swatch_focus_ring("ui")
         if not ring:
-            return "red"
+            return "blue"
         return ring[int(self.ui_color_focus_index) % len(ring)]
 
     def navigate_ui_color(self, *, forward: bool = True) -> None:
@@ -1125,7 +1176,7 @@ class MainSettingsState:
         ring = ui_color_swatch_focus_ring("ui")
         focused = self.ui_color_focused_id
         if focused not in ring:
-            focused = ring[0] if ring else "red"
+            focused = ring[0] if ring else "blue"
         apply_color_keys_to_state(
             self,
             {
@@ -1541,6 +1592,10 @@ class MainSettingsState:
         if self.device_row_matches_saved(box_num, row):
             self.restore_box_device_panel(box_num)
             return None
+        name = str(row.get("name") or row.get("label") or "Device").strip()
+        ip = str(row.get("address") or "").strip()
+        if name or ip:
+            panel.picked = (name or ip, ip or name)
         panel.active = False
         panel.phase = "idle"
         panel.scanning = False
@@ -3165,7 +3220,7 @@ def _location_text_is_grayed(state: MainSettingsState) -> bool:
 
 
 def _wifi_logout_instruction_text(state: MainSettingsState) -> str:
-    ssid = str(state.selected_wifi_ssid or "").strip() or "network"
+    ssid = state.displayed_wifi_ssid() or str(state.selected_wifi_ssid or "").strip() or "network"
     return f"disconnect {ssid}"
 
 
@@ -6171,12 +6226,9 @@ class MainSettingsWidget:
         if self._state.needs_wifi_setup():
             self._state.wifi_onboarding = False
         try:
-            from pigeon.app_state import read_current_location_name, read_location_wifi
+            from pigeon.app_state import read_current_location_name
 
-            wifi = read_location_wifi()
-            if wifi is not None:
-                self._state.selected_wifi_ssid = wifi["ssid"]
-                self._state.wifi_password = wifi.get("password", "")
+            self._state.reload_location_wifi()
             self._state.location_name = read_current_location_name()
         except Exception:
             pass
@@ -6223,6 +6275,8 @@ class MainSettingsWidget:
         self._want_prewarm_after_paint: bool = False
         # Avoid repeated full-frame alpha.min() when the current paste is known opaque.
         self._paste_fully_opaque: bool | None = None
+        # True while Left/Right / rotary ticks are coalesced — skip cursor copy.
+        self._nav_scrub: bool = False
         # Warm LAN IP off the first settings paint (hostname/ipconfig can take tens of ms).
         try:
             from pigeon.local_ip import local_ipv4_address
@@ -6383,6 +6437,9 @@ class MainSettingsWidget:
             st.location_name,
             st.wifi_password,
             st.selected_wifi_ssid,
+            st.live_wifi_ssid,
+            bool(st.wifi_logged_out),
+            st.displayed_wifi_ssid(),
             st.pending_wifi_ssid,
             bool(st.network_password_error),
             bool(st.wifi_connecting),
@@ -6434,26 +6491,34 @@ class MainSettingsWidget:
     def _compose_keyboard_over_main(
         self, main_frame: np.ndarray, kb_frame: np.ndarray, kb_sig: tuple[object, ...] | None
     ) -> np.ndarray:
-        """Alpha-compose keyboard overlay; opaque overlays skip float blend."""
-        opaque = None if kb_sig is None else self._kb_frame_opaque.get(kb_sig)
-        if opaque is None:
-            opaque = int(kb_frame[:, :, 3].min()) == 255
-            if kb_sig is not None:
-                self._kb_frame_opaque[kb_sig] = opaque
+        """Alpha-compose keyboard overlay; blend only the inked band."""
+        alpha_u8 = kb_frame[:, :, 3]
+        rows = np.any(alpha_u8 > 0, axis=1)
+        if not np.any(rows):
+            return main_frame.copy()
+        ys = np.flatnonzero(rows)
+        xs = np.flatnonzero(np.any(alpha_u8 > 0, axis=0))
+        y0, y1 = int(ys[0]), int(ys[-1]) + 1
+        x0, x1 = int(xs[0]), int(xs[-1]) + 1
         out = main_frame.copy()
+        kb_roi = kb_frame[y0:y1, x0:x1]
+        main_roi = out[y0:y1, x0:x1]
+        opaque = int(kb_roi[:, :, 3].min()) == 255
+        if kb_sig is not None:
+            self._kb_frame_opaque[kb_sig] = opaque
         if opaque:
-            out[:, :, :3] = kb_frame[:, :, :3]
-            out[:, :, 3] = 255
+            main_roi[:, :, :3] = kb_roi[:, :, :3]
+            main_roi[:, :, 3] = 255
             return out
-        base_bgr = out[:, :, :3]
-        blended = alpha_blend_bgra_over_bgr(base_bgr, kb_frame)
-        alpha = kb_frame[:, :, 3:4].astype(np.float32) / 255.0
+        blended = alpha_blend_bgra_over_bgr(main_roi[:, :, :3], kb_roi)
+        alpha = kb_roi[:, :, 3:4].astype(np.float32) / 255.0
         out_a = np.clip(
-            alpha * 255.0 + (1.0 - alpha) * out[:, :, 3:4].astype(np.float32),
+            alpha * 255.0 + (1.0 - alpha) * main_roi[:, :, 3:4].astype(np.float32),
             0,
             255,
         ).astype(np.uint8)
-        return np.dstack([blended, out_a[:, :, 0]])
+        out[y0:y1, x0:x1] = np.dstack([blended, out_a[:, :, 0]])
+        return out
 
     def _keyboard_overlay_sig_for(
         self,
@@ -6476,7 +6541,7 @@ class MainSettingsWidget:
     def _store_kb_frame(self, kb_sig: tuple[object, ...], frame: np.ndarray) -> None:
         if kb_sig not in self._kb_focus_frame_cache:
             self._kb_focus_frame_cache[kb_sig] = frame
-            if len(self._kb_focus_frame_cache) > 28:
+            if len(self._kb_focus_frame_cache) > 8:
                 oldest = next(iter(self._kb_focus_frame_cache))
                 if oldest != kb_sig:
                     self._kb_focus_frame_cache.pop(oldest, None)
@@ -6486,7 +6551,7 @@ class MainSettingsWidget:
     ) -> None:
         if compose_key not in self._kb_composed_cache:
             self._kb_composed_cache[compose_key] = frame
-            if len(self._kb_composed_cache) > 28:
+            if len(self._kb_composed_cache) > 8:
                 oldest = next(iter(self._kb_composed_cache))
                 if oldest != compose_key:
                     self._kb_composed_cache.pop(oldest, None)
@@ -6540,6 +6605,9 @@ class MainSettingsWidget:
             st.location_name,
             st.wifi_password,
             st.selected_wifi_ssid,
+            st.live_wifi_ssid,
+            bool(st.wifi_logged_out),
+            st.displayed_wifi_ssid(),
             st.pending_wifi_ssid,
             bool(st.network_password_error),
             bool(st.wifi_connecting),
@@ -6629,7 +6697,6 @@ class MainSettingsWidget:
                 str(st.box_pairing.device_name),
             ),
             self._scan_anim_token(),
-            id(st.zone2_tt_bgra) if st.zone2_tt_bgra is not None else 0,
         )
 
     def _keyboard_overlay_sig(self) -> tuple[object, ...] | None:
@@ -6668,6 +6735,9 @@ class MainSettingsWidget:
             st.location_name,
             st.wifi_password,
             st.selected_wifi_ssid,
+            st.live_wifi_ssid,
+            bool(st.wifi_logged_out),
+            st.displayed_wifi_ssid(),
             st.pending_wifi_ssid,
             bool(st.network_password_error),
             bool(st.wifi_connecting),
@@ -6738,37 +6808,11 @@ class MainSettingsWidget:
                 str(st.box_pairing.session_key),
                 str(st.box_pairing.device_name),
             ),
-            id(st.zone2_tt_bgra) if st.zone2_tt_bgra is not None else 0,
         )
 
     def _focus_cache_key(self) -> tuple[object, ...]:
-        st = self._state
-        return (
-            int(st.focus_index) if not st.keyboard_open else -1,
-            int(st.network_picker_row),
-            int(st.box2_devices.row),
-            str(st.box2_devices.arrow),
-            int(st.box3_devices.row),
-            str(st.box3_devices.arrow),
-            int(st.pigeon_focus_index),
-            int(st.preferences_focus_index) if st.show_preferences else -1,
-            str(st.preferences_nav or "") if st.show_preferences else "",
-            int(st.preferences_active_zone) if st.show_preferences else 0,
-            tuple(st.preferences_zone_widgets) if st.show_preferences else (),
-            int(st.ui_color_focus_index) if st.show_ui_color else -1,
-            str(st.ui_color_nav or "") if st.show_ui_color else "",
-            str(st.ui_color_active_class or "") if st.show_ui_color else "",
-            str(st.ui_color_accent_key or "") if st.show_ui_color else "",
-            str(st.ui_color_ui_key or "") if st.show_ui_color else "",
-            str(st.ui_color_button_key or "") if st.show_ui_color else "",
-            int(st.options_focus_index) if st.show_options else -1,
-            bool(st.show_options),
-            tuple(st.options_values.items()) if st.show_options else (),
-            int(st.update_popup_focus_index) if st.show_update_popup else -1,
-            bool(st.show_update_popup),
-            self._scan_anim_token(),
-            id(st.zone2_tt_bgra) if st.zone2_tt_bgra is not None else 0,
-        )
+        """Must match ``_focus_key_for_state`` so off-thread prewarm can hit."""
+        return self._focus_key_for_state(self._state)
 
     def _store_focus_frame(self, frame: np.ndarray) -> None:
         if self._status_bar_animating():
@@ -7418,7 +7462,7 @@ class MainSettingsWidget:
         threading.Thread(target=_work, name="pigeon-settings-prewarm", daemon=True).start()
 
     def prewarm_keyboard_focus(self) -> None:
-        """Rasterize upcoming keyboard keys off-thread (all keys for small pads)."""
+        """Rasterize idle + remaining keys off-thread (patches, not full-frame L1)."""
         import copy
         import threading
 
@@ -7436,31 +7480,37 @@ class MainSettingsWidget:
         self._kb_cache_mode = mode
         n = len(kb.focus_ring)
         cur = int(kb.focus_index) % n
-        # Small pads (PIN/IP/yes-no): warm everything. QWERTY: a short lookahead window.
-        budget = n if n <= 16 else 5
-        order = [(cur + i) % n for i in range(1, budget + 1)]
-        missing = [
-            idx
-            for idx in order
-            if self._keyboard_overlay_sig_for(
-                mode,
-                idx,
-                supports_lowercase=supports_lower,
-                target=kb_target,
-            )
-            not in self._kb_focus_frame_cache
-        ]
-        if not missing:
+        from pigeon.widgets.settings_keyboard import keyboard_overlay_cached
+
+        probe = copy.copy(kb)
+        needs_work = False
+        for i in range(n):
+            probe.focus_index = i
+            if not keyboard_overlay_cached(probe, assets_dir=self._assets_dir):
+                needs_work = True
+                break
+        if not needs_work:
             return
+        # Neighbors first, then the rest of the ring so wrap-around stays warm.
+        order = [(cur + 1) % n, (cur - 1) % n]
+        for i in range(n):
+            idx = (cur + i) % n
+            if idx not in order:
+                order.append(idx)
         self._kb_prewarm_inflight = True
         assets = self._assets_dir
-        cache = self._kb_focus_frame_cache
         mode_ref = mode
         lower_ref = supports_lower
         target_ref = kb_target
 
         def _work() -> None:
             try:
+                from pigeon.widgets.settings_keyboard import (
+                    keyboard_overlay_cached,
+                    render_keyboard_bgra,
+                    warm_keyboard_idle,
+                )
+
                 if self._state.keyboard is None:
                     return
                 live = self._state.keyboard
@@ -7470,28 +7520,20 @@ class MainSettingsWidget:
                     return
                 if str(getattr(live, "target", "") or "") != target_ref:
                     return
-                snap = copy.deepcopy(live)
-                from pigeon.widgets.settings_keyboard import render_keyboard_bgra
-
-                for idx in missing:
+                snap = copy.copy(live)
+                warm_keyboard_idle(snap, assets_dir=assets)
+                for idx in order:
                     if self._state.keyboard is None:
                         return
                     if getattr(self._state.keyboard, "mode", None) != mode_ref:
                         return
                     snap.focus_index = idx
-                    key = self._keyboard_overlay_sig_for(
-                        mode_ref,
-                        idx,
-                        supports_lowercase=lower_ref,
-                        target=target_ref,
-                    )
-                    if key in cache:
+                    if keyboard_overlay_cached(snap, assets_dir=assets):
                         continue
                     try:
-                        frame = render_keyboard_bgra(snap, assets_dir=assets)
+                        render_keyboard_bgra(snap, assets_dir=assets)
                     except Exception:
                         return
-                    cache.setdefault(key, frame)
             finally:
                 self._kb_prewarm_inflight = False
 
@@ -7514,32 +7556,28 @@ class MainSettingsWidget:
             return
         n = len(kb.focus_ring)
         nxt = (int(kb.focus_index) + (1 if forward else -1)) % n
+        snap = copy.copy(kb)
+        snap.focus_index = nxt
+        from pigeon.widgets.settings_keyboard import keyboard_overlay_cached
+
+        if keyboard_overlay_cached(snap, assets_dir=self._assets_dir):
+            nxt2 = (nxt + (1 if forward else -1)) % n
+            snap.focus_index = nxt2
+            if keyboard_overlay_cached(snap, assets_dir=self._assets_dir):
+                return
+            nxt = nxt2
+        snap.focus_index = nxt
+        assets = self._assets_dir
+        mode_ref = mode
+        lower_ref = supports_lower
+        target_ref = kb_target
+        cache = self._kb_focus_frame_cache
         key = self._keyboard_overlay_sig_for(
             mode,
             nxt,
             supports_lowercase=supports_lower,
             target=kb_target,
         )
-        if key in self._kb_focus_frame_cache:
-            # Also warm one more step ahead when possible.
-            nxt2 = (nxt + (1 if forward else -1)) % n
-            key2 = self._keyboard_overlay_sig_for(
-                mode,
-                nxt2,
-                supports_lowercase=supports_lower,
-                target=kb_target,
-            )
-            if key2 in self._kb_focus_frame_cache:
-                return
-            nxt = nxt2
-            key = key2
-        snap = copy.deepcopy(kb)
-        snap.focus_index = nxt
-        assets = self._assets_dir
-        cache = self._kb_focus_frame_cache
-        mode_ref = mode
-        lower_ref = supports_lower
-        target_ref = kb_target
 
         def _work() -> None:
             try:
@@ -8318,9 +8356,8 @@ class MainSettingsWidget:
                 self.invalidate()
                 return "pigeon_factory_reset"
             if focused == "info_button":
-                st.open_preferences()
-                self.invalidate()
-                return "preferences_open"
+                # Now-playing zone picker is disabled while that screen is rethought.
+                return "preferences_disabled"
             if focused == "general_button":
                 st.open_options()
                 self.invalidate()
@@ -8485,6 +8522,12 @@ class MainSettingsWidget:
         return action
 
     def bgra_frame(self) -> np.ndarray | None:
+        try:
+            from pigeon.compositing import clear_bright_artwork_mask
+
+            clear_bright_artwork_mask()
+        except Exception:
+            pass
         try:
             st = self._state
             if st.show_pigeon_settings:
@@ -8684,9 +8727,7 @@ class MainSettingsWidget:
             else:
                 self.prewarm_focus_ring()
         elif st.keyboard is not None and not self._kb_prewarm_inflight:
-            # Keep a lookahead window warm while browsing keys.
-            if len(self._kb_focus_frame_cache) < 3:
-                self.prewarm_keyboard_focus()
+            self.prewarm_keyboard_focus()
         return frame
 
     def render(self, canvas_bgr: np.ndarray) -> None:
@@ -8695,7 +8736,7 @@ class MainSettingsWidget:
         frame = self.bgra_frame()
         if frame is None or canvas_bgr is None or canvas_bgr.size == 0:
             return
-        if self._state.keyboard is not None:
+        if self._state.keyboard is not None and not self._nav_scrub:
             frame = frame.copy()
             _draw_text_entry_cursor(frame, self._state)
             self._paste_fully_opaque = None

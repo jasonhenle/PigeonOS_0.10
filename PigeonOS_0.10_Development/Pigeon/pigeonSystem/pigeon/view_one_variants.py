@@ -37,6 +37,25 @@ except ImportError:
 from pigeon.font_paths import resolve_ui_font_bold, resolve_ui_font_book
 
 
+def _ui_text_rgba() -> tuple[int, int, int, int]:
+    try:
+        from pigeon.widgets.options_settings import ui_ink_rgb
+
+        rgb = ui_ink_rgb()
+    except Exception:
+        rgb = (255, 255, 255)
+    return (int(rgb[0]), int(rgb[1]), int(rgb[2]), 255)
+
+
+def _ui_text_cache_tag() -> str:
+    try:
+        from pigeon.widgets.options_settings import ui_is_bright
+
+        return "bright" if ui_is_bright() else "std"
+    except Exception:
+        return "std"
+
+
 class ViewOneVariant(IntEnum):
     V01 = 1
     V02 = 2
@@ -186,32 +205,43 @@ def _measure(font: "ImageFont.ImageFont", text: str) -> "tuple[int, int, tuple]"
     return tw, th, bbox
 
 
+def _font_at_size(font_path: Optional[str], size: int) -> "Optional[ImageFont.ImageFont]":
+    if not _PIL_OK:
+        return None
+    k = (font_path or None, int(size))
+    hit = _FONT_OBJECT_CACHE.get(k)
+    if hit is not None:
+        return hit
+    if font_path:
+        try:
+            fnt = ImageFont.truetype(font_path, size)
+        except Exception:
+            fnt = ImageFont.load_default()
+    else:
+        fnt = ImageFont.load_default()
+    _FONT_OBJECT_CACHE[k] = fnt
+    if len(_FONT_OBJECT_CACHE) > _FONT_OBJECT_CACHE_MAX:
+        _FONT_OBJECT_CACHE.pop(next(iter(_FONT_OBJECT_CACHE)))
+    return fnt
+
+
+def _font_for_height(font_path: Optional[str], box_h: int) -> "Optional[ImageFont.ImageFont]":
+    """Face sized to ``box_h``; callers ellipsize if the string is too wide."""
+    max_h = max(8, int(round(max(1, int(box_h)) * _TEXT_HEIGHT_FRACTION)))
+    return _font_at_size(font_path, max_h)
+
+
 def _fit_font(font_path: Optional[str], text: str, box_w: int, box_h: int) -> "Optional[ImageFont.ImageFont]":
     if not _PIL_OK:
         return None
     max_w = max(1, int(round(box_w * _TEXT_WIDTH_FRACTION)))
     max_h = max(1, int(round(box_h * _TEXT_HEIGHT_FRACTION)))
 
-    def _make(size: int):
-        k = (font_path or None, int(size))
-        hit = _FONT_OBJECT_CACHE.get(k)
-        if hit is not None:
-            return hit
-        if font_path:
-            try:
-                fnt = ImageFont.truetype(font_path, size)
-            except Exception:
-                fnt = ImageFont.load_default()
-        else:
-            fnt = ImageFont.load_default()
-        _FONT_OBJECT_CACHE[k] = fnt
-        if len(_FONT_OBJECT_CACHE) > _FONT_OBJECT_CACHE_MAX:
-            _FONT_OBJECT_CACHE.pop(next(iter(_FONT_OBJECT_CACHE)))
-        return fnt
-
     size = max(8, max_h)
     for _ in range(40):
-        font = _make(size)
+        font = _font_at_size(font_path, size)
+        if font is None:
+            return None
         tw, th, _ = _measure(font, text)
         if tw <= max_w and th <= max_h:
             return font
@@ -220,9 +250,9 @@ def _fit_font(font_path: Optional[str], text: str, box_w: int, box_h: int) -> "O
         if new_size >= size:
             new_size = size - 1
         if new_size < 8:
-            return _make(8)
+            return _font_at_size(font_path, 8)
         size = new_size
-    return _make(max(8, size))
+    return _font_at_size(font_path, max(8, size))
 
 
 def render_ui_text_patch_bgra(text: str, box_w: int, box_h: int) -> Optional[np.ndarray]:
@@ -236,7 +266,7 @@ def render_ui_text_patch_bgra(text: str, box_w: int, box_h: int) -> Optional[np.
     text = (text or "").strip()
     if not text or box_w < 2 or box_h < 2 or not _PIL_OK:
         return None
-    key = (text, int(box_w), int(box_h))
+    key = (text, int(box_w), int(box_h), _ui_text_cache_tag())
     cached = _TEXT_CACHE.get(key)
     if cached is not None:
         return cached
@@ -251,7 +281,7 @@ def render_ui_text_patch_bgra(text: str, box_w: int, box_h: int) -> Optional[np.
     tw, th, bbox = _measure(font, text)
     ox = (int(box_w) - tw) // 2 - int(bbox[0])
     oy = (int(box_h) - th) // 2 - int(bbox[1])
-    draw.text((ox, oy), text, font=font, fill=(255, 255, 255, 255))
+    draw.text((ox, oy), text, font=font, fill=_ui_text_rgba())
 
     patch = _pil_image_to_bgra(img)
     _TEXT_CACHE[key] = patch
@@ -290,7 +320,7 @@ def render_view_one_video_content_b_title_patch_bgra(text: str) -> Optional[np.n
     )
     band_ww_i = max(1, int(band_ww))
     band_hh_i = max(1, int(band_hh))
-    key = (text, band_ww_i, band_hh_i, cell_i)
+    key = (text, band_ww_i, band_hh_i, cell_i, _ui_text_cache_tag())
     hit = _VC_B_TITLE_CACHE.get(key)
     if hit is not None:
         return hit
@@ -309,7 +339,7 @@ def render_view_one_video_content_b_title_patch_bgra(text: str) -> Optional[np.n
     tw, th, bbox = _measure(title_font, line)
     ox = (ww - tw) // 2 - int(bbox[0])
     oy = (wh - th) // 2 - int(bbox[1])
-    draw.text((ox, oy), line, font=title_font, fill=(255, 255, 255, 255))
+    draw.text((ox, oy), line, font=title_font, fill=_ui_text_rgba())
 
     patch = _pil_image_to_bgra(img)
     _VC_B_TITLE_CACHE[key] = patch
@@ -370,10 +400,10 @@ def render_ui_music_text_patch_bgra(
 
     Line 1 is the track ``title`` set large in Pigeon's UI bold font; lines 2
     and 3 are ``artist`` and ``album`` set in Sharp Sans Book (regular weight)
-    at the same smaller size beneath it. All lines center-align horizontally,
+    at the same line-box height beneath it. All lines center-align horizontally,
     white on transparent, and fit within the box. Long small-line text
-    ellipsizes at the shared font size so line 2 and line 3 stay visually
-    matched.
+    ellipsizes at that shared height so a long album name does not shrink
+    both lines.
 
     ``subtitle_top_frac`` (0.0 .. 1.0), when provided, overrides the
     auto-layout and anchors the TOP of the first small line at that fraction
@@ -404,6 +434,7 @@ def render_ui_music_text_patch_bgra(
         int(box_w),
         int(box_h),
         float(subtitle_top_frac) if subtitle_top_frac is not None else -1.0,
+        _ui_text_cache_tag(),
     )
     cached = _MUSIC_TEXT_CACHE.get(key)
     if cached is not None:
@@ -457,31 +488,22 @@ def render_ui_music_text_patch_bgra(
         if t_font is not None:
             tw, th, bbox = _measure(t_font, title)
             ox = (bw - tw) // 2 - int(bbox[0])
-            oy = (title_h - th) // 2 - int(bbox[1])
-            draw.text((ox, oy), title, font=t_font, fill=(255, 255, 255, 255))
+            if subtitle_top_frac is not None:
+                # Sit just above line 2 instead of floating in the title region.
+                pack = 4
+                oy = title_h - th - pack - int(bbox[1])
+                if oy < -int(bbox[1]):
+                    oy = -int(bbox[1])
+            else:
+                oy = (title_h - th) // 2 - int(bbox[1])
+            draw.text((ox, oy), title, font=t_font, fill=_ui_text_rgba())
 
-    # Small lines (artist / album) — set in Sharp Sans Book, sharing one font
-    # size for visual parity between the two lines.
+    # Small lines (artist / album) — set in Sharp Sans Book at the line-box
+    # height. Long strings ellipsize instead of shrinking both lines to the
+    # longest title's full width (that left a gap under album).
     if n_small > 0 and per_small_h > 0:
-        candidate_sizes: list[int] = []
-        for s in small_lines:
-            f = _fit_font(small_font_path, s, bw, per_small_h)
-            if f is None:
-                continue
-            sz = getattr(f, "size", None)
-            if isinstance(sz, (int, float)):
-                candidate_sizes.append(int(sz))
-        if candidate_sizes:
-            shared_size = max(8, min(candidate_sizes))
-            try:
-                shared_font = (
-                    ImageFont.truetype(small_font_path, shared_size)
-                    if small_font_path
-                    else ImageFont.load_default()
-                )
-            except Exception:
-                shared_font = ImageFont.load_default()
-
+        shared_font = _font_for_height(small_font_path, per_small_h)
+        if shared_font is not None:
             if subtitle_top_frac is not None:
                 # TOP of first small line sits exactly at sub_top; subsequent
                 # lines stack with gap_small between them.
@@ -502,7 +524,7 @@ def render_ui_music_text_patch_bgra(
                     if i < n_small - 1:
                         y_cursor += gap_small
                 draw.text(
-                    (ox, oy), disp, font=shared_font, fill=(255, 255, 255, 255)
+                    (ox, oy), disp, font=shared_font, fill=_ui_text_rgba()
                 )
 
     patch = _pil_image_to_bgra(img)

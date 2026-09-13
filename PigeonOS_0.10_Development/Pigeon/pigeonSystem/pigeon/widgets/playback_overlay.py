@@ -139,6 +139,26 @@ def receiver_audio_config_display_line(incoming: str, config: str) -> str:
     return inc or cfg
 
 
+def volume_widget_format_label(
+    incoming: str,
+    config: str,
+    receiver_name: str = "",
+) -> str:
+    """Caption above the volume disc: known audio format, else receiver name."""
+    line = receiver_audio_config_display_line(incoming, config)
+    if line:
+        return line
+    return str(receiver_name or "").strip()
+
+
+def volume_widget_value_text(raw: object) -> str:
+    """Numeric volume for the disc center — the ``dB`` suffix is never drawn."""
+    line = _receiver_volume_display_line(raw)
+    if not line:
+        return ""
+    return re.sub(r"\s*dB\s*$", "", line, flags=re.I).strip()
+
+
 # Volume unknown / idle placeholders from receiver poll — do not draw (glyphs read as a slab).
 _VOLUME_PLACEHOLDER_CHARS = frozenset("—–-−")  # em dash, en dash, ASCII hyphen, minus sign
 
@@ -292,6 +312,29 @@ def compose_playback_volume_widget_line(
             return tv
 
     return ""
+
+
+def choose_poll_overlay_volume(
+    *,
+    merged_volume: str,
+    accept_vol: bool,
+    cache_effective: str,
+    cache_hold: str = "",
+    saver_hold: str = "",
+) -> str:
+    """HTTP / telnet readout wins; otherwise keep the last good level.
+
+    Telnet ``MV`` is not required. AppCommand ``GetVolumeLevel`` is the same
+    master volume the front panel shows. An empty poll must not wipe a cached
+    level for the *same* receiver.
+    """
+    merged = str(merged_volume or "").strip()
+    cached = str(
+        cache_effective or cache_hold or saver_hold or ""
+    ).strip()
+    if accept_vol and merged:
+        return merged
+    return cached or merged
 
 
 # Large wordmark: top-left cell [2,3], bottom-right [5,15] → 13×4 cells.

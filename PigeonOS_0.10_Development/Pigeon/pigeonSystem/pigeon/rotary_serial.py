@@ -1,4 +1,4 @@
-"""USB-serial / UNO Q Monitor bridge for Pigeon rotary controllers.
+"""USB-serial / GPIO / UNO Q Monitor bridge for Pigeon rotary controllers.
 
 HID-capable boards (Leonardo / Pro Micro / …) already emit Left / Right / Space
 and need nothing here. Serial-mode firmware (`hardware/rotary_hid/rotary_hid.ino`)
@@ -8,13 +8,24 @@ prints one line per action:
   LEFT  / CCW / BACKWARD   → backward
   PRESS / PUSH / SELECT    → activate
 
-Transports (both tried):
+Transports:
+  0) Raspberry Pi GPIO rotary encoder (default pins A=17, B=27, button=22),
+     optional GPIO volume encoder (default pins A=23, B=24, button=25),
+     and optional GPIO play/pause button (default pin=26)
   1) USB CDC serial (``/dev/ttyACM*``, ``PIGEON_ROTARY_PORT=…``)
   2) Arduino UNO Q Monitor TCP — MCU ``Monitor.println`` is forwarded by the
      board's Linux router to ``localhost:7500``. The Pi opens that via
      ``adb -s SERIAL forward tcp:7500 tcp:7500`` (or ``PIGEON_ROTARY_TCP=host:port``).
 
 Optional: ``PIGEON_ROTARY_INVERT=1`` swaps forward/backward.
+Optional: ``PIGEON_ROTARY_GPIO=0`` disables direct Pi GPIO input.
+Optional: ``PIGEON_ROTARY_GPIO_A/B/BUTTON`` override GPIO pins.
+Optional: ``PIGEON_ROTARY_GPIO_INVERT=0`` restores raw GPIO A/B direction.
+Optional: ``PIGEON_VOLUME_GPIO=0`` disables direct Pi GPIO volume input.
+Optional: ``PIGEON_VOLUME_GPIO_A/B/BUTTON`` override volume GPIO pins.
+Optional: ``PIGEON_VOLUME_GPIO_INVERT=1`` swaps volume up/down.
+Optional: ``PIGEON_PLAY_PAUSE_GPIO=0`` disables direct Pi GPIO play/pause input.
+Optional: ``PIGEON_PLAY_PAUSE_GPIO_BUTTON`` overrides the play/pause GPIO pin.
 Optional: ``PIGEON_ROTARY_SERIAL=0`` disables the whole bridge.
 Optional: ``PIGEON_ROTARY_TCP=host:port`` enables the UNO Q TCP path
 (off by default; ``1`` / ``on`` uses ``127.0.0.1:7500``).
@@ -66,6 +77,24 @@ _ACTION_TO_KEYSYM = {
 _BAUD = 115200
 _PROBE_SECONDS = 1.25
 _RECONNECT_S = 2.0
+_GPIO_A = 17
+_GPIO_B = 27
+_GPIO_BUTTON = 22
+_VOLUME_GPIO_A = 23
+_VOLUME_GPIO_B = 24
+_VOLUME_GPIO_BUTTON = 25
+_PLAY_PAUSE_GPIO_BUTTON = 26
+_VOLUME_LINE_TO_ACTION = {
+    "VOL_UP": "volume_up",
+    "VOLUME_UP": "volume_up",
+    "UP": "volume_up",
+    "VOL_DOWN": "volume_down",
+    "VOLUME_DOWN": "volume_down",
+    "DOWN": "volume_down",
+    "MUTE": "mute_toggle",
+    "MUTE_TOGGLE": "mute_toggle",
+    "PUSH": "mute_toggle",
+}
 
 
 def _stderr(msg: str) -> None:
@@ -90,6 +119,43 @@ def _env_port() -> str | None:
 def _env_invert() -> bool:
     flag = (os.environ.get("PIGEON_ROTARY_INVERT") or "").strip().lower()
     return flag in ("1", "true", "yes", "on")
+
+
+def _env_flag(name: str, *, default: bool) -> bool:
+    raw = (os.environ.get(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw not in ("0", "false", "off", "no")
+
+
+def _env_pin(name: str, default: int) -> int:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return default
+
+
+def _env_gpio_enabled() -> bool:
+    return sys.platform.startswith("linux") and _env_flag("PIGEON_ROTARY_GPIO", default=True)
+
+
+def _env_gpio_invert() -> bool:
+    return _env_flag("PIGEON_ROTARY_GPIO_INVERT", default=True)
+
+
+def _env_volume_gpio_enabled() -> bool:
+    return sys.platform.startswith("linux") and _env_flag("PIGEON_VOLUME_GPIO", default=True)
+
+
+def _env_volume_gpio_invert() -> bool:
+    return _env_flag("PIGEON_VOLUME_GPIO_INVERT", default=True)
+
+
+def _env_play_pause_gpio_enabled() -> bool:
+    return sys.platform.startswith("linux") and _env_flag("PIGEON_PLAY_PAUSE_GPIO", default=True)
 
 
 def _env_adb_serial() -> str | None:
@@ -412,6 +478,251 @@ def _dispatch_action(
         inject_keysym(root, keysym)
 
 
+def _start_gpio_listener(
+    root,
+    *,
+    on_action: Callable[[str], None] | None,
+    invert: bool,
+    gate: _ActionGate,
+) -> Callable[[], None] | None:
+    if not _env_gpio_enabled():
+        return None
+
+    pin_a = _env_pin("PIGEON_ROTARY_GPIO_A", _GPIO_A)
+    pin_b = _env_pin("PIGEON_ROTARY_GPIO_B", _GPIO_B)
+    pin_button = _env_pin("PIGEON_ROTARY_GPIO_BUTTON", _GPIO_BUTTON)
+    cw_line = "LEFT" if invert else "RIGHT"
+    ccw_line = "RIGHT" if invert else "LEFT"
+    helper = f"""
+from gpiozero import Button, RotaryEncoder
+from signal import pause
+
+encoder = RotaryEncoder({pin_a}, {pin_b}, max_steps=0)
+button = Button({pin_button}, pull_up=True, bounce_time=0.05)
+
+encoder.when_rotated_clockwise = lambda: print("{cw_line}", flush=True)
+encoder.when_rotated_counter_clockwise = lambda: print("{ccw_line}", flush=True)
+button.when_pressed = lambda: print("PUSH", flush=True)
+pause()
+"""
+
+    try:
+        proc = subprocess.Popen(
+            ["/usr/bin/python3", "-u", "-c", helper],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+    except Exception as exc:
+        _stderr(f"pigeon: rotary_gpio: not started: {exc}")
+        return None
+
+    ignored = [0]
+    logged_ok = [0]
+
+    def stdout_worker() -> None:
+        stream = proc.stdout
+        if stream is None:
+            return
+        for line in stream:
+            if proc.poll() is not None and not line:
+                break
+            _handle_line(
+                root,
+                line.strip(),
+                on_action=on_action,
+                invert=False,
+                gate=gate,
+                logged_ok=logged_ok,
+                ignored=ignored,
+                source="gpio",
+            )
+
+    def stderr_worker() -> None:
+        stream = proc.stderr
+        if stream is None:
+            return
+        for line in stream:
+            msg = line.strip()
+            if msg:
+                _stderr(f"pigeon: rotary_gpio: {msg}")
+
+    threading.Thread(target=stdout_worker, name="pigeon-rotary-gpio", daemon=True).start()
+    threading.Thread(target=stderr_worker, name="pigeon-rotary-gpio-stderr", daemon=True).start()
+    _stderr(
+        "pigeon: rotary_gpio: listening "
+        f"CW=Right CCW=Left PUSH=Activate "
+        f"(A=GPIO{pin_a}, B=GPIO{pin_b}, button=GPIO{pin_button})"
+        + (" (gpio invert)" if invert else "")
+    )
+
+    def stop_gpio() -> None:
+        if proc.poll() is None:
+            proc.terminate()
+
+    return stop_gpio
+
+
+def _start_volume_gpio_listener(
+    root,
+    *,
+    on_volume_action: Callable[[str], None] | None,
+) -> Callable[[], None] | None:
+    if on_volume_action is None or not _env_volume_gpio_enabled():
+        return None
+
+    pin_a = _env_pin("PIGEON_VOLUME_GPIO_A", _VOLUME_GPIO_A)
+    pin_b = _env_pin("PIGEON_VOLUME_GPIO_B", _VOLUME_GPIO_B)
+    pin_button = _env_pin("PIGEON_VOLUME_GPIO_BUTTON", _VOLUME_GPIO_BUTTON)
+    invert = _env_volume_gpio_invert()
+    cw_line = "VOL_DOWN" if invert else "VOL_UP"
+    ccw_line = "VOL_UP" if invert else "VOL_DOWN"
+    helper = f"""
+from gpiozero import Button, RotaryEncoder
+from signal import pause
+
+encoder = RotaryEncoder({pin_a}, {pin_b}, max_steps=0)
+button = Button({pin_button}, pull_up=True, bounce_time=0.05)
+
+encoder.when_rotated_clockwise = lambda: print("{cw_line}", flush=True)
+encoder.when_rotated_counter_clockwise = lambda: print("{ccw_line}", flush=True)
+button.when_pressed = lambda: print("MUTE", flush=True)
+pause()
+"""
+
+    try:
+        proc = subprocess.Popen(
+            ["/usr/bin/python3", "-u", "-c", helper],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+    except Exception as exc:
+        _stderr(f"pigeon: rotary_volume_gpio: not started: {exc}")
+        return None
+
+    logged_ok = [0]
+    ignored = [0]
+
+    def stdout_worker() -> None:
+        stream = proc.stdout
+        if stream is None:
+            return
+        for line in stream:
+            line_u = _normalize_line(line)
+            action = _VOLUME_LINE_TO_ACTION.get(line_u)
+            if action is None:
+                if ignored[0] < 8:
+                    _stderr(f"pigeon: rotary_volume_gpio: ignore unknown line {line_u!r}")
+                    ignored[0] += 1
+                continue
+            if logged_ok[0] < 8:
+                _stderr(f"pigeon: rotary_volume_gpio: {line_u!r} → {action}")
+                logged_ok[0] += 1
+            try:
+                root.after(0, lambda act=action: on_volume_action(act))
+            except Exception as exc:
+                _stderr(f"pigeon: rotary_volume_gpio: dispatch {action} failed: {exc}")
+
+    def stderr_worker() -> None:
+        stream = proc.stderr
+        if stream is None:
+            return
+        for line in stream:
+            msg = line.strip()
+            if msg:
+                _stderr(f"pigeon: rotary_volume_gpio: {msg}")
+
+    threading.Thread(target=stdout_worker, name="pigeon-volume-gpio", daemon=True).start()
+    threading.Thread(target=stderr_worker, name="pigeon-volume-gpio-stderr", daemon=True).start()
+    _stderr(
+        "pigeon: rotary_volume_gpio: listening "
+        f"CW=VolumeUp CCW=VolumeDown PUSH=Mute "
+        f"(A=GPIO{pin_a}, B=GPIO{pin_b}, button=GPIO{pin_button})"
+        + (" (gpio invert)" if invert else "")
+    )
+
+    def stop_gpio() -> None:
+        if proc.poll() is None:
+            proc.terminate()
+
+    return stop_gpio
+
+
+def _start_play_pause_gpio_listener(
+    root,
+    *,
+    on_play_pause_action: Callable[[], None] | None,
+) -> Callable[[], None] | None:
+    if on_play_pause_action is None or not _env_play_pause_gpio_enabled():
+        return None
+
+    pin_button = _env_pin("PIGEON_PLAY_PAUSE_GPIO_BUTTON", _PLAY_PAUSE_GPIO_BUTTON)
+    helper = f"""
+from gpiozero import Button
+from signal import pause
+
+button = Button({pin_button}, pull_up=True, bounce_time=0.08)
+button.when_pressed = lambda: print("PLAY_PAUSE", flush=True)
+pause()
+"""
+
+    try:
+        proc = subprocess.Popen(
+            ["/usr/bin/python3", "-u", "-c", helper],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+    except Exception as exc:
+        _stderr(f"pigeon: play_pause_gpio: not started: {exc}")
+        return None
+
+    logged_ok = [0]
+    ignored = [0]
+
+    def stdout_worker() -> None:
+        stream = proc.stdout
+        if stream is None:
+            return
+        for line in stream:
+            line_u = _normalize_line(line)
+            if line_u != "PLAY_PAUSE":
+                if ignored[0] < 8:
+                    _stderr(f"pigeon: play_pause_gpio: ignore unknown line {line_u!r}")
+                    ignored[0] += 1
+                continue
+            if logged_ok[0] < 8:
+                _stderr("pigeon: play_pause_gpio: 'PLAY_PAUSE' → play_pause")
+                logged_ok[0] += 1
+            try:
+                root.after(0, on_play_pause_action)
+            except Exception as exc:
+                _stderr(f"pigeon: play_pause_gpio: dispatch failed: {exc}")
+
+    def stderr_worker() -> None:
+        stream = proc.stderr
+        if stream is None:
+            return
+        for line in stream:
+            msg = line.strip()
+            if msg:
+                _stderr(f"pigeon: play_pause_gpio: {msg}")
+
+    threading.Thread(target=stdout_worker, name="pigeon-play-pause-gpio", daemon=True).start()
+    threading.Thread(target=stderr_worker, name="pigeon-play-pause-gpio-stderr", daemon=True).start()
+    _stderr(f"pigeon: play_pause_gpio: listening PLAY/PAUSE (button=GPIO{pin_button})")
+
+    def stop_gpio() -> None:
+        if proc.poll() is None:
+            proc.terminate()
+
+    return stop_gpio
+
+
 def _handle_line(
     root,
     line: str,
@@ -710,11 +1021,15 @@ def start_rotary_serial_listener(
     *,
     enabled: bool | None = None,
     on_action: Callable[[str], None] | None = None,
+    on_volume_action: Callable[[str], None] | None = None,
+    on_play_pause_action: Callable[[], None] | None = None,
 ) -> Callable[[], None] | None:
-    """Start daemons that map CW/CCW/PUSH → app actions (USB serial + UNO Q TCP).
+    """Start daemons that map CW/CCW/PUSH → app actions (GPIO + USB serial + TCP).
 
     ``on_action`` receives ``\"forward\"``, ``\"backward\"``, or ``\"activate\"`` on
-    the Tk thread. Returns a stop callable, or None if disabled.
+    the Tk thread. ``on_volume_action`` receives ``\"volume_up\"``, ``\"volume_down\"``,
+    or ``\"mute_toggle\"``. ``on_play_pause_action`` receives a dedicated GPIO button
+    press. Returns a stop callable, or None if disabled.
     """
     if enabled is None:
         flag = (os.environ.get("PIGEON_ROTARY_SERIAL") or "1").strip().lower()
@@ -725,6 +1040,24 @@ def start_rotary_serial_listener(
     stop = threading.Event()
     invert = _env_invert()
     gate = _ActionGate()
+    stop_callbacks: list[Callable[[], None]] = [stop.set]
+    gpio_stop = _start_gpio_listener(
+        root,
+        on_action=on_action,
+        invert=_env_gpio_invert(),
+        gate=gate,
+    )
+    if gpio_stop is not None:
+        stop_callbacks.append(gpio_stop)
+    volume_gpio_stop = _start_volume_gpio_listener(root, on_volume_action=on_volume_action)
+    if volume_gpio_stop is not None:
+        stop_callbacks.append(volume_gpio_stop)
+    play_pause_gpio_stop = _start_play_pause_gpio_listener(
+        root,
+        on_play_pause_action=on_play_pause_action,
+    )
+    if play_pause_gpio_stop is not None:
+        stop_callbacks.append(play_pause_gpio_stop)
     logged_ports = [False]
     usb_backoff = _RetryBackoff()
     usb_state = _StateLog()
@@ -808,4 +1141,11 @@ def start_rotary_serial_listener(
             kwargs={"on_action": on_action, "invert": invert, "gate": gate},
             daemon=True,
         ).start()
-    return stop.set
+    def stop_all() -> None:
+        for cb in stop_callbacks:
+            try:
+                cb()
+            except Exception:
+                pass
+
+    return stop_all

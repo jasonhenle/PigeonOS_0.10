@@ -43,8 +43,22 @@ def read_app_state() -> dict[str, Any]:
         # Parse per call so every caller gets private objects (safe to mutate).
         data = json.loads(text)
         return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        recovered = _parse_state_text_recover(text)
+        if recovered is not None:
+            return recovered
+        return {}
     except Exception:
         return {}
+
+
+def _parse_state_text_recover(text: str) -> dict[str, Any] | None:
+    """Best-effort parse when the file has trailing junk after a valid object."""
+    try:
+        data, _end = json.JSONDecoder().raw_decode(text.lstrip())
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _atomic_write_state(cur: dict[str, Any]) -> None:
@@ -65,15 +79,24 @@ def write_app_state(**updates: Any) -> None:
     try:
         cur = read_app_state()
         if not cur:
-            # Empty merge base but a sizable file on disk means the read failed
-            # (corrupt/partial JSON). Keep a recovery copy before overwriting so
-            # one bad read cannot silently wipe pairings and settings.
+            # A sizable on-disk file that failed to parse must not be replaced
+            # with ``updates`` alone — that wipes pairings and locations.
             try:
                 p = state_file()
                 if p.is_file() and p.stat().st_size > 2:
-                    p.replace(p.with_suffix(".bad"))
+                    recovered = _parse_state_text_recover(
+                        p.read_text(encoding="utf-8")
+                    )
+                    if recovered:
+                        cur = recovered
+                    else:
+                        try:
+                            p.replace(p.with_suffix(".bad"))
+                        except OSError:
+                            pass
+                        return
             except OSError:
-                pass
+                return
         cur.update(updates)
         _atomic_write_state(cur)
     except Exception:
@@ -318,6 +341,14 @@ def read_saved_av_receiver() -> dict[str, str] | None:
     return _v2_read_primary_av_receiver()
 
 
+def read_saved_av_receiver_display_name() -> str:
+    """Paired AVR name (or label) for chrome that needs a receiver fallback."""
+    row = read_saved_av_receiver()
+    if not isinstance(row, dict):
+        return ""
+    return str(row.get("name") or row.get("label") or "").strip()
+
+
 def write_saved_av_receiver(
     row: dict[str, str] | None,
     *,
@@ -325,6 +356,20 @@ def write_saved_av_receiver(
 ) -> None:
     migrate_device_slots_from_legacy_if_needed()
     _v2_write_av_receiver_slot(row, for_location_id=for_location_id)
+    # Box3 / volume poll used to keep ``last_receiver`` on a previous AVR
+    # (the X3800H) after the user activated a different unit.
+    if row is None:
+        clear_last_receiver()
+        return
+    adr = str(row.get("address") or "").strip()
+    if not adr:
+        return
+    write_last_receiver(
+        host=adr,
+        name=str(row.get("name") or "").strip() or None,
+        label=str(row.get("label") or "").strip() or None,
+        device_id=str(row.get("identifier") or "").strip() or None,
+    )
 
 
 def clear_all_persisted_devices_and_targets() -> None:
@@ -794,7 +839,7 @@ def _v2_write_av_receiver_slot(row: dict[str, str] | None, *, for_location_id: s
     if row is None:
         loc["av_receiver"] = []
     else:
-        pr = _coerce_slot_row(row, "av_receiver")
+        pr = _coerce_slot_row(row, "av_receiver") or _receiver_from_partial_dict(row)
         if pr is not None:
             loc["av_receiver"] = [pr]
     _v2_persist_locations_and_mirror_legacy(locs)

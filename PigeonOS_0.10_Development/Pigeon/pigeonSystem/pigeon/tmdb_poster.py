@@ -284,6 +284,9 @@ _KIDS_STREAMING_BUNDLE_NEEDLES: tuple[str, ...] = (
 def is_degenerate_tmdb_query(q: str) -> bool:
     """
     True if ``q`` should not be sent to TMDb alone (streaming app name, splash branding, etc.).
+
+    Short real titles (``It``, ``Up``, ``Us``) are valid. OCR glyph noise is filtered
+    at OCR ingestion, not here — player metadata must still trigger a search.
     """
     raw = (q or "").strip()
     if not raw or len(raw) < 2:
@@ -298,13 +301,6 @@ def is_degenerate_tmdb_query(q: str) -> bool:
         return True
     if n.replace(" ", "").isdigit():
         return True
-    try:
-        from pigeon.ocr_clues import looks_like_ocr_junk
-
-        if looks_like_ocr_junk(raw):
-            return True
-    except ImportError:
-        pass
     return False
 
 
@@ -810,6 +806,40 @@ def _normalize_title_for_show_split(s: str) -> str:
     return t
 
 
+# Official works whose names look like ``Show: Episode`` (Max/Netflix colon style).
+# Keys are :func:`_norm_query` form so punctuation/case do not matter.
+_OFFICIAL_SUBTITLE_TITLE_NORMS = frozenset({
+    "it welcome to derry",
+})
+
+
+def _pair_is_official_subtitle_title(left: str, right: str) -> bool:
+    """
+    True when ``Left: Right`` (or dash) is the work's real name, not Show + episode.
+
+    ``IT: Welcome to Derry`` must not collapse to ``IT`` — that matches the older
+    series/film *It*. Known sketch acronyms (``SNL``) still want the left side.
+    """
+    le, ri = (left or "").strip(), (right or "").strip()
+    if not le or not ri:
+        return False
+    if _norm_query(f"{le} {ri}") in _OFFICIAL_SUBTITLE_TITLE_NORMS:
+        return True
+    if _norm_query(le) in _SHORT_SHOW_CANONICAL_QUERIES:
+        return False
+    if _compact_norm_for_acronym(le) in _SHORT_SHOW_CANONICAL_QUERIES:
+        return False
+    left_tokens = le.split()
+    right_tokens = [t for t in ri.split() if t]
+    # Short standalone titles (*It*, *Us*, *Up*) plus a multi-word subtitle are
+    # franchises/spinoffs, not episode labels.
+    return bool(
+        len(left_tokens) == 1
+        and len(left_tokens[0]) <= 4
+        and len(right_tokens) >= 2
+    )
+
+
 def _colon_prefix_show_query_normalized(q0: str) -> str | None:
     """Core split for :func:`colon_prefix_show_query`; ``q0`` must already be :func:`_normalize_title_for_show_split`."""
     if not q0:
@@ -828,12 +858,16 @@ def _colon_prefix_show_query_normalized(q0: str) -> str | None:
             return None
         if left.lower() == q0.lower():
             return None
+        if _pair_is_official_subtitle_title(left, right):
+            return None
         return left
 
     parts = _SHOW_EPISODE_SEP_RE.split(q0, maxsplit=1)
     if len(parts) == 2:
         left, right = parts[0].strip(), parts[1].strip()
         if left and right:
+            if _pair_is_official_subtitle_title(left, right):
+                return None
             canon = _canonical_series_from_dash_pair(left, right)
             if canon:
                 return canon
@@ -908,6 +942,8 @@ def _colon_show_episode_pair(q: str) -> tuple[str, str] | None:
             continue
         if left.lower() == q.lower():
             continue
+        if _pair_is_official_subtitle_title(left, right):
+            continue
         return left, right
     return None
 
@@ -977,12 +1013,16 @@ def refine_tmdb_search_query(raw: str | None) -> str | None:
     """
     Last-mile cleanup for any metadata source: unicode dashes, then ``Show - segment`` / colon stripping.
     Safe to call on strings that already went through pyatv heuristics (idempotent for plain titles).
+    Official colon titles (``IT: Welcome to Derry``) are left intact so they are not
+    reduced to a different work (``It``).
     """
     if raw is None:
         return None
     s = _normalize_title_for_show_split(str(raw).strip())
     if not s:
         return None
+    if _norm_query(s) in _OFFICIAL_SUBTITLE_TITLE_NORMS:
+        return s
     guest_show = _guest_on_show_canonical_query(s)
     if guest_show:
         return guest_show
@@ -1280,6 +1320,8 @@ def _tmdb_query_variants(raw: str) -> list[str]:
             return
         if le.lower() == q0.lower():
             return
+        if _pair_is_official_subtitle_title(le, ri):
+            return
         prefixes.append(le)
 
     rx_parts = _SHOW_EPISODE_SEP_RE.split(q0, maxsplit=1)
@@ -1322,11 +1364,19 @@ def _tmdb_query_variants(raw: str) -> list[str]:
         add(q0.split("|", 1)[0])
     for sep in ("\u2014", "\u2013", " – "):
         if sep in q0:
-            add(q0.split(sep, 1)[0])
+            left, right = q0.split(sep, 1)
+            left, right = left.strip(), right.strip()
+            if left and not _pair_is_official_subtitle_title(left, right):
+                add(left)
     for sep in (":", "\uff1a"):
         if sep in q0:
-            left = q0.split(sep, 1)[0].strip()
-            if left and not is_degenerate_tmdb_query(left):
+            left, right = q0.split(sep, 1)
+            left, right = left.strip(), right.strip()
+            if (
+                left
+                and not is_degenerate_tmdb_query(left)
+                and not _pair_is_official_subtitle_title(left, right)
+            ):
                 add(left)
     return out
 

@@ -39,8 +39,13 @@ from __future__ import annotations
 import re
 import select
 import socket
+import threading
 import time
+from collections.abc import Callable
 from typing import Iterable
+
+# One client at a time on port 23. Poll and volume sends must not overlap.
+_TELNET_LOCK = threading.Lock()
 
 _DEFAULT_PORT = 23
 # Commands sent on connect. Order matters: power first so we can bail early
@@ -278,6 +283,227 @@ def _denon_mv_to_db(digits: str) -> str:
     return f"{db:.1f} dB"
 
 
+def _telnet_ack_matches(command: str, line: str) -> bool:
+    """True when ``line`` is a control-protocol reply to ``command``."""
+    cmd = (command or "").strip().upper()
+    u = (line or "").strip().upper()
+    if not cmd or not u:
+        return False
+    if cmd.startswith("MV"):
+        return u.startswith("MV") and not u.startswith("MVMAX")
+    if cmd.startswith("PW"):
+        return u.startswith("PW")
+    if cmd.startswith("ZM"):
+        return u.startswith("ZM")
+    if cmd.startswith("MU"):
+        return u.startswith("MU")
+    return u.startswith(cmd[:2])
+
+
+def _recv_until_ack(
+    sock: socket.socket,
+    *,
+    command: str,
+    deadline: float,
+    ignore_mv: str = "",
+) -> tuple[bool, str]:
+    """Read CR lines until one matches ``command``, or the deadline hits."""
+    buf = bytearray()
+    skip = "".join(c for c in str(ignore_mv or "") if c.isdigit())
+    while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        r, _, _ = select.select([sock], [], [], max(0.02, min(remaining, 0.12)))
+        if not r:
+            continue
+        try:
+            chunk = sock.recv(4096)
+        except (BlockingIOError, InterruptedError, socket.timeout):
+            continue
+        except OSError:
+            break
+        if not chunk:
+            break
+        buf.extend(chunk)
+        for line in _split_cr_lines(bytes(buf)):
+            if not _telnet_ack_matches(command, line):
+                continue
+            if skip and command.upper() in ("MVUP", "MVDOWN"):
+                digits = "".join(c for c in line[2:] if c.isdigit())
+                if digits == skip:
+                    continue
+            return True, line
+    return False, ""
+
+
+# After power-on, wait on the same socket before volume commands.
+_CMD_PAUSE_S = {
+    "PWON": 0.7,
+    "ZMON": 0.15,
+}
+
+
+def send_denon_telnet_commands(
+    host: str,
+    commands: list[str],
+    *,
+    port: int = _DEFAULT_PORT,
+    timeout: float = 2.5,
+) -> tuple[bool, str]:
+    """Send one or more commands on a single telnet session and wait for acks.
+
+    Closing immediately after ``send`` is why MVUP appeared to succeed while
+    the AVR never moved — Denon-class units apply the command when they
+    echo ``MV``.
+    """
+    h = _normalize_host(host)
+    cmds = [str(c or "").strip().upper() for c in commands if str(c or "").strip()]
+    if not h:
+        return False, "No receiver host."
+    if not cmds:
+        return False, "No receiver command."
+    per = max(0.35, min(1.2, float(timeout) / max(1, len(cmds))))
+    connect_t = min(1.0, max(0.4, float(timeout) * 0.35))
+    _VOLUME_HUB.suspend()
+    try:
+        return _send_denon_telnet_commands_locked(
+            h, cmds, port=port, timeout=timeout, per=per, connect_t=connect_t
+        )
+    finally:
+        _VOLUME_HUB.resume()
+
+
+def _send_denon_telnet_commands_locked(
+    h: str,
+    cmds: list[str],
+    *,
+    port: int,
+    timeout: float,
+    per: float,
+    connect_t: float,
+) -> tuple[bool, str]:
+    with _TELNET_LOCK:
+        sock: socket.socket | None = None
+        try:
+            sock = socket.create_connection((h, port), timeout=connect_t)
+            sock.setblocking(False)
+            drain_deadline = min(
+                time.monotonic() + 0.25,
+                time.monotonic() + float(timeout),
+            )
+            drain = _recv_until_idle(sock, idle_s=0.08, total_deadline=drain_deadline)
+            pre_mv = ""
+            for raw in reversed(_split_cr_lines(drain)):
+                u = raw.strip().upper()
+                if u.startswith("MV") and not u.startswith("MVMAX"):
+                    pre_mv = "".join(c for c in u[2:] if c.isdigit())
+                    break
+            acks: list[str] = []
+            for cmd in cmds:
+                try:
+                    sock.sendall((cmd + "\r").encode("ascii", errors="ignore"))
+                except OSError as exc:
+                    return False, str(exc)
+                ok, line = _recv_until_ack(
+                    sock,
+                    command=cmd,
+                    deadline=time.monotonic() + per,
+                    ignore_mv=pre_mv if cmd in ("MVUP", "MVDOWN") else "",
+                )
+                if ok and cmd in ("MVUP", "MVDOWN"):
+                    nxt = "".join(c for c in line[2:] if c.isdigit())
+                    if nxt:
+                        pre_mv = nxt
+                if not ok:
+                    return False, f"Denon: {cmd} sent, no reply"
+                acks.append(line)
+                pause = _CMD_PAUSE_S.get(cmd, 0.0)
+                if pause > 0:
+                    time.sleep(pause)
+            return True, " / ".join(f"Denon: {c} → {a}" for c, a in zip(cmds, acks))
+        except (OSError, socket.timeout) as exc:
+            return False, str(exc)
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+
+
+def send_denon_telnet_command(
+    host: str,
+    command: str,
+    *,
+    port: int = _DEFAULT_PORT,
+    timeout: float = 1.5,
+) -> tuple[bool, str]:
+    """Send one Denon/Marantz control command, e.g. ``MVUP`` or ``MUON``."""
+    return send_denon_telnet_commands(host, [command], port=port, timeout=timeout)
+
+
+def query_denon_volume_telnet(
+    host: str,
+    *,
+    port: int = _DEFAULT_PORT,
+    timeout: float = 0.9,
+    blocking: bool = False,
+) -> dict[str, str]:
+    """Short ``MV?`` / ``MU?`` snapshot. Skips if the telnet lock is held."""
+    h = _normalize_host(host)
+    if not h:
+        return {}
+    # Hub owns TCP/23 for this host — never open a second client.
+    if _VOLUME_HUB.is_managing(h):
+        return _VOLUME_HUB.volume_snapshot(h)
+    wait = 0.35 if blocking else 0.0
+    got = _TELNET_LOCK.acquire(timeout=wait) if wait else _TELNET_LOCK.acquire(False)
+    if not got:
+        return {}
+    deadline = time.monotonic() + max(0.35, float(timeout))
+    sock: socket.socket | None = None
+    try:
+        sock = socket.create_connection((h, port), timeout=min(0.45, float(timeout)))
+        sock.setblocking(False)
+        _recv_until_idle(
+            sock,
+            idle_s=0.06,
+            total_deadline=min(deadline, time.monotonic() + 0.12),
+        )
+        for cmd in ("PW?", "MV?", "MU?"):
+            if time.monotonic() >= deadline:
+                break
+            sock.sendall((cmd + "\r").encode("ascii", errors="ignore"))
+            time.sleep(0.04)
+        blob = _recv_until_idle(
+            sock, idle_s=0.08, total_deadline=deadline
+        )
+    except (OSError, socket.timeout):
+        return {}
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+        _TELNET_LOCK.release()
+    parsed = _parse_denon_response_lines(_split_cr_lines(blob))
+    return parsed if parsed.get("MV") or parsed.get("MV_DB") or parsed.get("MU") else {}
+
+
+def send_denon_volume_action(host: str, action: str, *, timeout: float = 1.5) -> tuple[bool, str]:
+    """Send volume_up / volume_down / mute_toggle to a Denon-class receiver."""
+    act = (action or "").strip().lower()
+    if act == "volume_up":
+        return send_denon_telnet_command(host, "MVUP", timeout=timeout)
+    if act == "volume_down":
+        return send_denon_telnet_command(host, "MVDOWN", timeout=timeout)
+    if act == "mute_toggle":
+        state = poll_denon_telnet(host, timeout=max(1.0, timeout))
+        muted = str(state.get("MU") or "").strip().upper() == "ON"
+        return send_denon_telnet_command(host, "MUOFF" if muted else "MUON", timeout=timeout)
+    return False, f"Unknown receiver volume action: {action}"
+
+
 def poll_denon_telnet(
     host: str,
     *,
@@ -293,48 +519,70 @@ def poll_denon_telnet(
     h = _normalize_host(host)
     if not h:
         return {}
+    if _VOLUME_HUB.is_managing(h):
+        return _VOLUME_HUB.full_snapshot(h)
 
     deadline = time.monotonic() + max(0.5, float(timeout))
     connect_timeout = min(1.2, max(0.4, timeout * 0.45))
-
-    sock: socket.socket | None = None
+    _VOLUME_HUB.suspend()
     try:
-        sock = socket.create_connection((h, port), timeout=connect_timeout)
-    except (OSError, socket.timeout):
-        return {}
-
-    try:
-        sock.setblocking(False)
-        # Drain the on-connect broadcast. Denon pushes current state as soon as
-        # the socket opens; capturing it gives us data even if our explicit
-        # queries race a busy unit.
-        initial_deadline = min(deadline, time.monotonic() + _CONNECT_DRAIN_S)
-        initial_blob = _recv_until_idle(sock, idle_s=0.12, total_deadline=initial_deadline)
-
-        # Send our command battery. Each command is CR-terminated.
-        for cmd in _POLL_COMMANDS:
-            if time.monotonic() >= deadline:
-                break
-            payload = (cmd + "\r").encode("ascii", errors="ignore")
-            try:
-                sock.sendall(payload)
-            except OSError:
-                break
-            # Short gap so responses come back interleaved but ordered.
-            time.sleep(_COMMAND_GAP_S)
-
-        # Drain responses until the stream idles.
-        tail_blob = _recv_until_idle(
-            sock,
-            idle_s=_IDLE_TAIL_S,
-            total_deadline=deadline,
+        return _poll_denon_telnet_locked(
+            h, port=port, deadline=deadline, connect_timeout=connect_timeout
         )
     finally:
+        _VOLUME_HUB.resume()
+
+
+def _poll_denon_telnet_locked(
+    h: str,
+    *,
+    port: int,
+    deadline: float,
+    connect_timeout: float,
+) -> dict[str, str]:
+    sock: socket.socket | None = None
+    initial_blob = b""
+    tail_blob = b""
+    with _TELNET_LOCK:
         try:
-            if sock is not None:
-                sock.close()
-        except OSError:
-            pass
+            sock = socket.create_connection((h, port), timeout=connect_timeout)
+        except (OSError, socket.timeout):
+            return {}
+
+        try:
+            sock.setblocking(False)
+            # Drain the on-connect broadcast. Denon pushes current state as soon as
+            # the socket opens; capturing it gives us data even if our explicit
+            # queries race a busy unit.
+            initial_deadline = min(deadline, time.monotonic() + _CONNECT_DRAIN_S)
+            initial_blob = _recv_until_idle(
+                sock, idle_s=0.12, total_deadline=initial_deadline
+            )
+
+            # Send our command battery. Each command is CR-terminated.
+            for cmd in _POLL_COMMANDS:
+                if time.monotonic() >= deadline:
+                    break
+                payload = (cmd + "\r").encode("ascii", errors="ignore")
+                try:
+                    sock.sendall(payload)
+                except OSError:
+                    break
+                # Short gap so responses come back interleaved but ordered.
+                time.sleep(_COMMAND_GAP_S)
+
+            # Drain responses until the stream idles.
+            tail_blob = _recv_until_idle(
+                sock,
+                idle_s=_IDLE_TAIL_S,
+                total_deadline=deadline,
+            )
+        finally:
+            try:
+                if sock is not None:
+                    sock.close()
+            except OSError:
+                pass
 
     combined_lines = _split_cr_lines(initial_blob) + _split_cr_lines(tail_blob)
     if not combined_lines:
@@ -347,3 +595,215 @@ def poll_denon_telnet(
         return {"_raw": "\n".join(combined_lines)}
     parsed["_raw"] = "\n".join(combined_lines)
     return parsed
+
+
+class _DenonTelnetHub:
+    """One long-lived TCP/23 session. Denon allows a single client.
+
+    Unsolicited ``MV`` / ``MU`` lines (IR, front panel, HEOS) update the
+    snapshot. Periodic ``MV?`` covers firmware that stays quiet. One-shot
+    send/poll calls ``suspend`` so they can take the socket, then resume.
+    """
+
+    def __init__(self) -> None:
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+        self._suspend = threading.Event()
+        self._host = ""
+        self._snap: dict[str, str] = {}
+        self._snap_lock = threading.Lock()
+        self._listener: Callable[[dict[str, str]], None] | None = None
+        self._last_vol = ""
+
+    def set_listener(self, cb: Callable[[dict[str, str]], None] | None) -> None:
+        self._listener = cb
+
+    def ensure(self, host: str) -> None:
+        h = _normalize_host(host)
+        if not h:
+            self.stop()
+            return
+        alive = bool(self._thread and self._thread.is_alive())
+        if alive and self._host == h:
+            return
+        self.stop()
+        self._stop = threading.Event()
+        self._suspend = threading.Event()
+        self._host = h
+        with self._snap_lock:
+            self._snap = {}
+        self._last_vol = ""
+        self._thread = threading.Thread(
+            target=self._run, name="denon-telnet-hub", daemon=True
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._suspend.clear()
+        t = self._thread
+        self._thread = None
+        if t is not None and t.is_alive() and t is not threading.current_thread():
+            t.join(timeout=1.2)
+        self._host = ""
+
+    def suspend(self) -> None:
+        self._suspend.set()
+
+    def resume(self) -> None:
+        self._suspend.clear()
+
+    def is_managing(self, host: str) -> bool:
+        return bool(
+            _normalize_host(host) == self._host
+            and self._thread is not None
+            and self._thread.is_alive()
+        )
+
+    def volume_snapshot(self, host: str) -> dict[str, str]:
+        if not self.is_managing(host):
+            return {}
+        with self._snap_lock:
+            snap = dict(self._snap)
+        if snap.get("MV") or snap.get("MV_DB") or snap.get("MU"):
+            return snap
+        return {}
+
+    def full_snapshot(self, host: str) -> dict[str, str]:
+        if not self.is_managing(host):
+            return {}
+        with self._snap_lock:
+            return dict(self._snap)
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            if self._suspend.is_set():
+                time.sleep(0.05)
+                continue
+            if not _TELNET_LOCK.acquire(timeout=0.25):
+                continue
+            try:
+                if self._stop.is_set() or self._suspend.is_set():
+                    continue
+                self._session()
+            except Exception:
+                pass
+            finally:
+                _TELNET_LOCK.release()
+            if not self._stop.is_set():
+                time.sleep(0.8)
+
+    def _session(self) -> None:
+        h = self._host
+        if not h:
+            return
+        sock: socket.socket | None = None
+        try:
+            sock = socket.create_connection((h, _DEFAULT_PORT), timeout=1.0)
+            sock.setblocking(False)
+            last_ping = 0.0
+            leftover = b""
+            banner = _recv_until_idle(
+                sock, idle_s=0.08, total_deadline=time.monotonic() + 0.4
+            )
+            self._ingest(banner)
+            try:
+                sock.sendall(b"PW?\rMV?\rMU?\r")
+            except OSError:
+                return
+            while not self._stop.is_set() and not self._suspend.is_set():
+                now = time.monotonic()
+                if now - last_ping >= 1.0:
+                    try:
+                        sock.sendall(b"MV?\r")
+                    except OSError:
+                        return
+                    last_ping = now
+                r, _, _ = select.select([sock], [], [], 0.2)
+                if not r:
+                    continue
+                try:
+                    chunk = sock.recv(4096)
+                except (BlockingIOError, InterruptedError):
+                    continue
+                except OSError:
+                    return
+                if not chunk:
+                    return
+                leftover += chunk
+                if leftover.endswith((b"\r", b"\n")):
+                    blob, leftover = leftover, b""
+                else:
+                    idx = max(leftover.rfind(b"\r"), leftover.rfind(b"\n"))
+                    if idx < 0:
+                        continue
+                    blob, leftover = leftover[: idx + 1], leftover[idx + 1 :]
+                self._ingest(blob)
+        except (OSError, socket.timeout):
+            return
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+
+    def _ingest(self, blob: bytes) -> None:
+        if not blob:
+            return
+        parsed = _parse_denon_response_lines(_split_cr_lines(blob))
+        if not parsed:
+            return
+        with self._snap_lock:
+            self._snap.update(parsed)
+            snap = dict(self._snap)
+        vol = str(snap.get("MV_DB") or "").strip()
+        if not vol and snap.get("MV"):
+            vol = _denon_mv_to_db(str(snap.get("MV") or ""))
+        if str(snap.get("MU") or "").upper() == "ON":
+            vol = "mute"
+        if vol and vol != self._last_vol:
+            self._last_vol = vol
+            cb = self._listener
+            if cb is not None:
+                try:
+                    cb(snap)
+                except Exception:
+                    pass
+
+
+_VOLUME_HUB = _DenonTelnetHub()
+
+
+def start_denon_telnet_hub(
+    host: str,
+    *,
+    on_change: Callable[[dict[str, str]], None] | None = None,
+) -> None:
+    """Keep one telnet session on ``host`` and notify when master volume moves."""
+    if on_change is not None:
+        _VOLUME_HUB.set_listener(on_change)
+    _VOLUME_HUB.ensure(host)
+
+
+def stop_denon_telnet_hub() -> None:
+    _VOLUME_HUB.stop()
+    _VOLUME_HUB.set_listener(None)
+
+
+def prime_denon_telnet_hub_snapshot_for_tests(
+    host: str, fields: dict[str, str]
+) -> None:
+    """Test helper: expose a snapshot without opening a socket."""
+    h = _normalize_host(host)
+    _VOLUME_HUB._host = h
+    _VOLUME_HUB._thread = threading.current_thread()
+    with _VOLUME_HUB._snap_lock:
+        _VOLUME_HUB._snap = dict(fields)
+    _VOLUME_HUB._last_vol = str(fields.get("MV_DB") or "")
+
+
+def telnet_hub_ingest_for_tests(blob: bytes) -> str:
+    """Test helper: parse a telnet chunk and return the last volume string."""
+    _VOLUME_HUB._ingest(blob)
+    return _VOLUME_HUB._last_vol

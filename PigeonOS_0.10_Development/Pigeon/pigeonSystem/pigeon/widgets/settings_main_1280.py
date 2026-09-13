@@ -78,6 +78,32 @@ _LIST_PAGE_SIZE = 5
 _LIST_STAR_R_SVG = 6.2
 _WIFI_SCAN_MAX_DURATION_S = 55.0
 
+# Per-widget SVG rasters (exit/dual/column/list) so a focus change does not
+# re-run PyMuPDF on unchanged neighbors.
+_WIDGET_RASTER_CACHE: dict[tuple[object, ...], np.ndarray] = {}
+_WIDGET_RASTER_CACHE_MAX = 48
+_THEME_BG_CACHE: dict[tuple[object, ...], np.ndarray] = {}
+_THEME_BG_CACHE_MAX = 4
+# Last composed settings-main frame — Left/Right only repaints dirty zones.
+_LAST_MAIN: dict[str, object] = {
+    "structure": None,
+    "focus": None,
+    "frame": None,
+}
+
+_FOCUS_LAYER: dict[str, int] = {
+    "main_exit_button": 0,
+    "main_dual_location_button": 1,
+    "main_dual_network_button": 1,
+    "main_box1_button": 2,
+    "main_box2_button": 3,
+    "main_box2_add_search_icon": 3,
+    "main_box2_device_results": 3,
+    "main_network_picker_button": 3,
+    "main_box3_button": 4,
+    "main_box3_device_results": 4,
+}
+
 
 def _hex_to_bgr(hex_color: str) -> tuple[int, int, int]:
     h = (hex_color or "").strip().lstrip("#")
@@ -227,6 +253,31 @@ def _paired_device_line_boxes(
     )
 
 
+def _tt_ink_for_column(src: np.ndarray, *, selected: bool) -> np.ndarray:
+    """Contrast a TMDb title treatment against the box1 column card.
+
+    Deselected (dark card): black ink → white.
+    Selected (white card): white ink → black.
+    Chromatic pixels stay as they are.
+    """
+    if src.size == 0 or src.ndim != 3 or src.shape[2] < 3:
+        return src
+    out = np.array(src, copy=True)
+    bgr = out[:, :, :3]
+    span = bgr.max(axis=2).astype(np.int16) - bgr.min(axis=2).astype(np.int16)
+    achromatic = span <= 36
+    lum = (
+        0.114 * bgr[:, :, 0].astype(np.float32)
+        + 0.587 * bgr[:, :, 1].astype(np.float32)
+        + 0.299 * bgr[:, :, 2].astype(np.float32)
+    )
+    flip = achromatic & ((lum >= 160.0) if selected else (lum <= 96.0))
+    if not np.any(flip):
+        return out
+    bgr[flip] = (255 - bgr[flip].astype(np.int16)).astype(np.uint8)
+    return out
+
+
 def _tight_crop_logo(logo: np.ndarray) -> np.ndarray:
     if logo.size == 0:
         return logo
@@ -265,12 +316,14 @@ def _draw_zone2_pigeon(
     *,
     assets_dir: Path | str | None,
     tt_bgra: np.ndarray | None = None,
+    selected: bool = False,
 ) -> None:
     """Pigeon wordmark + IP, matching the predecessor zone-2 card.
 
     While content is playing, ``tt_bgra`` (TMDb title treatment) is contain-fitted
-    and centered in the black column card instead of the name slot. Missing TT
-    keeps the pigeon logo.
+    and centered in the column card instead of the name slot. Missing TT
+    keeps the pigeon logo. Black/white TT ink flips with selection so it
+    stays visible on the dark (deselected) and white (selected) cards.
     """
     zx, zy, zw, zh = box
     if zw < 8 or zh < 8:
@@ -283,7 +336,8 @@ def _draw_zone2_pigeon(
             logo = cv2.cvtColor(logo, cv2.COLOR_BGR2BGRA)
     using_tt = logo is not None and getattr(logo, "size", 0) > 0
     if using_tt:
-        _contain_center_blit(canvas, _tight_crop_logo(logo), box)
+        art = _tt_ink_for_column(_tight_crop_logo(logo), selected=selected)
+        _contain_center_blit(canvas, art, box)
         return
     logo = _load_png("pigeon_logo", assets_dir=assets_dir)
     if logo.shape[0] > _PIGEON_WORDMARK_H:
@@ -380,7 +434,17 @@ def _place_widget(
     y: int,
     w: int,
     h: int,
+    cache_key: tuple[object, ...] | None = None,
 ) -> None:
+    if cache_key is not None:
+        img = _WIDGET_RASTER_CACHE.get(cache_key)
+        if img is None:
+            img = _raster(root, w, h)
+            if len(_WIDGET_RASTER_CACHE) >= _WIDGET_RASTER_CACHE_MAX:
+                _WIDGET_RASTER_CACHE.pop(next(iter(_WIDGET_RASTER_CACHE)))
+            _WIDGET_RASTER_CACHE[cache_key] = img
+        _blit(canvas, img, x, y)
+        return
     _blit(canvas, _raster(root, w, h), x, y)
 
 
@@ -392,13 +456,14 @@ def _place_in_zone(
     view_w: float | None = None,
     view_h: float | None = None,
     align: str = "top",
+    cache_key: tuple[object, ...] | None = None,
 ) -> tuple[int, int, int, int]:
     zone = SETTINGS_MAIN_ZONES[zone_index]
     vw, vh = _viewbox_wh(root) if view_w is None else (view_w, view_h or view_w)
     x, y, w, h = zone_center_rect(zone, vw, vh)
     if align == "top":
         y = int(round(zone.y + 12.0))
-    _place_widget(canvas, root, x=x, y=y, w=w, h=h)
+    _place_widget(canvas, root, x=x, y=y, w=w, h=h, cache_key=cache_key)
     return x, y, w, h
 
 
@@ -848,12 +913,21 @@ def _column_list(
             _hide(cell)
             continue
         on = i == int(selected_row)
+        stroke = _chrome_stroke()
         if on:
-            _set_fill(cell, _COLOR_WHITE, stroke=_COLOR_BLACK)
+            _set_fill(cell, _COLOR_WHITE, stroke=stroke)
         else:
-            _set_fill(cell, _COLOR_COLUMN_OFF, stroke=_COLOR_BLACK)
+            _set_fill(cell, _COLOR_COLUMN_OFF, stroke=stroke)
     x, y, w, h = zone_center_rect(zone, *_viewbox_wh(chrome))
-    _place_widget(canvas, chrome, x=x, y=y, w=w, h=h)
+    _place_widget(
+        canvas,
+        chrome,
+        x=x,
+        y=y,
+        w=w,
+        h=h,
+        cache_key=("list", w, h, int(selected_row), len(labels), bool(show_arrows), _ui_bright()),
+    )
     sx = w / _LIST_CHROME_VB[0]
     sy = h / _LIST_CHROME_VB[1]
     ip_size = max(8, int(round(_LIST_IP_SIZE_SVG * sy)))
@@ -1024,6 +1098,142 @@ def _draw_finding_scan(
     _draw_search_status_bar(canvas, bar_box, fraction, selected=selected)
 
 
+def clear_settings_main_compose_cache() -> None:
+    """Drop incremental frame / widget rasters (tests and theme reloads)."""
+    _WIDGET_RASTER_CACHE.clear()
+    _THEME_BG_CACHE.clear()
+    _LAST_MAIN["structure"] = None
+    _LAST_MAIN["focus"] = None
+    _LAST_MAIN["frame"] = None
+
+
+def _ui_bright() -> bool:
+    try:
+        from pigeon.widgets.options_settings import ui_is_bright
+
+        return bool(ui_is_bright())
+    except Exception:
+        return False
+
+
+def _chrome_stroke() -> str:
+    return _COLOR_BLACK
+
+
+def _settings_main_bg(
+    *,
+    ui_hex: str,
+    assets_dir: Path | str | None,
+) -> np.ndarray:
+    from pigeon.widgets.settings_theme_background import (
+        draw_settings_theme_background_bgra,
+        settings_background_ui_hex,
+    )
+
+    tint = settings_background_ui_hex(ui_hex)
+    key = (
+        str(tint or "").lower(),
+        "bright" if _ui_bright() else "std",
+        str(assets_dir or ""),
+        int(DESIGN_W),
+        int(DESIGN_H),
+    )
+    cached = _THEME_BG_CACHE.get(key)
+    if cached is not None:
+        return cached
+    canvas = np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)
+    canvas[:, :, 3] = 255
+    draw_settings_theme_background_bgra(
+        canvas,
+        ui_hex=ui_hex,
+        clip_mask=np.full((DESIGN_H, DESIGN_W), 255, dtype=np.uint8),
+        assets_dir=assets_dir,
+    )
+    while len(_THEME_BG_CACHE) >= _THEME_BG_CACHE_MAX:
+        _THEME_BG_CACHE.pop(next(iter(_THEME_BG_CACHE)))
+    _THEME_BG_CACHE[key] = canvas
+    return canvas
+
+
+def _restore_layer(canvas: np.ndarray, bg: np.ndarray, zone_index: int) -> None:
+    zone = SETTINGS_MAIN_ZONES[zone_index]
+    x, y, w, h = (int(v) for v in zone.xywh)
+    pad = 8
+    x0 = max(0, x - pad)
+    y0 = max(0, y - pad)
+    x1 = min(int(canvas.shape[1]), x + w + pad)
+    y1 = min(int(canvas.shape[0]), y + h + pad)
+    if x1 <= x0 or y1 <= y0:
+        return
+    canvas[y0:y1, x0:x1] = bg[y0:y1, x0:x1]
+
+
+def _layer_for_focus(focused: str) -> int | None:
+    return _FOCUS_LAYER.get(str(focused or ""))
+
+
+def _settings_main_focus_sig(state) -> tuple[object, ...]:
+    st = state
+    focused = "" if st.keyboard_open else st.focused_id
+    p2 = st._box_panel(2)
+    p3 = st._box_panel(3)
+    return (
+        str(focused),
+        int(getattr(st, "network_picker_row", 0) or 0),
+        int(getattr(p2, "row", 0) or 0),
+        int(getattr(p3, "row", 0) or 0),
+    )
+
+
+def _settings_main_structure_sig(
+    state,
+    *,
+    assets_dir: Path | str | None,
+    skip_text_entry: bool,
+) -> tuple[object, ...]:
+    st = state
+    kb = st.keyboard
+    kb_target = str(getattr(kb, "target", "") or "") if kb is not None else ""
+    p2 = st._box_panel(2)
+    p3 = st._box_panel(3)
+    th = st.theme
+    return (
+        str(getattr(th, "ui", "") or ""),
+        str(st.location_name or ""),
+        str(st.selected_wifi_ssid or ""),
+        str(getattr(st, "live_wifi_ssid", "") or ""),
+        str(st.displayed_wifi_ssid() if hasattr(st, "displayed_wifi_ssid") else ""),
+        bool(getattr(st, "wifi_logged_out", False)),
+        bool(st.wifi_configured),
+        bool(st.keyboard_open),
+        kb_target,
+        bool(skip_text_entry),
+        bool(st.show_location_picker),
+        bool(st.show_network_picker),
+        bool(st.wifi_scanning),
+        bool(st.wifi_connecting),
+        bool(getattr(st, "location_switch_spinner_visible", lambda: False)()),
+        bool(getattr(p2, "scanning", False)),
+        bool(getattr(p3, "scanning", False)),
+        str(getattr(p2, "phase", "") or ""),
+        str(getattr(p3, "phase", "") or ""),
+        int(getattr(p2, "scroll", 0) or 0),
+        int(getattr(p3, "scroll", 0) or 0),
+        int(getattr(st, "network_picker_scroll", 0) or 0),
+        tuple(st.wifi_networks or ()),
+        tuple(getattr(p2, "devices", ()) or ()),
+        tuple(getattr(p3, "devices", ()) or ()),
+        tuple(getattr(st, "location_slots", ()) or ()),
+        None if getattr(p2, "picked", None) is None else tuple(p2.picked),
+        None if getattr(p3, "picked", None) is None else tuple(p3.picked),
+        str(assets_dir or ""),
+        str(local_ipv4_address() or ""),
+        int(getattr(st, "wifi_level", 0) or 0),
+        0 if getattr(st, "zone2_tt_bgra", None) is None else 1,
+        _ui_bright(),
+    )
+
+
 def _zone_focused(zone_index: int, focused: str) -> bool:
     if zone_index == 2:
         return focused == "main_box1_button"
@@ -1041,10 +1251,11 @@ def _zone_focused(zone_index: int, focused: str) -> bool:
 
 def _style_column_container(root: ET.Element, *, selected: bool) -> None:
     el = _find(root, "sm_container")
+    stroke = _chrome_stroke()
     if selected:
-        _set_fill(el, _COLOR_WHITE, stroke=_COLOR_BLACK)
+        _set_fill(el, _COLOR_WHITE, stroke=stroke)
     else:
-        _set_fill(el, _COLOR_COLUMN_OFF, stroke=_COLOR_BLACK)
+        _set_fill(el, _COLOR_COLUMN_OFF, stroke=stroke)
 
 
 def _tint_add_art(root: ET.Element, color: str) -> None:
@@ -1076,45 +1287,86 @@ def render_settings_main_1280_bgra(
     assets_dir: Path | str | None = None,
     skip_text_entry: bool = False,
 ) -> np.ndarray:
-    """Compose settings main at DESIGN_W×DESIGN_H from the 1280×800 widgets."""
+    """Compose settings main at DESIGN_W×DESIGN_H from the 1280×800 widgets.
+
+    Left/Right only re-rasters the zone that lost focus and the zone that gained
+    it (plus list-row neighbors in that column). Unchanged widgets stay put.
+    """
     from pigeon.widgets.main_settings import _location_display_text, _network_field_text
-    from pigeon.widgets.settings_theme_background import draw_settings_theme_background_bgra
 
     st = state
+    try:
+        st.refresh_network_ssid()
+    except Exception:
+        pass
     st.ensure_focus_ring()
     kb = st.keyboard
     kb_target = str(getattr(kb, "target", "") or "") if kb is not None else ""
     logout = bool(st.keyboard_open and kb_target == "wifi_logout")
     focused = "" if st.keyboard_open else st.focused_id
     ui_hex = str(getattr(st.theme, "ui", _COLOR_UI) or _COLOR_UI)
-
-    canvas = np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)
-    canvas[:, :, 3] = 255
-    draw_settings_theme_background_bgra(
-        canvas,
-        ui_hex=ui_hex,
-        clip_mask=np.full((DESIGN_H, DESIGN_W), 255, dtype=np.uint8),
-        assets_dir=assets_dir,
+    hide_columns = bool(st.keyboard_open and kb_target not in ("", "wifi_logout"))
+    structure = _settings_main_structure_sig(
+        st, assets_dir=assets_dir, skip_text_entry=skip_text_entry
     )
+    focus_sig = _settings_main_focus_sig(st)
+    bg = _settings_main_bg(ui_hex=ui_hex, assets_dir=assets_dir)
+    zones: set[int] | None = None
+    last_frame = _LAST_MAIN.get("frame")
+    can_patch = (
+        isinstance(last_frame, np.ndarray)
+        and last_frame.shape[:2] == (DESIGN_H, DESIGN_W)
+        and _LAST_MAIN.get("structure") == structure
+        and not logout
+        and not hide_columns
+        and not skip_text_entry
+        and not (
+            st.wifi_scanning
+            or st.wifi_connecting
+            or bool(getattr(st, "location_switch_spinner_visible", lambda: False)())
+            or bool(getattr(st._box_panel(2), "scanning", False))
+            or bool(getattr(st._box_panel(3), "scanning", False))
+        )
+    )
+    if can_patch and _LAST_MAIN.get("focus") == focus_sig:
+        return last_frame
+    if can_patch:
+        dirty: set[int] = set()
+        old_focus = _LAST_MAIN.get("focus")
+        old_id = str(old_focus[0]) if isinstance(old_focus, tuple) and old_focus else ""
+        for fid in (old_id, str(focused)):
+            layer = _layer_for_focus(fid)
+            if layer is None:
+                dirty = {0, 1, 2, 3, 4}
+                break
+            dirty.add(layer)
+        canvas = last_frame.copy()
+        for z in dirty:
+            _restore_layer(canvas, bg, z)
+        zones = dirty
+    else:
+        canvas = bg.copy()
+
+    def _want(zone_index: int) -> bool:
+        return zones is None or zone_index in zones
 
     exit_sel = focused == "main_exit_button"
-    _place_in_zone(
-        canvas,
-        _exit_root(st, assets_dir=assets_dir, selected=exit_sel, label="EXIT"),
-        0,
-        align="center",
-    )
-    _draw_centered_text(
-        canvas,
-        "EXIT",
-        box=SETTINGS_MAIN_ZONES[0].xywh,
-        size=46,
-        fill=(0, 0, 0) if exit_sel else (255, 255, 255),
-    )
+    if _want(0):
+        _place_in_zone(
+            canvas,
+            _exit_root(st, assets_dir=assets_dir, selected=exit_sel, label="EXIT"),
+            0,
+            align="center",
+            cache_key=("exit", exit_sel),
+        )
+        _draw_centered_text(
+            canvas,
+            "EXIT",
+            box=SETTINGS_MAIN_ZONES[0].xywh,
+            size=46,
+            fill=(0, 0, 0) if exit_sel else (255, 255, 255),
+        )
 
-    if logout:
-        _draw_yes_no_above_zone1(canvas, kb)
-    dual = _load_widget("dual", assets_dir=assets_dir)
     loc_picker = bool(st.show_location_picker)
     a_on = focused == "main_dual_location_button" or kb_target in ("location", "device_name")
     b_on = (
@@ -1122,10 +1374,28 @@ def render_settings_main_1280_bgra(
         or focused in ("main_dual_network_button", "main_network_picker_button")
         or kb_target in ("network", "pin", "device_ip")
     )
-    _set_fill(_find(dual, "dual_button_container_a"), _COLOR_WHITE if a_on else _COLOR_SLOT_OFF)
-    _set_fill(_find(dual, "dual_button_container_b"), _COLOR_WHITE if b_on else _COLOR_SLOT_OFF)
-    zone1 = SETTINGS_MAIN_ZONES[1]
-    _place_widget(canvas, dual, x=int(round(zone1.x)), y=int(round(zone1.y)), w=int(round(zone1.w)), h=int(round(zone1.h)))
+    if logout and _want(1):
+        _draw_yes_no_above_zone1(canvas, kb)
+    if _want(1):
+        dual = _load_widget("dual", assets_dir=assets_dir)
+        _set_fill(
+            _find(dual, "dual_container"),
+            "#202020",
+            stroke=_chrome_stroke(),
+        )
+        _set_fill(_find(dual, "dual_button_container_a"), _COLOR_WHITE if a_on else _COLOR_SLOT_OFF)
+        _set_fill(_find(dual, "dual_button_container_b"), _COLOR_WHITE if b_on else _COLOR_SLOT_OFF)
+        zone1 = SETTINGS_MAIN_ZONES[1]
+        zw, zh = int(round(zone1.w)), int(round(zone1.h))
+        _place_widget(
+            canvas,
+            dual,
+            x=int(round(zone1.x)),
+            y=int(round(zone1.y)),
+            w=zw,
+            h=zh,
+            cache_key=("dual", zw, zh, a_on, b_on, _ui_bright()),
+        )
 
     loc_box = dual_slot_design(DUAL_SLOT_A)
     net_box = dual_slot_design(DUAL_SLOT_B)
@@ -1137,7 +1407,7 @@ def render_settings_main_1280_bgra(
     if kb_target in ("location", "device_name"):
         loc_label = kb_buffer if kb_buffer else (kb_initial or loc_label)
     dots_box, loc_text_box = _location_field_boxes(loc_box)
-    if not skip_text_entry:
+    if _want(1) and not skip_text_entry:
         if kb_target == "pin":
             _draw_centered_text(
                 canvas,
@@ -1163,7 +1433,7 @@ def render_settings_main_1280_bgra(
             )
 
     show_password = bool(st.keyboard_open and kb_target == "network") or bool(st.wifi_connecting)
-    if not skip_text_entry:
+    if _want(1) and not skip_text_entry:
         if kb_target == "device_ip":
             _wifi_box, net_text_box = _network_field_boxes(net_box)
             _draw_centered_text(
@@ -1219,12 +1489,13 @@ def render_settings_main_1280_bgra(
                 fit=True,
             )
         else:
-            none = not bool(st.wifi_configured)
+            shown = st.displayed_wifi_ssid() if hasattr(st, "displayed_wifi_ssid") else str(st.selected_wifi_ssid or "").strip()
+            none = not bool(shown)
             label = _network_field_text(st)
             if none:
                 label = "CONNECT"
             elif label in (None, "CONNECTED"):
-                label = str(st.selected_wifi_ssid or "CONNECTED").strip() or "CONNECTED"
+                label = shown or "CONNECTED"
             wifi_box, net_text_box = _network_field_boxes(net_box)
             _draw_wifi_fan(
                 canvas,
@@ -1241,7 +1512,6 @@ def render_settings_main_1280_bgra(
                 fill=(0, 0, 0) if b_on else (255, 255, 255),
             )
 
-    hide_columns = bool(st.keyboard_open and kb_target not in ("", "wifi_logout"))
     column_boxes: dict[int, tuple[int, int, int, int]] = {}
     column_on = {z: _zone_focused(z, focused) for z in (2, 3, 4)}
     if not hide_columns:
@@ -1262,9 +1532,19 @@ def render_settings_main_1280_bgra(
             continue
         rect = _column_card_rect(zone_index)
         column_boxes[zone_index] = rect
+        if not _want(zone_index):
+            continue
         container = _load_widget("column_container", assets_dir=assets_dir)
         _style_column_container(container, selected=column_on[zone_index])
-        _place_widget(canvas, container, x=rect[0], y=rect[1], w=rect[2], h=rect[3])
+        _place_widget(
+            canvas,
+            container,
+            x=rect[0],
+            y=rect[1],
+            w=rect[2],
+            h=rect[3],
+            cache_key=("col", rect[2], rect[3], column_on[zone_index], _ui_bright()),
+        )
 
     def _column_text_box(zone_index: int) -> tuple[int, int, int, int]:
         x, y, w, h = column_boxes[zone_index]
@@ -1280,6 +1560,8 @@ def render_settings_main_1280_bgra(
 
         slots = list(getattr(st, "location_slots", ()) or ())
         for zone_index, slot_i in ((2, 1), (3, 2), (4, 3)):
+            if not _want(zone_index):
+                continue
             name = ""
             if slot_i - 1 < len(slots):
                 name = str(slots[slot_i - 1][1] or "")
@@ -1292,7 +1574,7 @@ def render_settings_main_1280_bgra(
                 ui_hex=ui_hex,
                 assets_dir=assets_dir,
             )
-    elif not hide_columns:
+    elif not hide_columns and _want(2):
         _draw_zone2_pigeon(
             canvas,
             _column_text_box(2),
@@ -1300,6 +1582,7 @@ def render_settings_main_1280_bgra(
             _column_text_rgb(2),
             assets_dir=assets_dir,
             tt_bgra=getattr(st, "zone2_tt_bgra", None),
+            selected=column_on[2],
         )
 
     def _paint_add_tile(zone_index: int, label: str) -> None:
@@ -1331,6 +1614,11 @@ def render_settings_main_1280_bgra(
         if st.show_network_picker and box_num == 2:
             names = list(st.wifi_networks or ())
             rows = [(n, "") for n in names]
+            shown_net = (
+                st.displayed_wifi_ssid()
+                if hasattr(st, "displayed_wifi_ssid")
+                else str(st.selected_wifi_ssid or "").strip()
+            )
             _column_list(
                 canvas,
                 zone_index,
@@ -1339,9 +1627,7 @@ def render_settings_main_1280_bgra(
                 selected_row=int(st.network_picker_row),
                 show_arrows=len(rows) > _LIST_PAGE_SIZE,
                 assets_dir=assets_dir,
-                current=(str(st.selected_wifi_ssid or "").strip(), "")
-                if str(st.selected_wifi_ssid or "").strip()
-                else None,
+                current=(shown_net, "") if shown_net else None,
             )
             return
         if bool(getattr(panel, "scanning", False)) or str(getattr(panel, "phase", "") or "") == "scanning":
@@ -1400,11 +1686,17 @@ def render_settings_main_1280_bgra(
         _paint_add_tile(zone_index, "ADD PLAYER" if add_key == "add_player" else "ADD AUDIO")
 
     if not hide_columns:
-        _paint_add_or_device(3, 2, "add_player")
-        _paint_add_or_device(4, 3, "add_audio")
+        if _want(3):
+            _paint_add_or_device(3, 2, "add_player")
+        if _want(4):
+            _paint_add_or_device(4, 3, "add_audio")
 
     loc_spin = bool(getattr(st, "location_switch_spinner_visible", lambda: False)())
-    if not hide_columns and (st.wifi_scanning or st.wifi_connecting or loc_spin):
+    if (
+        _want(3)
+        and not hide_columns
+        and (st.wifi_scanning or st.wifi_connecting or loc_spin)
+    ):
         if st.wifi_scanning:
             started = float(getattr(st, "wifi_scan_started_mono", 0.0) or 0.0)
             angle = float(st.wifi_scan_angle_deg)
@@ -1425,6 +1717,18 @@ def render_settings_main_1280_bgra(
             selected=column_on[3],
         )
 
+    if not logout and not hide_columns and not skip_text_entry:
+        scanning = (
+            st.wifi_scanning
+            or st.wifi_connecting
+            or bool(getattr(st, "location_switch_spinner_visible", lambda: False)())
+            or bool(getattr(st._box_panel(2), "scanning", False))
+            or bool(getattr(st._box_panel(3), "scanning", False))
+        )
+        if not scanning:
+            _LAST_MAIN["structure"] = structure
+            _LAST_MAIN["focus"] = focus_sig
+            _LAST_MAIN["frame"] = canvas
     return canvas
 
 

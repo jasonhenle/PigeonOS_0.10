@@ -30,7 +30,6 @@ from pigeon.widgets.main_settings import (
     SettingsTheme,
     _BUTTON_FILL_CANDIDATES,
     _apply_button_fill,
-    _apply_contrast_paint,
     _find_by_logical_id,
     _normalize_logical,
     _parent_map,
@@ -95,13 +94,16 @@ _MODE_SVG: dict[KeyboardMode, str] = {
 
 _BOTTOM_ROW_SVG = "keyboard_bottom_row.svg"
 
-# Shared lower / numeric / bottom-row artboard (placed near the bottom of 1280×800).
+# Shared lower / numeric / bottom-row artboard (centered between box 1 and the NP bar).
 _CLUSTER_VB = (0.0, 0.0, 1202.99, 298.66)
 _CLUSTER_KEY_ROW_Y = 228.49
-_CLUSTER_MARGIN_BOTTOM = 24
-
-# Compact PIN pad sits in the lower-middle of the 1280 canvas.
-_INTEGRATED_PAD_TOP_Y = 375
+_CLUSTER_GAP_AFTER_BOX1 = 12.0
+_CLUSTER_GAP_ABOVE_STATUS = 8.0
+# Inset the whole cluster so Q/P/cancel/enter don't kiss the plate edge.
+_CLUSTER_NARROW_PX = 10.0
+_CLUSTER_SCALE = (_CLUSTER_VB[2] - _CLUSTER_NARROW_PX) / _CLUSTER_VB[2]
+# Top-left of ``lower_q`` in keyboard_lower.svg — register every QWERTY board here.
+_CLUSTER_Q_XY = (57.04, 0.0)
 
 def _is_numeric_mode(mode: KeyboardMode) -> bool:
     return mode in (
@@ -148,8 +150,6 @@ _BOTTOM_ROW_UPPERCASE: tuple[KeySpec, ...] = _bottom_row_keys(KeyboardMode.QWERT
 
 _IP_HIDDEN_IDS: tuple[str, ...] = (
     "numeric_template",
-    "numeric_cancel",
-    "numeric_delete_button",
 )
 
 
@@ -179,15 +179,10 @@ class KeyboardState:
                 )
             self.include_bottom_row = False
         elif self.mode == KeyboardMode.NUMERIC_IP:
-            pad = [
-                k
-                for k in discover_integrated_pad_keys(
-                    KeyboardMode.NUMERIC_IP, assets_dir=assets_dir
-                )
-                if k.action not in (KeyAction.CANCEL, KeyAction.DELETE, KeyAction.GO)
-            ]
-            self.focus_ring = tuple(pad) + _bottom_row_keys(self.mode)
-            self.include_bottom_row = True
+            self.focus_ring = discover_integrated_pad_keys(
+                KeyboardMode.NUMERIC_IP, assets_dir=assets_dir
+            )
+            self.include_bottom_row = False
         elif self.mode == KeyboardMode.NUMERIC_PIN:
             pad = [
                 k
@@ -667,6 +662,36 @@ def _keyboard_paint_theme(theme: SettingsTheme) -> SettingsTheme:
     )
 
 
+def _keyboard_label_hex(
+    *,
+    selected: bool,
+    ui_hex: str,
+    muted_deselected: bool,
+    inactive: str,
+) -> str:
+    """Selected keys are white; the glyph must be the UI color to stay visible."""
+    if selected:
+        return ui_hex
+    if muted_deselected:
+        return inactive
+    return "#FFFFFF"
+
+
+def _paint_keyboard_label(node: ET.Element, *, fill: str) -> None:
+    """Force letter/icon paint. White is a UI swatch, so contrast-swap skips it."""
+    tag = node.tag.rsplit("}", 1)[-1]
+    if tag in ("text", "tspan"):
+        _set_paint(node, fill=fill)
+        return
+    from pigeon.widgets.main_settings import _iter_style_fill_stroke
+
+    cur_fill, cur_stroke = _iter_style_fill_stroke(node)
+    if cur_fill and cur_fill not in ("none", "transparent"):
+        _set_paint(node, fill=fill)
+    if cur_stroke and cur_stroke not in ("none", "transparent"):
+        _set_paint(node, stroke=fill)
+
+
 def _paint_kb_button_shape(
     node: ET.Element,
     *,
@@ -682,6 +707,19 @@ def _paint_kb_button_shape(
         node.set("style", style)
 
 
+def _is_key_pill(node: ET.Element) -> bool:
+    """True for the rounded key body, false for shift/delete glyphs inside it."""
+    tag = node.tag.rsplit("}", 1)[-1]
+    if tag == "path":
+        return True
+    if tag != "rect":
+        return False
+    try:
+        return float(node.get("rx") or 0.0) >= 8.0
+    except (TypeError, ValueError):
+        return False
+
+
 def apply_keyboard_selection(
     root: ET.Element,
     *,
@@ -691,9 +729,11 @@ def apply_keyboard_selection(
     icon_ids_by_button: dict[str, tuple[str, ...]] | None = None,
     muted_deselected: bool = False,
 ) -> None:
-    """Recolor every known button; contrast paint on paired icons/text."""
+    """Recolor every known button; UI-color letters on the selected (white) key."""
     from pigeon.widgets.main_settings import _iter_style_fill_stroke, _set_paint
 
+    ui_hex = str(theme.ui or COLOR_UI_DEFAULT)
+    inactive = str(theme.inactive or "#939393")
     theme = _keyboard_paint_theme(theme)
     icon_map = icon_ids_by_button or {}
     idle = _keyboard_idle_fill(theme)
@@ -722,6 +762,13 @@ def apply_keyboard_selection(
             if _normalize_logical(node.get("id") or "") == "delete":
                 delete_nodes.update(id(n) for n in node.iter())
         fill = theme.selected if selected else idle
+        label_hex = _keyboard_label_hex(
+            selected=selected,
+            ui_hex=ui_hex,
+            muted_deselected=muted_deselected,
+            inactive=inactive,
+        )
+        glyph_nodes: list[ET.Element] = []
         for node in el.iter():
             tag = node.tag.rsplit("}", 1)[-1]
             if tag not in ("path", "rect", "polygon", "circle", "ellipse"):
@@ -734,6 +781,9 @@ def apply_keyboard_selection(
             cur_fill, _ = _iter_style_fill_stroke(node)
             if cur_fill in ("none", "transparent"):
                 continue
+            if not _is_key_pill(node):
+                glyph_nodes.append(node)
+                continue
             if cur_fill is None or cur_fill in fill_ok:
                 if tag == "rect":
                     try:
@@ -745,6 +795,8 @@ def apply_keyboard_selection(
                         _set_paint(node, fill=fill, stroke="none")
                         continue
                 _paint_kb_button_shape(node, selected=selected, theme=theme)
+        for glyph in glyph_nodes:
+            _paint_keyboard_label(glyph, fill=label_hex)
         # Skip _apply_button_fill — it would recolor the delete glyph as a key.
 
         icons = list(icon_map.get(logical, ()))
@@ -758,12 +810,8 @@ def apply_keyboard_selection(
             seen_icons.add(icon_logical)
             icon_el = _find_by_logical_id(root, icon_logical)
             if icon_el is not None:
-                _apply_contrast_paint(
-                    icon_el,
-                    selected=selected,
-                    theme=theme,
-                    muted_deselected=muted_deselected,
-                )
+                for node in icon_el.iter():
+                    _paint_keyboard_label(node, fill=label_hex)
 
         # Grouped layouts (PIN / numeric): icon is a sibling under the same parent.
         expected_icons = seen_icons
@@ -772,21 +820,12 @@ def apply_keyboard_selection(
             for child in parent:
                 cid = _normalize_logical(child.get("id") or "")
                 if cid in expected_icons:
-                    _apply_contrast_paint(
-                        child,
-                        selected=selected,
-                        theme=theme,
-                        muted_deselected=muted_deselected,
-                    )
-        # 1280 group exports often leave labels unnamed — contrast-paint text in the group.
+                    for node in child.iter():
+                        _paint_keyboard_label(node, fill=label_hex)
+        # 1280 group exports often leave labels unnamed — paint text in the group.
         for node in el.iter():
             if node.tag.endswith("text") or node.tag.endswith("tspan"):
-                _apply_contrast_paint(
-                    node,
-                    selected=selected,
-                    theme=theme,
-                    muted_deselected=muted_deselected,
-                )
+                _paint_keyboard_label(node, fill=label_hex)
 
 
 def _bottom_row_icons(root: ET.Element, group_logical: str, *icon_logicals: str) -> list[ET.Element]:
@@ -1169,43 +1208,126 @@ def _fit_full_artboard(root: ET.Element) -> None:
     root.set("height", str(LEGACY_DESIGN_H))
 
 
+def _center_group_label(group: ET.Element) -> None:
+    """Center the label that already lives in this key group onto its pill."""
+    pill: ET.Element | None = None
+    text_el: ET.Element | None = None
+    best_area = -1.0
+    for node in group.iter():
+        tag = node.tag.rsplit("}", 1)[-1]
+        if tag == "text" and text_el is None:
+            text_el = node
+        if tag == "rect":
+            try:
+                w = float(node.get("width") or 0)
+                h = float(node.get("height") or 0)
+                x = float(node.get("x") or 0)
+                y = float(node.get("y") or 0)
+            except ValueError:
+                continue
+            area = w * h
+            if area > best_area:
+                best_area = area
+                pill = node
+        elif tag == "path":
+            x0, y0, x1, y1 = _path_bbox(node.get("d") or "")
+            area = max(0.0, (x1 - x0) * (y1 - y0))
+            if area > best_area:
+                best_area = area
+                pill = node
+    if pill is None or text_el is None:
+        return
+    tag = pill.tag.rsplit("}", 1)[-1]
+    if tag == "rect":
+        cx = float(pill.get("x", 0)) + float(pill.get("width", 0)) * 0.5
+        cy = float(pill.get("y", 0)) + float(pill.get("height", 0)) * 0.5
+    else:
+        x0, y0, x1, y1 = _path_bbox(pill.get("d") or "")
+        cx, cy = (x0 + x1) * 0.5, (y0 + y1) * 0.5
+    text_el.set("text-anchor", "middle")
+    text_el.set("dominant-baseline", "middle")
+    text_el.set("alignment-baseline", "middle")
+    text_el.set("transform", f"translate({cx:.2f} {cy:.2f})")
+    for tspan in text_el.iter():
+        if tspan.tag.endswith("tspan"):
+            tspan.set("x", "0")
+            tspan.set("y", "0")
+
+
 def _center_integrated_pad_labels(root: ET.Element) -> None:
-    """Center key labels inside their pill buttons (PyMuPDF baseline quirks)."""
-    for el in root.iter():
-        if not el.tag.endswith("rect"):
+    """Center each pad key's own label; never look up another key's icon by id."""
+    for group in root:
+        if not group.tag.endswith("g"):
             continue
-        logical = _normalize_logical(el.get("id") or "")
-        if not logical.endswith("_button"):
+        logical = _normalize_logical(group.get("id") or "")
+        if logical in _IP_HIDDEN_IDS:
             continue
-        cx = float(el.get("x", 0)) + float(el.get("width", 0)) * 0.5
-        cy = float(el.get("y", 0)) + float(el.get("height", 0)) * 0.5
-        icon_el = _find_by_logical_id(root, logical.replace("_button", "_icon"))
-        if icon_el is None:
-            continue
-        icon_el.set("text-anchor", "middle")
-        icon_el.set("dominant-baseline", "middle")
-        icon_el.set("alignment-baseline", "middle")
-        icon_el.set("transform", f"translate({cx:.2f} {cy:.2f})")
-        for tspan in icon_el.iter():
-            if tspan.tag.endswith("tspan"):
-                tspan.set("x", "0")
-                tspan.set("y", "0")
+        _center_group_label(group)
+
+
+def _cluster_wh() -> tuple[float, float]:
+    return (_CLUSTER_VB[2] * _CLUSTER_SCALE, _CLUSTER_VB[3] * _CLUSTER_SCALE)
 
 
 def _cluster_xy() -> tuple[int, int]:
-    """Sit the key cluster in the zone 2–4 band, bottom-aligned like other pads."""
-    from pigeon.settings_layout import SETTINGS_MAIN_ZONES, menu_plate_chrome_bottom
+    """Center the scaled key cluster between box 1 and the NP status-bar track."""
+    from pigeon.np_layout import NOW_PLAYING_ZONES, STATUS_BAR_TRACK
+    from pigeon.settings_layout import DUAL_SLOT_A, dual_slot_design
 
-    x = int(round((DESIGN_W - _CLUSTER_VB[2]) * 0.5))
-    plate_bottom = menu_plate_chrome_bottom()
-    zone_top = float(SETTINGS_MAIN_ZONES[2].y)
-    max_bottom = plate_bottom - float(_CLUSTER_MARGIN_BOTTOM)
-    y = max_bottom - _CLUSTER_VB[3]
-    if y < zone_top:
-        y = zone_top
-        if y + _CLUSTER_VB[3] > max_bottom:
-            y = max_bottom - _CLUSTER_VB[3]
+    cw, ch = _cluster_wh()
+    x = int(round((DESIGN_W - cw) * 0.5))
+    box = dual_slot_design(DUAL_SLOT_A)
+    band_top = float(box[1] + box[3]) + _CLUSTER_GAP_AFTER_BOX1
+    track_top = float(NOW_PLAYING_ZONES[5].y) + float(STATUS_BAR_TRACK[1])
+    band_bottom = track_top - _CLUSTER_GAP_ABOVE_STATUS
+    y = band_top + (band_bottom - band_top - ch) * 0.5
+    if y + ch > band_bottom:
+        y = band_bottom - ch
+    if y < band_top:
+        y = band_top
     return x, int(round(y))
+
+
+def _key_origin(group: ET.Element) -> tuple[float, float]:
+    """Top-left of the largest pill in a key group."""
+    best_area = -1.0
+    origin = (0.0, 0.0)
+    for node in group.iter():
+        tag = node.tag.rsplit("}", 1)[-1]
+        if tag == "rect":
+            try:
+                x = float(node.get("x") or 0)
+                y = float(node.get("y") or 0)
+                w = float(node.get("width") or 0)
+                h = float(node.get("height") or 0)
+            except ValueError:
+                continue
+            area = w * h
+            if area > best_area:
+                best_area = area
+                origin = (x, y)
+        elif tag == "path":
+            x0, y0, x1, y1 = _path_bbox(node.get("d") or "")
+            area = max(0.0, (x1 - x0) * (y1 - y0))
+            if area > best_area:
+                best_area = area
+                origin = (x0, y0)
+    return origin
+
+
+def _align_qwerty_to_cluster(root: ET.Element) -> None:
+    """Crop every QWERTY board to the shared cluster, with Q on ``lower_q``."""
+    q = _find_by_logical_id(root, "lower_q")
+    if q is None:
+        q = _find_by_logical_id(root, "upper_Q")
+    if q is None:
+        q = _find_by_logical_id(root, "upper_q")
+    if q is None:
+        return
+    qx, qy = _key_origin(q)
+    vx = qx - _CLUSTER_Q_XY[0]
+    vy = qy - _CLUSTER_Q_XY[1]
+    root.set("viewBox", f"{vx} {vy} {_CLUSTER_VB[2]} {_CLUSTER_VB[3]}")
 
 
 def _rasterize_svg_patch(root: ET.Element) -> tuple[np.ndarray, tuple[float, float, float, float]]:
@@ -1217,34 +1339,247 @@ def _rasterize_svg_patch(root: ET.Element) -> tuple[np.ndarray, tuple[float, flo
     return patch, vb
 
 
+def _pad_content_viewbox(root: ET.Element) -> tuple[float, float, float, float]:
+    """Tight crop around remaining pad shapes (IP artboard is a full 1280 screen)."""
+    min_x = min_y = 1e9
+    max_x = max_y = -1e9
+    found = False
+    for node in root.iter():
+        tag = node.tag.rsplit("}", 1)[-1]
+        if tag == "rect":
+            try:
+                x = float(node.get("x") or 0)
+                y = float(node.get("y") or 0)
+                w = float(node.get("width") or 0)
+                h = float(node.get("height") or 0)
+            except ValueError:
+                continue
+            found = True
+            min_x, min_y = min(min_x, x), min(min_y, y)
+            max_x, max_y = max(max_x, x + w), max(max_y, y + h)
+        elif tag == "path":
+            x0, y0, x1, y1 = _path_bbox(node.get("d") or "")
+            if x1 <= x0 or y1 <= y0:
+                continue
+            found = True
+            min_x, min_y = min(min_x, x0), min(min_y, y0)
+            max_x, max_y = max(max_x, x1), max(max_y, y1)
+    if not found:
+        return viewbox_from_root(root)
+    pad = 4.0
+    return (min_x - pad, min_y - pad, max_x - min_x + 2.0 * pad, max_y - min_y + 2.0 * pad)
+
+
+def _scale_keyboard_patch(patch: np.ndarray) -> np.ndarray:
+    """Uniform inset so the cluster does not touch the plate edge."""
+    if patch.size == 0:
+        return patch
+    h, w = patch.shape[:2]
+    nw = max(1, int(round(w * _CLUSTER_SCALE)))
+    nh = max(1, int(round(h * _CLUSTER_SCALE)))
+    if nw == w and nh == h:
+        return patch
+    return cv2.resize(patch, (nw, nh), interpolation=cv2.INTER_AREA)
+
+
 def _place_in_cluster(
     canvas: np.ndarray,
     patch: np.ndarray,
     vb: tuple[float, float, float, float],
     mode: KeyboardMode,
 ) -> None:
+    patch = _scale_keyboard_patch(patch)
     cx, cy = _cluster_xy()
-    dest_x = cx + int(round((_CLUSTER_VB[2] - vb[2]) * 0.5))
-    if mode == KeyboardMode.QWERTY_UPPER:
-        dest_y = cy + int(round(_CLUSTER_KEY_ROW_Y - vb[3]))
-    elif mode == KeyboardMode.SYMBOLIC:
-        dest_y = cy + int(round(_CLUSTER_KEY_ROW_Y - 434.33))
+    cw, _ch = _cluster_wh()
+    dest_x = cx + int(round((cw - patch.shape[1]) * 0.5))
+    if mode == KeyboardMode.SYMBOLIC:
+        dest_y = cy + int(round((_CLUSTER_KEY_ROW_Y - 434.33) * _CLUSTER_SCALE))
     else:
         dest_y = cy
     _blit_bottom_row(canvas, patch, dest_x=dest_x, dest_y=dest_y)
+
+
+_SVG_BYTES: dict[str, bytes] = {}
+_IDLE_KB_CACHE: dict[tuple[object, ...], np.ndarray] = {}
+_IDLE_CHARS_CACHE: dict[tuple[object, ...], np.ndarray] = {}
+_IDLE_ROW_CACHE: dict[tuple[object, ...], np.ndarray | None] = {}
+_FOCUS_PATCH_CACHE: dict[tuple[object, ...], tuple[int, int, np.ndarray]] = {}
+_LAST_FULL_CACHE: dict[tuple[object, ...], np.ndarray] = {}
+_IDLE_KB_CACHE_MAX = 12
+_FOCUS_PATCH_CACHE_MAX = 320
+_LAST_FULL_CACHE_MAX = 4
+
+
+def _keyboard_svg_root(path: Path) -> ET.Element:
+    key = str(path)
+    data = _SVG_BYTES.get(key)
+    if data is None:
+        data = path.read_bytes()
+        _SVG_BYTES[key] = data
+    return ET.fromstring(data)
+
+
+def _keyboard_layout_key(
+    state: KeyboardState,
+    *,
+    assets_dir: Path | str | None,
+) -> tuple[object, ...]:
+    th = state.theme
+    return (
+        state.mode,
+        str(Path(assets_dir) if assets_dir is not None else ""),
+        str(th.ui or ""),
+        str(th.selected or ""),
+        str(th.deselected or ""),
+        str(th.inactive or ""),
+        str(th.accent or ""),
+        bool(state.supports_lowercase),
+        bool(state.password_mask),
+        bool(state.include_bottom_row),
+        str(state.target or ""),
+    )
+
+
+def _bottom_button_ids(state: KeyboardState) -> set[str]:
+    if not state.include_bottom_row:
+        return set()
+    return {k.button_id for k in _bottom_row_keys(state.mode)}
+
+
+def _blit_row_on_canvas(canvas: np.ndarray, row: np.ndarray | None) -> None:
+    if row is None or not row.size:
+        return
+    cx, cy = _cluster_xy()
+    cw, _ch = _cluster_wh()
+    dest_x = cx + int(round((cw - row.shape[1]) * 0.5))
+    _blit_bottom_row(canvas, row, dest_x=dest_x, dest_y=cy)
+
+
+def _compose_adjacent_from_idle(
+    state: KeyboardState,
+    *,
+    assets_dir: Path | str | None,
+    layout: tuple[object, ...],
+    idle: np.ndarray,
+    focused_id: str,
+) -> np.ndarray | None:
+    """Redraw only the chars layer or the bottom-row layer that contains focus."""
+    if not focused_id:
+        return idle
+    bottom_ids = _bottom_button_ids(state)
+    if focused_id in bottom_ids:
+        chars = _IDLE_CHARS_CACHE.get(layout)
+        if chars is None:
+            return None
+        row = _rasterize_bottom_row(
+            state, assets_dir=assets_dir, focused_button_id=focused_id
+        )
+        out = chars.copy()
+        _blit_row_on_canvas(out, row)
+        return out
+    chars = _rasterize_keyboard_chars(
+        state, assets_dir=assets_dir, focused_button_id=focused_id
+    )
+    row = _IDLE_ROW_CACHE.get(layout)
+    if row is None and layout not in _IDLE_ROW_CACHE:
+        return None
+    out = chars
+    _blit_row_on_canvas(out, row)
+    return out
+
+
+def _store_idle_keyboard(key: tuple[object, ...], frame: np.ndarray) -> None:
+    if key in _IDLE_KB_CACHE:
+        return
+    _IDLE_KB_CACHE[key] = frame
+    if len(_IDLE_KB_CACHE) > _IDLE_KB_CACHE_MAX:
+        oldest = next(iter(_IDLE_KB_CACHE))
+        if oldest != key:
+            _IDLE_KB_CACHE.pop(oldest, None)
+
+
+def _store_focus_patch(
+    key: tuple[object, ...], y: int, x: int, patch: np.ndarray
+) -> None:
+    if key in _FOCUS_PATCH_CACHE:
+        return
+    _FOCUS_PATCH_CACHE[key] = (int(y), int(x), patch)
+    if len(_FOCUS_PATCH_CACHE) > _FOCUS_PATCH_CACHE_MAX:
+        oldest = next(iter(_FOCUS_PATCH_CACHE))
+        if oldest != key:
+            _FOCUS_PATCH_CACHE.pop(oldest, None)
+
+
+def _diff_focus_patch(
+    idle: np.ndarray, focused: np.ndarray
+) -> tuple[int, int, np.ndarray]:
+    """Tight bbox of pixels that change when a key is selected."""
+    if idle.shape != focused.shape:
+        return (0, 0, focused)
+    diff = np.any(idle != focused, axis=2)
+    if not np.any(diff):
+        return (0, 0, focused[0:1, 0:1].copy())
+    ys = np.flatnonzero(np.any(diff, axis=1))
+    xs = np.flatnonzero(np.any(diff, axis=0))
+    y0 = max(0, int(ys[0]) - 1)
+    y1 = min(int(focused.shape[0]), int(ys[-1]) + 2)
+    x0 = max(0, int(xs[0]) - 1)
+    x1 = min(int(focused.shape[1]), int(xs[-1]) + 2)
+    return (y0, x0, focused[y0:y1, x0:x1].copy())
+
+
+def _stamp_focus_patch(
+    idle: np.ndarray, y: int, x: int, patch: np.ndarray
+) -> np.ndarray:
+    out = idle.copy()
+    h, w = patch.shape[:2]
+    y1 = min(out.shape[0], y + h)
+    x1 = min(out.shape[1], x + w)
+    if y1 <= y or x1 <= x:
+        return out
+    out[y:y1, x:x1] = patch[: y1 - y, : x1 - x]
+    return out
+
+
+def _store_last_full(key: tuple[object, ...], frame: np.ndarray) -> None:
+    _LAST_FULL_CACHE.pop(key, None)
+    _LAST_FULL_CACHE[key] = frame
+    if len(_LAST_FULL_CACHE) > _LAST_FULL_CACHE_MAX:
+        oldest = next(iter(_LAST_FULL_CACHE))
+        _LAST_FULL_CACHE.pop(oldest, None)
+
+
+def clear_keyboard_render_caches() -> None:
+    """Drop idle/focus bitmaps (tests / theme reloads). SVG bytes stay cached."""
+    _IDLE_KB_CACHE.clear()
+    _IDLE_CHARS_CACHE.clear()
+    _IDLE_ROW_CACHE.clear()
+    _FOCUS_PATCH_CACHE.clear()
+    _LAST_FULL_CACHE.clear()
+
+
+def _resolved_focus_button_id(
+    state: KeyboardState, focused_button_id: str | None
+) -> str:
+    if focused_button_id is not None:
+        return str(focused_button_id)
+    if not state.focus_ring:
+        return ""
+    return state.focused.button_id
 
 
 def _rasterize_keyboard_chars(
     state: KeyboardState,
     *,
     assets_dir: Path | str | None,
+    focused_button_id: str | None = None,
 ) -> np.ndarray:
     canvas = np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)
     path = keyboard_svg_path(_MODE_SVG[state.mode], assets_dir=assets_dir)
     if not path.is_file():
         return canvas
 
-    root = ET.parse(path).getroot()
+    root = _keyboard_svg_root(path)
     if (
         state.mode == KeyboardMode.QWERTY_UPPER
         and not state.supports_lowercase
@@ -1263,7 +1598,7 @@ def _rasterize_keyboard_chars(
         if k.icon_ids:
             icon_map[k.button_id] = k.icon_ids
 
-    focused = state.focused.button_id
+    focused = _resolved_focus_button_id(state, focused_button_id)
     char_focus = focused if focused in button_ids else ""
     apply_keyboard_selection(
         root,
@@ -1287,11 +1622,12 @@ def _rasterize_keyboard_chars(
             view_box=layout.padded_vb,
             font_mode="keyboard",
         )
-        dest_x = max(0, (DESIGN_W - layout.out_w) // 2)
+        pad = _scale_keyboard_patch(pad)
+        dest_x = max(0, (DESIGN_W - pad.shape[1]) // 2)
         if state.mode == KeyboardMode.YES_NO:
-            dest_y = max(0, (DESIGN_H - layout.out_h) // 2)
+            dest_y = max(0, (DESIGN_H - pad.shape[0]) // 2)
         else:
-            dest_y = int(_INTEGRATED_PAD_TOP_Y) - layout.pad_px
+            dest_y = int(_cluster_xy()[1]) - int(round(layout.pad_px * _CLUSTER_SCALE))
         _blit_bottom_row(canvas, pad, dest_x=dest_x, dest_y=dest_y)
         return canvas
 
@@ -1299,14 +1635,14 @@ def _rasterize_keyboard_chars(
         for hid in _IP_HIDDEN_IDS:
             _remove_logical(root, hid)
         _center_integrated_pad_labels(root)
-        vb = viewbox_from_root(root)
-        vw = float(DESIGN_W)
-        vx = vb[0] + max(0.0, (vb[2] - vw) * 0.5)
-        root.set("viewBox", f"{vx} {vb[1]} {vw} {vb[3]}")
-        return rasterize_settings_svg_bgra(
-            root, width=DESIGN_W, height=DESIGN_H, font_mode="keyboard"
-        )
+        vx, vy, vw, vh = _pad_content_viewbox(root)
+        root.set("viewBox", f"{vx} {vy} {vw} {vh}")
+        patch, vb = _rasterize_svg_patch(root)
+        _place_in_cluster(canvas, patch, vb, state.mode)
+        return canvas
 
+    if state.mode in (KeyboardMode.QWERTY_LOWER, KeyboardMode.QWERTY_UPPER):
+        _align_qwerty_to_cluster(root)
     patch, vb = _rasterize_svg_patch(root)
     _place_in_cluster(canvas, patch, vb, state.mode)
     return canvas
@@ -1316,20 +1652,21 @@ def _rasterize_bottom_row(
     state: KeyboardState,
     *,
     assets_dir: Path | str | None,
+    focused_button_id: str | None = None,
 ) -> np.ndarray | None:
     if not state.include_bottom_row:
         return None
     path = keyboard_svg_path(_BOTTOM_ROW_SVG, assets_dir=assets_dir)
     if not path.is_file():
         return None
-    root = ET.parse(path).getroot()
+    root = _keyboard_svg_root(path)
     apply_bottom_row_mode_icons(root, state.mode, uppercase_only=not state.supports_lowercase)
     _apply_native_bottom_row_labels(root, state.mode)
 
     bottom = _bottom_row_keys(state.mode)
     button_ids = {k.button_id for k in bottom}
     icon_map = {k.button_id: k.icon_ids for k in bottom if k.icon_ids}
-    focused = state.focused.button_id
+    focused = _resolved_focus_button_id(state, focused_button_id)
     row_focus = focused if focused in button_ids else ""
     apply_keyboard_selection(
         root,
@@ -1340,7 +1677,70 @@ def _rasterize_bottom_row(
     )
     _prune_display_none(root)
     patch, _vb = _rasterize_svg_patch(root)
-    return patch
+    return _scale_keyboard_patch(patch)
+
+
+def _composite_keyboard_layers(
+    state: KeyboardState,
+    *,
+    assets_dir: Path | str | None,
+    focused_button_id: str,
+) -> np.ndarray:
+    canvas = _rasterize_keyboard_chars(
+        state, assets_dir=assets_dir, focused_button_id=focused_button_id
+    )
+    row = _rasterize_bottom_row(
+        state, assets_dir=assets_dir, focused_button_id=focused_button_id
+    )
+    if row is not None and row.size:
+        cx, cy = _cluster_xy()
+        cw, _ch = _cluster_wh()
+        dest_x = cx + int(round((cw - row.shape[1]) * 0.5))
+        dest_y = cy
+        _blit_bottom_row(canvas, row, dest_x=dest_x, dest_y=dest_y)
+    return canvas
+
+
+def warm_keyboard_idle(
+    state: KeyboardState,
+    *,
+    assets_dir: Path | str | None = None,
+) -> np.ndarray:
+    """Ensure the unselected keyboard bitmap is cached; return it (not a copy)."""
+    if not state.focus_ring:
+        state.rebuild_focus_ring(assets_dir=assets_dir)
+    layout = _keyboard_layout_key(state, assets_dir=assets_dir)
+    idle = _IDLE_KB_CACHE.get(layout)
+    if idle is None:
+        chars = _rasterize_keyboard_chars(
+            state, assets_dir=assets_dir, focused_button_id=""
+        )
+        row = _rasterize_bottom_row(
+            state, assets_dir=assets_dir, focused_button_id=""
+        )
+        _IDLE_CHARS_CACHE[layout] = chars
+        _IDLE_ROW_CACHE[layout] = row
+        idle = chars if row is None else chars.copy()
+        _blit_row_on_canvas(idle, row)
+        _store_idle_keyboard(layout, idle)
+    return idle
+
+
+def keyboard_overlay_cached(
+    state: KeyboardState,
+    *,
+    assets_dir: Path | str | None = None,
+) -> bool:
+    """True when Left/Right can reuse idle + a focus patch (no SVG raster)."""
+    if not state.focus_ring:
+        return False
+    layout = _keyboard_layout_key(state, assets_dir=assets_dir)
+    if layout not in _IDLE_KB_CACHE:
+        return False
+    focused_id = state.focused.button_id
+    if not focused_id:
+        return True
+    return (layout + (focused_id,)) in _FOCUS_PATCH_CACHE
 
 
 def render_keyboard_bgra(
@@ -1348,18 +1748,58 @@ def render_keyboard_bgra(
     *,
     assets_dir: Path | str | None = None,
 ) -> np.ndarray:
-    """Composite character keys + shared bottom row onto the 1280×800 canvas."""
+    """Composite character keys + shared bottom row onto the 1280×800 canvas.
+
+    Left/Right reuses an idle raster plus a small selected-key patch so navigation
+    does not re-run PyMuPDF on the full SVG.
+    """
     if not state.focus_ring:
         state.rebuild_focus_ring(assets_dir=assets_dir)
 
-    canvas = _rasterize_keyboard_chars(state, assets_dir=assets_dir)
-    row = _rasterize_bottom_row(state, assets_dir=assets_dir)
-    if row is not None and row.size:
-        cx, cy = _cluster_xy()
-        dest_x = cx + int(round((_CLUSTER_VB[2] - row.shape[1]) * 0.5))
-        dest_y = cy
-        _blit_bottom_row(canvas, row, dest_x=dest_x, dest_y=dest_y)
-    return canvas
+    layout = _keyboard_layout_key(state, assets_dir=assets_dir)
+    focused_id = state.focused.button_id if state.focus_ring else ""
+    full_key = layout + (focused_id,)
+    idle = _IDLE_KB_CACHE.get(layout)
+    cached_full = _LAST_FULL_CACHE.get(full_key)
+    if cached_full is not None:
+        if idle is not None and focused_id and full_key not in _FOCUS_PATCH_CACHE:
+            y, x, patch = _diff_focus_patch(idle, cached_full)
+            _store_focus_patch(full_key, y, x, patch)
+        return cached_full
+    if idle is not None:
+        if not focused_id:
+            return idle
+        hit = _FOCUS_PATCH_CACHE.get(full_key)
+        if hit is not None:
+            y, x, patch = hit
+            out = _stamp_focus_patch(idle, y, x, patch)
+            _store_last_full(full_key, out)
+            return out
+        adjacent = _compose_adjacent_from_idle(
+            state,
+            assets_dir=assets_dir,
+            layout=layout,
+            idle=idle,
+            focused_id=focused_id,
+        )
+        if adjacent is not None:
+            y, x, patch = _diff_focus_patch(idle, adjacent)
+            _store_focus_patch(full_key, y, x, patch)
+            _store_last_full(full_key, adjacent)
+            return adjacent
+
+    focused = _composite_keyboard_layers(
+        state, assets_dir=assets_dir, focused_button_id=focused_id
+    )
+    _store_last_full(full_key, focused)
+    if idle is None:
+        if not focused_id:
+            _store_idle_keyboard(layout, focused)
+        return focused
+    if focused_id:
+        y, x, patch = _diff_focus_patch(idle, focused)
+        _store_focus_patch(full_key, y, x, patch)
+    return focused
 
 
 def activate_key(state: KeyboardState, *, assets_dir: Path | str | None = None) -> str:
@@ -1547,6 +1987,7 @@ __all__ = [
     "KeyboardMode",
     "KeyboardState",
     "activate_key",
+    "clear_keyboard_render_caches",
     "discover_char_keys",
     "discover_integrated_pad_keys",
     "discover_yes_no_keys",
@@ -1554,6 +1995,8 @@ __all__ = [
     "focus_yes_no_yes",
     "focus_keyboard_go",
     "focus_numeric_one",
+    "keyboard_overlay_cached",
     "open_keyboard",
     "render_keyboard_bgra",
+    "warm_keyboard_idle",
 ]

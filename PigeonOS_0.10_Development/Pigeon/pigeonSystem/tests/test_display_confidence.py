@@ -12,7 +12,12 @@ if _SYS_ROOT not in sys.path:
 
 from pigeon import display_confidence as dc  # noqa: E402
 from pigeon import hdmi_ocr as ho  # noqa: E402
-from pigeon.widgets.view_circles import _effective_zone_widgets  # noqa: E402
+from pigeon.ocr_clues import looks_like_ocr_junk  # noqa: E402
+from pigeon.tmdb_poster import is_degenerate_tmdb_query  # noqa: E402
+from pigeon.widgets.view_circles import (  # noqa: E402
+    _effective_zone_widgets,
+    _layout_is_fullscreen_clock,
+)
 
 
 class PlayerMetadataTests(unittest.TestCase):
@@ -44,6 +49,32 @@ class PlayerMetadataTests(unittest.TestCase):
         self.assertFalse(
             dc.content_should_stay_active(md, hdmi_on=True, hdmi_present=False)
         )
+
+    def test_short_movie_titles_are_adequate(self) -> None:
+        for title in ("It", "Up", "Us", "Her", "Elf", "Ted", "It 2017"):
+            md = {"query": title, "identity_source": "pyatv"}
+            self.assertFalse(is_degenerate_tmdb_query(title), title)
+            self.assertFalse(looks_like_ocr_junk(title), title)
+            self.assertFalse(dc.is_placeholder_identity(title), title)
+            self.assertTrue(dc.player_metadata_adequate(md), title)
+            self.assertFalse(dc.ocr_is_in_charge(md), title)
+
+
+class ShortTitleQueryTests(unittest.TestCase):
+    def test_ocr_glyph_noise_is_still_junk(self) -> None:
+        self.assertTrue(looks_like_ocr_junk("S S Sh"))
+        self.assertTrue(looks_like_ocr_junk("S S"))
+        self.assertTrue(looks_like_ocr_junk(""))
+        self.assertTrue(looks_like_ocr_junk("M"))
+
+    def test_service_names_stay_degenerate(self) -> None:
+        self.assertTrue(is_degenerate_tmdb_query("Netflix"))
+        self.assertTrue(is_degenerate_tmdb_query("disney+"))
+        self.assertTrue(is_degenerate_tmdb_query("2017"))
+
+    def test_chapter_two_still_passes(self) -> None:
+        self.assertFalse(is_degenerate_tmdb_query("It: Chapter Two"))
+        self.assertFalse(looks_like_ocr_junk("It: Chapter Two"))
 
 
 class OcrScheduleTests(unittest.TestCase):
@@ -223,6 +254,46 @@ class ZoneAdaptTests(unittest.TestCase):
             zone_widgets=("clock", "poster", "volume", "cast_info", "status_bar"),
         )
         self.assertEqual(zones, ("clock", "", "", "", ""))
+        self.assertTrue(_layout_is_fullscreen_clock(zones))
+
+    def test_idle_content_keeps_volume_when_readout_present(self) -> None:
+        zones = _effective_zone_widgets(
+            has_position=False,
+            cast_count=0,
+            content_active=False,
+            has_volume=True,
+            zone_widgets=("clock", "poster", "volume", "cast_info", "status_bar"),
+        )
+        self.assertEqual(zones, ("clock", "", "volume", "", ""))
+        self.assertFalse(_layout_is_fullscreen_clock(zones))
+
+    def test_missing_poster_does_not_leave_an_empty_slot(self) -> None:
+        zones = _effective_zone_widgets(
+            has_position=True,
+            cast_count=0,
+            has_poster=False,
+            poster_16x9=True,
+            zone_widgets=("clock", "poster", "volume", "cast_info", "status_bar"),
+        )
+        self.assertEqual(zones, ("", "", "volume", "", "status_bar"))
+        self.assertFalse(_layout_is_fullscreen_clock(zones))
+
+    def test_populated_layout_is_not_fullscreen_clock(self) -> None:
+        zones = _effective_zone_widgets(
+            has_position=True,
+            cast_count=3,
+            zone_widgets=("clock", "poster", "volume", "cast_info", "status_bar"),
+        )
+        self.assertFalse(_layout_is_fullscreen_clock(zones))
+
+    def test_16x9_override_clears_zones_1_2_and_4(self) -> None:
+        zones = _effective_zone_widgets(
+            has_position=True,
+            cast_count=3,
+            zone_widgets=("clock", "poster", "volume", "cast_info", "status_bar"),
+            poster_16x9=True,
+        )
+        self.assertEqual(zones, ("", "", "volume", "", "status_bar"))
 
 
 if __name__ == "__main__":

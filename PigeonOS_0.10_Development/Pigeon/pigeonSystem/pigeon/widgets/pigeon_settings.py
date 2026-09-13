@@ -402,7 +402,13 @@ def _sync_version_text(root: ET.Element, state: MainSettingsState) -> None:
                 break
         text = nested if nested is not None else text
     _set_text_content(text, label)
-    _paint_text(text, _COLOR_WHITE)
+    try:
+        from pigeon.widgets.options_settings import ui_ink_hex
+
+        plate_ink = ui_ink_hex()
+    except Exception:
+        plate_ink = _COLOR_WHITE
+    _paint_text(text, plate_ink)
     # Right-align inside the menu panel so the string never clips the right edge.
     vb_x, vb_y, _vb_w, _vb_h = _PIGEON_VIEWBOX
     text.set("transform", f"translate({vb_x + 1180.0:.2f} {vb_y + 159.0:.2f})")
@@ -1092,7 +1098,10 @@ def factory_reset_pigeon_persisted_state() -> None:
     )
     from pigeon.runtime_paths import pigeon_state_dir
     from pigeon.widgets.preferences_settings import (
+        DEFAULT_MUSIC_ZONE_WIDGETS,
         DEFAULT_ZONE_WIDGETS,
+        NP_ZONE_LAYOUT_GENERATION,
+        write_np_header_clock,
         write_now_playing_zone_widgets,
     )
     from pigeon.widgets.ui_color_settings import write_ui_color_keys
@@ -1109,6 +1118,9 @@ def factory_reset_pigeon_persisted_state() -> None:
     pop_app_state_keys(
         "settings_ui_colors",
         "now_playing_zone_widgets",
+        "now_playing_zone_widgets_music",
+        "np_header_clock",
+        "np_zone_layout_generation",
         "display_par_mode",
         "roku_ecp_base_url",
         "tmdb_quality_ok_count",
@@ -1121,6 +1133,16 @@ def factory_reset_pigeon_persisted_state() -> None:
         persist=True,
     )
     write_now_playing_zone_widgets(DEFAULT_ZONE_WIDGETS)
+    write_now_playing_zone_widgets(
+        DEFAULT_MUSIC_ZONE_WIDGETS, content_mode="music"
+    )
+    write_np_header_clock(True)
+    try:
+        from pigeon.app_state import write_app_state
+
+        write_app_state(np_zone_layout_generation=int(NP_ZONE_LAYOUT_GENERATION))
+    except Exception:
+        pass
     try:
         purge_directory_contents(pigeon_pulled_media_dir())
     except Exception:
