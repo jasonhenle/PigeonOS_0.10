@@ -314,6 +314,32 @@ class DenonHttpCommandTests(unittest.TestCase):
         self.assertIn("set_volume", msg)
 
 
+class DenonTelnetHubTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        from pigeon.receiver_denon_telnet import stop_denon_telnet_hub
+
+        stop_denon_telnet_hub()
+
+    def test_query_reads_hub_snapshot_without_connecting(self) -> None:
+        from pigeon.receiver_denon_telnet import (
+            prime_denon_telnet_hub_snapshot_for_tests,
+            query_denon_volume_telnet,
+        )
+
+        prime_denon_telnet_hub_snapshot_for_tests(
+            "10.0.4.64",
+            {"PW": "ON", "MV": "575", "MV_DB": "-22.5 dB", "MU": "OFF"},
+        )
+        row = query_denon_volume_telnet("10.0.4.64", blocking=False)
+        self.assertEqual(row.get("MV_DB"), "-22.5 dB")
+        self.assertEqual(row.get("PW"), "ON")
+
+    def test_ingest_unsolicited_mv_updates_last_volume(self) -> None:
+        from pigeon.receiver_denon_telnet import telnet_hub_ingest_for_tests
+
+        self.assertIn("dB", telnet_hub_ingest_for_tests(b"MV575\rMUOFF\r"))
+
+
 class ReceiverVolumeCoalesceTests(unittest.TestCase):
     def test_telnet_wins_over_frozen_http(self) -> None:
         from pigeon.receiver_denon import coalesce_receiver_volume_read
@@ -350,6 +376,47 @@ class ReceiverVolumeCoalesceTests(unittest.TestCase):
         )
         self.assertEqual(line, "-22.0 dB")
         self.assertEqual(src, "appcommand")
+
+    def test_stale_hub_does_not_block_live_http(self) -> None:
+        from pigeon.receiver_denon import coalesce_receiver_volume_read
+
+        line, src = coalesce_receiver_volume_read(
+            telnet_line="-18.5 dB",
+            http_line="-20.0 dB",
+            last_http="-19.5 dB",
+            last_telnet="-18.5 dB",
+            held="-18.5 dB",
+        )
+        self.assertEqual(line, "-20.0 dB")
+        self.assertEqual(src, "appcommand")
+
+    def test_disagreeing_unchanged_sources_prefer_http(self) -> None:
+        from pigeon.receiver_denon import coalesce_receiver_volume_read
+
+        line, src = coalesce_receiver_volume_read(
+            telnet_line="-18.5 dB",
+            http_line="-20.0 dB",
+            last_http="-20.0 dB",
+            last_telnet="-18.5 dB",
+            held="-18.5 dB",
+        )
+        self.assertEqual(line, "-20.0 dB")
+        self.assertEqual(src, "appcommand")
+
+    def test_recent_telnet_change_beats_older_http(self) -> None:
+        from pigeon.receiver_denon import coalesce_receiver_volume_read
+
+        line, src = coalesce_receiver_volume_read(
+            telnet_line="-16.0 dB",
+            http_line="-18.5 dB",
+            last_http="-18.5 dB",
+            last_telnet="-16.0 dB",
+            held="-16.0 dB",
+            last_http_mono=10.0,
+            last_telnet_mono=20.0,
+        )
+        self.assertEqual(line, "-16.0 dB")
+        self.assertEqual(src, "telnet")
 
     def test_http_off_plus_telnet_on_is_not_standby(self) -> None:
         from pigeon.receiver_denon import _denon_power_is_standby

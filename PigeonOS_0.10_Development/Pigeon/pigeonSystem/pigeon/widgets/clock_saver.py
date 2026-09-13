@@ -855,6 +855,17 @@ class ClockSaverVolumeHold:
             return self.remember(live, source="poll", now=t)
         return str(self.hold or "")
 
+    def display_line(self) -> str:
+        """Last remembered saver volume. Compose must use this, not ``pick``.
+
+        ``pick(candidates)`` treats the first labeled cache entry as a live
+        poll and overwrites ``hold``. Clock-saver compose used to do that
+        every frame, so the Digital-7 number stayed on a stale ``effective``
+        while ``VolumeLineReveal`` still showed the arms for the new level.
+        """
+        s = str(self.hold or "").strip()
+        return s if s and clock_saver_volume_label(s) else ""
+
 
 def clock_saver_volume_line_geometry(
     *,

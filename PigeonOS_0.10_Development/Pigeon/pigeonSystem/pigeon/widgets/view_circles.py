@@ -151,6 +151,10 @@ _COLOR_CENTER_BLACK_HEX = "#000000"
 _COLOR_CENTER_BLACK_BGR = (0, 0, 0)
 _COLOR_CHROME_BGR = (147, 147, 147)  # #939393
 _COLOR_CHROME_RGB = (147, 147, 147)
+# Empty volume ring + status-bar track: 30% white / 70% black.
+_COLOR_UNFILLED_HEX = "#4d4d4d"
+_COLOR_UNFILLED_BGR = (77, 77, 77)
+_COLOR_UNFILLED_RGB = (77, 77, 77)
 
 
 def _look_chrome_rgb() -> tuple[int, int, int]:
@@ -256,6 +260,11 @@ class _NpTheme:
     def cache_key(self) -> tuple[str, str, str, str]:
         look = "bright" if _look_is_bright() else "std"
         return (self.ui_hex.lower(), self.accent_hex.lower(), self.button_hex.lower(), look)
+
+
+# Temporary: now-playing clock / volume / bar use a hue sampled from the TT.
+# Menus still read ``settings_ui_colors``. Set False to restore settings UI on NP.
+_NP_UI_FROM_TT = True
 
 
 def np_theme_from_settings() -> _NpTheme:
@@ -1781,6 +1790,9 @@ def _prepare_volume_svg(root: ET.Element) -> None:
         el = _find_by_key(root, name)
         if el is not None:
             _detach_element(root, el)
+    track = _find_by_key(root, "volume_deselected_buton")
+    if track is not None:
+        _set_tick_paint(track, color=_COLOR_UNFILLED_HEX)
 
 
 def _prepare_cast_svg(root: ET.Element) -> None:
@@ -3285,8 +3297,8 @@ def _draw_circle_pair(
         outer_r=_RING_OUTER_R,
         inner_r=_RING_INNER_R,
         fraction=1.0,
-        fill_bgr=_look_chrome_bgr(),
-        fill_opacity=0.42,
+        fill_bgr=_COLOR_UNFILLED_BGR,
+        fill_opacity=1.0,
         stroke=0,
     )
     if frac > 1e-6:
@@ -3309,10 +3321,10 @@ def _draw_circle_pair(
         outer_r=_RING_OUTER_R,
         inner_r=_RING_INNER_R,
         fraction=1.0,
-        fill_bgr=_look_chrome_bgr(),
+        fill_bgr=_COLOR_UNFILLED_BGR,
         fill_opacity=0.0,
         stroke=2,
-        stroke_bgr=_look_chrome_bgr(),
+        stroke_bgr=_COLOR_UNFILLED_BGR,
         stroke_opacity=0.85,
     )
     _draw_filled_circle_bgra(
@@ -3492,6 +3504,8 @@ class ViewCirclesWidget:
         self._state = ViewCirclesState()
         self._poster_bgra: np.ndarray | None = None
         self._tt_bgra: np.ndarray | None = None
+        self._tt_theme_hex: str | None = None
+        self._tt_theme_src_id: object | None = None
         self._tt_patch_cache: dict[tuple[object, ...], np.ndarray | None] = {}
         self._cached_bgra: np.ndarray | None = None
         self._cached_sig: tuple[object, ...] | None = None
@@ -3583,6 +3597,7 @@ class ViewCirclesWidget:
                 return False
         self._poster_bgra = arr.copy()
         self._clear_artwork_blur_cache()
+        self._tt_theme_src_id = None
         self.clear_cache()
         return True
 
@@ -3592,6 +3607,8 @@ class ViewCirclesWidget:
             if self._tt_bgra is None:
                 return False
             self._tt_bgra = None
+            self._tt_theme_hex = None
+            self._tt_theme_src_id = None
             self._tt_patch_cache.clear()
             self.clear_cache()
             return True
@@ -3600,6 +3617,8 @@ class ViewCirclesWidget:
             if np.array_equal(self._tt_bgra, arr):
                 return False
         self._tt_bgra = arr.copy()
+        self._tt_theme_hex = None
+        self._tt_theme_src_id = None
         self._tt_patch_cache.clear()
         self.clear_cache()
         return True
@@ -3897,6 +3916,37 @@ class ViewCirclesWidget:
             return None
         return _zone_for_widget(self._assignments(), "poster")
 
+    def _effective_np_theme(self) -> _NpTheme:
+        """Settings theme, with UI hue replaced by the TT when it has a color."""
+        base = np_theme_from_settings()
+        if not _NP_UI_FROM_TT:
+            return base
+        src = self._tt_source_bgra()
+        poster = self._poster_bgra
+        sid = (
+            id(src) if src is not None else None,
+            id(poster) if poster is not None else None,
+        )
+        if sid != self._tt_theme_src_id:
+            self._tt_theme_src_id = sid
+            try:
+                from pigeon.tmdb_tt_contrast import theme_hex_from_tt_bgra
+
+                hex_c = theme_hex_from_tt_bgra(src)
+                if not hex_c and poster is not None and poster is not src:
+                    hex_c = theme_hex_from_tt_bgra(poster)
+                self._tt_theme_hex = hex_c
+            except Exception:
+                self._tt_theme_hex = None
+        hex_c = str(self._tt_theme_hex or "").strip()
+        if not hex_c:
+            return base
+        return _NpTheme(
+            ui_hex=hex_c,
+            accent_hex=base.accent_hex,
+            button_hex=base.button_hex,
+        )
+
     def _cache_sig(self) -> tuple[object, ...]:
         st = self._state
         cast_sig = tuple(st.cast[:21])
@@ -3908,10 +3958,10 @@ class ViewCirclesWidget:
             h12 = 12
         vol_disp = self._volume_fraction_for_display()
         zone_widgets = self._assignments()
-        theme_key = np_theme_from_settings().cache_key
+        theme_key = self._effective_np_theme().cache_key
         header_on = _header_clock_enabled()
         return (
-            56,  # cache schema — volume-line fade
+            59,  # cache schema — 30/70 unfilled tracks
             st.content_mode,
             st.has_position,
             st.content_active,
@@ -3976,9 +4026,9 @@ class ViewCirclesWidget:
             bool(self._state.paused),
             h12,
             int(now.minute),
-            10,  # chrome pipeline — settings theme colors
+            13,  # chrome pipeline — 30/70 unfilled volume track
             zone_widgets,
-            np_theme_from_settings().cache_key,
+            self._effective_np_theme().cache_key,
         )
 
     def _render_svg_base(self, now: datetime) -> np.ndarray:
@@ -3999,7 +4049,7 @@ class ViewCirclesWidget:
                         dest_w=zw,
                         dest_h=zh,
                         now=now,
-                        theme=np_theme_from_settings(),
+                        theme=self._effective_np_theme(),
                         zone=int(clock_zone),
                     )
                     if patch is not None and patch.size:
@@ -4012,7 +4062,7 @@ class ViewCirclesWidget:
                 content_mode=self.content_mode,
                 paused=bool(self._state.paused),
                 now=now,
-                theme=np_theme_from_settings(),
+                theme=self._effective_np_theme(),
                 zone_widgets=self._assignments(),
             )
         except Exception:
@@ -4143,7 +4193,7 @@ class ViewCirclesWidget:
             y=ty,
             w=tw,
             h=th,
-            fill_bgr=_look_chrome_bgr(),
+            fill_bgr=_COLOR_UNFILLED_BGR,
             radius=trx,
             stroke_bgr=None,
             fill_opacity=1.0,
@@ -4155,7 +4205,7 @@ class ViewCirclesWidget:
             if vis_w > 0:
                 mask = _rounded_rect_mask(tw, th, trx)
                 elapsed = np.zeros((th, tw, 4), dtype=np.uint8)
-                elapsed[:, :, :3] = np_theme_from_settings().ui_bgr
+                elapsed[:, :, :3] = self._effective_np_theme().ui_bgr
                 elapsed[:, :, 3] = mask
                 elapsed[:, vis_w:, 3] = 0
                 _paste_patch_bgra(out, elapsed, tx, ty)
@@ -4290,7 +4340,7 @@ class ViewCirclesWidget:
                     dest_w=dest_w,
                     dest_h=dest_h,
                     now=self._clock_now_for_display(),
-                    theme=np_theme_from_settings(),
+                    theme=self._effective_np_theme(),
                     include_play_overlay=False,
                 )
             except Exception:
@@ -4310,7 +4360,7 @@ class ViewCirclesWidget:
                 dest_w=zw,
                 dest_h=zh,
                 now=self._clock_now_for_display(),
-                theme=np_theme_from_settings(),
+                    theme=self._effective_np_theme(),
             )
         except Exception:
             patch = None
@@ -4509,7 +4559,7 @@ class ViewCirclesWidget:
             cy=cy,
             fraction=pf,
             show_accent=pf > 1e-6,
-            theme=np_theme_from_settings(),
+            theme=self._effective_np_theme(),
         )
         time_p, _, _ = _text_patch_digital7(
             _clock_hhmm(now),
@@ -5091,7 +5141,7 @@ class ViewCirclesWidget:
             _paste_patch_bgra(out, clock, 0, 0)
             return out
         out = _fallback_base_bgra()
-        theme = np_theme_from_settings()
+        theme = self._effective_np_theme()
         if (
             self._state.content_active
             and self._poster_bgra is not None

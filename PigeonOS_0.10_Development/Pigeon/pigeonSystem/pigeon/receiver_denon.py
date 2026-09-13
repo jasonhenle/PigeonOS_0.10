@@ -449,30 +449,67 @@ def _volume_fields_line(fields: dict[str, str]) -> str:
     return _denon_volume_line(fields) if fields else ""
 
 
+def _volume_readout_same(a: str, b: str) -> bool:
+    sa = str(a or "").strip()
+    sb = str(b or "").strip()
+    if not sa or not sb:
+        return False
+    if sa.lower() == sb.lower():
+        return True
+    va = _volume_db_value(sa)
+    vb = _volume_db_value(sb)
+    if va is None or vb is None:
+        return False
+    return abs(va - vb) < 0.05
+
+
 def coalesce_receiver_volume_read(
     *,
     telnet_line: str = "",
     http_line: str = "",
     last_http: str = "",
+    last_telnet: str = "",
     held: str = "",
+    last_http_mono: float = 0.0,
+    last_telnet_mono: float = 0.0,
 ) -> tuple[str, str]:
-    """Pick a display level. Telnet ``MV`` is live; unchanged HTTP must not win.
+    """Pick a display level from telnet ``MV`` and AppCommand ``GetVolumeLevel``.
 
-    S670H AppCommand ``GetVolumeLevel`` often stays on the value from play-start
-    (and ``Power`` says OFF) while the front-panel / IR level has moved. A later
-    HTTP poll must not stamp that frozen number over a newer telnet readout.
-    HTTP is used when it *moves*, or when there is no telnet/hold yet.
+    A *moving* source always wins. That covers both S670H failure modes: HTTP
+    frozen at play-start while telnet ``MV`` is live, and a persistent telnet
+    hub stuck on its connect-time ``MV`` while HTTP is live. When the two
+    disagree and neither just moved, prefer the more recently changed source;
+    a tie prefers HTTP (front-panel / HDMI master).
     """
     tn = str(telnet_line or "").strip()
     http = str(http_line or "").strip()
     prev_http = str(last_http or "").strip()
+    prev_tn = str(last_telnet or "").strip()
     keep = str(held or "").strip()
-    if tn:
+    tn_moved = bool(tn) and (not prev_tn or not _volume_readout_same(tn, prev_tn))
+    http_moved = bool(http) and (
+        not prev_http or not _volume_readout_same(http, prev_http)
+    )
+    if tn and http and not _volume_readout_same(tn, http):
+        if tn_moved and not http_moved:
+            return tn, "telnet"
+        if http_moved and not tn_moved:
+            return http, "appcommand"
+        http_t = float(last_http_mono or 0.0)
+        tn_t = float(last_telnet_mono or 0.0)
+        if http_t > tn_t:
+            return http, "appcommand"
+        if tn_t > http_t:
+            return tn, "telnet"
+        return http, "appcommand"
+    if tn_moved:
         return tn, "telnet"
-    if http and http != prev_http:
+    if http_moved:
         return http, "appcommand"
     if keep:
         return keep, "hold"
+    if tn:
+        return tn, "telnet"
     return (http, "appcommand") if http else ("", "")
 
 
@@ -509,18 +546,14 @@ def _volume_lines_moved(prev: str, vol: str, *, steps: int = 0) -> bool:
     return abs(delta) >= 0.4
 
 
-def read_live_receiver_volume(
+def observe_receiver_volume(
     host: str,
     *,
     timeout: float = 1.2,
     telnet_blocking: bool = False,
     allow_appcommand: bool = False,
 ) -> tuple[str, str]:
-    """Live AVR *master* volume. Telnet ``MV`` first; AppCommand if allowed.
-
-    AppCommand ``GetVolumeLevel`` is the HDMI / front-panel level. HEOS player
-    volume is a different control and is never used here.
-    """
+    """Return ``(telnet_line, appcommand_line)`` for the caller to coalesce."""
     from pigeon.receiver_denon_telnet import query_denon_volume_telnet
 
     h = _normalize_host(host)
@@ -532,14 +565,49 @@ def read_live_receiver_volume(
         )
     except Exception:
         tn = {}
-    line = _volume_fields_line(tn)
-    if line:
-        return line, "telnet"
+    tn_line = _volume_fields_line(tn)
+    ac_line = ""
     if allow_appcommand:
         ac = read_denon_appcommand_status(h, timeout=min(1.0, timeout))
-        line = _volume_fields_line(ac)
-        if line:
-            return line, "appcommand"
+        ac_line = _volume_fields_line(ac)
+    return tn_line, ac_line
+
+
+def read_live_receiver_volume(
+    host: str,
+    *,
+    timeout: float = 1.2,
+    telnet_blocking: bool = False,
+    allow_appcommand: bool = False,
+    last_http: str = "",
+    last_telnet: str = "",
+    held: str = "",
+    last_http_mono: float = 0.0,
+    last_telnet_mono: float = 0.0,
+) -> tuple[str, str]:
+    """Live AVR *master* volume. Telnet ``MV`` and AppCommand, then coalesce.
+
+    AppCommand ``GetVolumeLevel`` is the HDMI / front-panel level. HEOS player
+    volume is a different control and is never used here.
+    """
+    tn_line, ac_line = observe_receiver_volume(
+        host,
+        timeout=timeout,
+        telnet_blocking=telnet_blocking,
+        allow_appcommand=allow_appcommand,
+    )
+    if allow_appcommand:
+        return coalesce_receiver_volume_read(
+            telnet_line=tn_line,
+            http_line=ac_line,
+            last_http=last_http,
+            last_telnet=last_telnet,
+            held=held,
+            last_http_mono=last_http_mono,
+            last_telnet_mono=last_telnet_mono,
+        )
+    if tn_line:
+        return tn_line, "telnet"
     return "", ""
 
 

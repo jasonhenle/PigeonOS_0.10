@@ -428,6 +428,14 @@ class ClockSaverSecondsBarTests(unittest.TestCase):
         self.assertEqual(hold.pick(["-30.5 dB"], now=13.0), "-30.0 dB")
         self.assertEqual(hold.pick(["-30.5 dB"], now=23.0), "-30.5 dB")
 
+    def test_display_line_is_last_remembered_hold(self) -> None:
+        hold = cs.ClockSaverVolumeHold(grace_s=2.0)
+        self.assertEqual(hold.display_line(), "")
+        hold.remember("-18.5 dB", source="poll", now=10.0)
+        self.assertEqual(hold.display_line(), "-18.5 dB")
+        hold.remember("-20.0 dB", source="poll", now=11.0)
+        self.assertEqual(hold.display_line(), "-20.0 dB")
+
     def test_volume_line_hold_then_fade(self) -> None:
         reveal = cs.VolumeLineReveal(hold_s=3.0, fade_s=0.75)
         reveal.note("-13.0 dB", now=100.0)

@@ -1656,6 +1656,28 @@ class TtCountdownWidgetTests(unittest.TestCase):
         out3 = whiten_dark_tt_bgra(transparent)
         self.assertTrue(np.array_equal(out3, transparent))
 
+    def test_colored_tt_yields_theme_hex_gray_tt_does_not(self) -> None:
+        from pigeon.tmdb_tt_contrast import theme_hex_from_tt_bgra
+
+        red = np.zeros((48, 64, 4), dtype=np.uint8)
+        red[:, :, 2] = 200
+        red[:, :, 3] = 255
+        hex_c = theme_hex_from_tt_bgra(red)
+        self.assertIsNotNone(hex_c)
+        assert hex_c is not None
+        self.assertTrue(hex_c.startswith("#"))
+        r = int(hex_c[1:3], 16)
+        g = int(hex_c[3:5], 16)
+        b = int(hex_c[5:7], 16)
+        self.assertGreater(r, g)
+        self.assertGreater(r, b)
+
+        white = np.full((48, 64, 4), 255, dtype=np.uint8)
+        self.assertIsNone(theme_hex_from_tt_bgra(white))
+
+        empty = np.zeros((48, 64, 4), dtype=np.uint8)
+        self.assertIsNone(theme_hex_from_tt_bgra(empty))
+
     def test_countdown_patch_is_column_stable(self) -> None:
         from pigeon.widgets.view_circles import _tt_countdown_time_patch
 
