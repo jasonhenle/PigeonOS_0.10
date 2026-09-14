@@ -566,6 +566,9 @@ class MainSettingsState:
     show_options: bool = False
     options_focus_index: int = 0
     options_values: dict[str, object] = field(default_factory=dict)
+    # Now-play widgets page (settings_pigeon_widgets).
+    show_widgets: bool = False
+    widgets_focus_index: int = 0
     show_update_popup: bool = False
     update_popup_focus_index: int = 0
     update_available: bool = False
@@ -1115,6 +1118,7 @@ class MainSettingsState:
         keys = read_ui_color_keys()
         apply_color_keys_to_state(self, keys, persist=False)
         self.close_options()
+        self.close_widgets()
         self.show_ui_color = True
         self.show_preferences = False
         self.ui_color_nav = "swatches"
@@ -1195,6 +1199,7 @@ class MainSettingsState:
 
         self.close_ui_color()
         self.close_preferences()
+        self.close_widgets()
         load_options_into_state(self)
         self.show_options = True
         self.options_focus_index = 0
@@ -1241,6 +1246,57 @@ class MainSettingsState:
             return "options_noop"
         self.options_values = toggle_option(n, getattr(self, "options_values", None))
         return f"options_toggle:{n}"
+
+    def open_widgets(self) -> None:
+        """Open the now-play widgets page on settings_pigeon."""
+        from pigeon.widgets.preferences_settings import read_now_playing_zone_widgets
+
+        self.close_ui_color()
+        self.close_options()
+        self.show_preferences = False
+        self.preferences_zone_widgets = read_now_playing_zone_widgets()
+        self.show_widgets = True
+        self.widgets_focus_index = 0
+
+    def close_widgets(self) -> None:
+        was = bool(self.show_widgets)
+        self.show_widgets = False
+        self.widgets_focus_index = 0
+        if was and self.show_pigeon_settings:
+            from pigeon.widgets.pigeon_settings import pigeon_focus_ring
+
+            ring = pigeon_focus_ring()
+            if "info_button" in ring:
+                self.pigeon_focus_index = ring.index("info_button")
+
+    @property
+    def widgets_focused_id(self) -> str:
+        from pigeon.widgets.widgets_settings import widgets_focus_ring
+
+        ring = widgets_focus_ring()
+        if not ring:
+            return "pigeon_back"
+        return ring[int(self.widgets_focus_index) % len(ring)]
+
+    def navigate_widgets(self, *, forward: bool = True) -> None:
+        from pigeon.widgets.widgets_settings import widgets_focus_ring
+
+        ring = widgets_focus_ring()
+        if not ring:
+            return
+        step = 1 if forward else -1
+        self.widgets_focus_index = (int(self.widgets_focus_index) + step) % len(ring)
+
+    def activate_widgets(self) -> str:
+        from pigeon.widgets.widgets_settings import apply_widget_assignment
+
+        focused = self.widgets_focused_id
+        if focused == "pigeon_back":
+            self.close_widgets()
+            return "widgets_back"
+        if apply_widget_assignment(self, focused):
+            return f"widgets_assign:{focused}"
+        return f"widgets_noop:{focused}"
 
     @property
     def preferences_focused_id(self) -> str:
@@ -1416,6 +1472,9 @@ class MainSettingsState:
             return
         if self.show_options:
             self.navigate_options(forward=forward)
+            return
+        if self.show_widgets:
+            self.navigate_widgets(forward=forward)
             return
         if self.show_preferences:
             self.navigate_preferences(forward=forward)
@@ -6673,6 +6732,9 @@ class MainSettingsWidget:
             bool(st.show_options),
             int(st.options_focus_index) if st.show_options else -1,
             tuple(st.options_values.items()) if st.show_options else (),
+            bool(st.show_widgets),
+            int(st.widgets_focus_index) if st.show_widgets else -1,
+            tuple(st.preferences_zone_widgets) if st.show_widgets else (),
             str(st.theme.ui),
             str(st.theme.accent),
             str(st.theme.deselected),
@@ -6785,6 +6847,7 @@ class MainSettingsWidget:
             bool(st.show_options),
             int(st.options_focus_index) if st.show_options else -1,
             tuple(st.options_values.items()) if st.show_options else (),
+            bool(st.show_widgets),
             str(st.theme.ui),
             str(st.theme.accent),
             str(st.theme.deselected),
@@ -6888,6 +6951,9 @@ class MainSettingsWidget:
             int(st.options_focus_index) if st.show_options else -1,
             bool(st.show_options),
             tuple(st.options_values.items()) if st.show_options else (),
+            int(st.widgets_focus_index) if st.show_widgets else -1,
+            bool(st.show_widgets),
+            tuple(st.preferences_zone_widgets) if st.show_widgets else (),
             int(st.update_popup_focus_index) if st.show_update_popup else -1,
             bool(st.show_update_popup),
         )
@@ -7045,6 +7111,57 @@ class MainSettingsWidget:
 
             _threading.Thread(
                 target=_work_ui_color, name="ui-color-prewarm-all", daemon=True
+            ).start()
+            return
+        if st.show_pigeon_settings and st.show_widgets:
+            from pigeon.widgets.pigeon_settings import render_pigeon_settings_bgra
+            from pigeon.widgets.widgets_settings import widgets_focus_ring
+
+            ring = widgets_focus_ring()
+            n = len(ring)
+            if n <= 1:
+                return
+            missing = []
+            for idx in range(n):
+                probe = copy.deepcopy(st)
+                probe.widgets_focus_index = idx
+                if self._focus_key_for_state(probe) not in self._focus_frame_cache:
+                    missing.append(idx)
+            if not missing:
+                return
+            self._prewarm_all_inflight = True
+            state_snap = copy.deepcopy(st)
+            assets_dir = self._assets_dir
+            cache = self._focus_frame_cache
+            struct_ref = structure
+
+            def _work_widgets() -> None:
+                try:
+                    for idx in missing:
+                        if self._focus_cache_structure not in (None, struct_ref):
+                            return
+                        state_snap.widgets_focus_index = idx
+                        key = self._focus_key_for_state(state_snap)
+                        if key in cache:
+                            continue
+                        try:
+                            frame = render_pigeon_settings_bgra(
+                                state_snap, assets_dir=assets_dir
+                            )
+                        except Exception:
+                            return
+                        if self._focus_cache_structure not in (None, struct_ref):
+                            return
+                        if self._focus_cache_structure is None:
+                            self._focus_cache_structure = struct_ref
+                        cache[key] = frame
+                finally:
+                    self._prewarm_all_inflight = False
+
+            import threading as _threading
+
+            _threading.Thread(
+                target=_work_widgets, name="widgets-prewarm-all", daemon=True
             ).start()
             return
         if st.show_pigeon_settings and st.show_preferences:
@@ -7318,6 +7435,38 @@ class MainSettingsWidget:
 
             threading.Thread(
                 target=_work_ui_color_n, name="ui-color-prewarm-n", daemon=True
+            ).start()
+            return
+
+        if st.show_pigeon_settings and st.show_widgets:
+            from pigeon.widgets.pigeon_settings import render_pigeon_settings_bgra
+            from pigeon.widgets.widgets_settings import widgets_focus_ring
+
+            ring = widgets_focus_ring()
+            n = len(ring)
+            if n <= 0:
+                return
+            nxt = (int(st.widgets_focus_index) + (1 if forward else -1)) % n
+            snap = copy.deepcopy(st)
+            snap.widgets_focus_index = nxt
+            key_probe = self._focus_key_for_state(snap)
+            if key_probe in self._focus_frame_cache:
+                return
+            assets = self._assets_dir
+            cache = self._focus_frame_cache
+            struct_ref = structure
+
+            def _work_widgets_n() -> None:
+                try:
+                    frame = render_pigeon_settings_bgra(snap, assets_dir=assets)
+                except Exception:
+                    return
+                if self._focus_cache_structure != struct_ref:
+                    return
+                cache.setdefault(key_probe, frame)
+
+            threading.Thread(
+                target=_work_widgets_n, name="widgets-prewarm-n", daemon=True
             ).start()
             return
 
@@ -8314,6 +8463,16 @@ class MainSettingsWidget:
                 self._want_prewarm_after_paint = True
                 self.invalidate()
                 return action
+            if st.show_widgets:
+                action = st.activate_widgets()
+                self._cached_bgra = None
+                self._cached_sig = None
+                self._cached_main_bgra = None
+                self._cached_main_sig = None
+                self._paste_fully_opaque = None
+                self._want_prewarm_after_paint = True
+                self.invalidate()
+                return action
             if st.show_preferences:
                 action = st.activate_preferences()
                 # Soft invalidate: keep neighbor focus bitmaps; drop current paste only.
@@ -8356,8 +8515,10 @@ class MainSettingsWidget:
                 self.invalidate()
                 return "pigeon_factory_reset"
             if focused == "info_button":
-                # Now-playing zone picker is disabled while that screen is rethought.
-                return "preferences_disabled"
+                st.close_preferences()
+                st.open_widgets()
+                self.invalidate()
+                return "widgets_open"
             if focused == "general_button":
                 st.open_options()
                 self.invalidate()
@@ -8556,7 +8717,7 @@ class MainSettingsWidget:
                         )
                         self._cached_main_bgra = frame
                         self._cached_main_sig = main_sig
-                elif st.show_ui_color or st.show_options:
+                elif st.show_ui_color or st.show_options or st.show_widgets:
                     from pigeon.widgets.pigeon_settings import render_pigeon_settings_bgra
 
                     frame = render_pigeon_settings_bgra(

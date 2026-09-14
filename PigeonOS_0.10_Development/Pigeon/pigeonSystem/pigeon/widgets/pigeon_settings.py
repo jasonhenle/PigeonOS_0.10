@@ -168,6 +168,28 @@ _SELECTABLE_TILES: tuple[tuple[str, str, str, str], ...] = (
     ),
 )
 
+# Plate chrome hidden while the now-play widgets page is open.
+_PIGEON_TILE_CHROME_IDS: tuple[str, ...] = (
+    "settings_pigeon_01_color_group",
+    "settings_pigeon_02_info_group",
+    "settings_pigeon_03_general_group",
+    "settings_pigeon_04_reset_group",
+    "settings_pigeon_05_update_group",
+    "settings_pigeon_06_wifi_group",
+    "settings_pigeon_07_metadata_group",
+    "settings_pigeon_08_hdmi_group",
+    "settings_pigeon_09_audio_group",
+    "settings_pigeon_01_color_icon_group",
+    "settings_pigeon_02_info_icon_group",
+    "settings_pigeon_03_general_icon_group",
+    "settings_pigeon_04_reset_icon_group",
+    "settings_pigeon_05_update_icon_group",
+    "settings_pigeon_06_wifi_icon_group",
+    "settings_pigeon_07_metadata_icon_group",
+    "settings_pigeon_08_hdmi_icon_group",
+    "settings_pigeon_09_audio_icon_group",
+)
+
 _STATUS_ICONS: tuple[tuple[str, str], ...] = (
     ("wifi", "settings_pigeon_06_wifi_status_icon"),
     ("metadata", "settings_pigeon_07_metadata_status_icon"),
@@ -429,14 +451,16 @@ def _sync_info_label(root: ET.Element) -> None:
 def apply_pigeon_settings_svg_state(root: ET.Element, state: MainSettingsState) -> None:
     picker = bool(getattr(state, "show_ui_color", False))
     options = bool(getattr(state, "show_options", False))
+    widgets = bool(getattr(state, "show_widgets", False))
     tile_focus = normalize_pigeon_focus_id(state.pigeon_focused_id)
     preview_overlay = (
         not picker
         and not options
-        and tile_focus in ("color_button", "general_button")
+        and not widgets
+        and tile_focus in ("color_button", "general_button", "info_button")
     )
-    focused = "" if picker or options else tile_focus
-    if picker:
+    focused = "" if picker or options or widgets else tile_focus
+    if picker or widgets:
         for bid in (
             "settings_pigeon_back_group",
             "settings_pigeon_back_button",
@@ -465,10 +489,13 @@ def apply_pigeon_settings_svg_state(root: ET.Element, state: MainSettingsState) 
     _sync_info_label(root)
     _sync_status_icons(root, state)
     _sync_update_badge(root, state)
-    if picker or options or preview_overlay:
+    if picker or options or widgets or preview_overlay:
         _set_visible(_find_by_logical_id(root, "settings_pigeon_version_text"), False)
     else:
         _sync_version_text(root, state)
+    if widgets:
+        for gid in _PIGEON_TILE_CHROME_IDS:
+            _set_visible(_find_by_logical_id(root, gid), False)
     # Re-exports sometimes give the color tile a solid black fill that
     # covers the rainbow; the accent is a stroke-only rounded frame.
     accent = _find_by_logical_id(root, "settings_pigeon_01_color_box_accent")
@@ -988,10 +1015,12 @@ def render_pigeon_settings_bgra(
         height=DESIGN_H,
         font_mode="preferences",
     )
-    _draw_color_icon_clipped(ui_bgra, path, root=root, master=color_master)
-    _draw_wifi_icon_clipped(ui_bgra)
-    _draw_update_icon_clipped(ui_bgra)
-    _draw_reset_icon_clipped(ui_bgra)
+    widgets_open = bool(getattr(st, "show_widgets", False))
+    if not widgets_open:
+        _draw_color_icon_clipped(ui_bgra, path, root=root, master=color_master)
+        _draw_wifi_icon_clipped(ui_bgra)
+        _draw_update_icon_clipped(ui_bgra)
+        _draw_reset_icon_clipped(ui_bgra)
     bg = _full_theme_bgra(st, assets_dir=assets_dir, path=path)
     frame = _composite_bgra_over_bgra(bg, ui_bgra)
     from pigeon.settings_layout import SETTINGS_MAIN_ZONES
@@ -1003,12 +1032,25 @@ def render_pigeon_settings_bgra(
 
     picker = bool(getattr(st, "show_ui_color", False))
     options = bool(getattr(st, "show_options", False))
+    widgets = bool(getattr(st, "show_widgets", False))
     focused = normalize_pigeon_focus_id(st.pigeon_focused_id)
     preview_picker = (
-        not picker and not options and focused == "color_button"
+        not picker
+        and not options
+        and not widgets
+        and focused == "color_button"
     )
     preview_options = (
-        not picker and not options and focused == "general_button"
+        not picker
+        and not options
+        and not widgets
+        and focused == "general_button"
+    )
+    preview_widgets = (
+        not picker
+        and not options
+        and not widgets
+        and focused == "info_button"
     )
     if picker or preview_picker:
         from pigeon.widgets.ui_color_settings import render_ui_color_bar_bgra
@@ -1030,8 +1072,19 @@ def render_pigeon_settings_bgra(
         if preview_options:
             bar = _scale_bgra_alpha(bar, _OVERLAY_PREVIEW_OPACITY)
         frame = _composite_bgra_over_bgra(frame, bar)
+    if widgets or preview_widgets:
+        from pigeon.widgets.widgets_settings import render_widgets_page_bgra
+
+        overlay = render_widgets_page_bgra(
+            st, assets_dir=assets_dir, preview=preview_widgets
+        )
+        if preview_widgets:
+            overlay = _scale_bgra_alpha(overlay, _OVERLAY_PREVIEW_OPACITY)
+        frame = _composite_bgra_over_bgra(frame, overlay)
     back_sel = focused == "pigeon_back" or (
         options and str(getattr(st, "options_focused_id", "") or "") == "pigeon_back"
+    ) or (
+        widgets and str(getattr(st, "widgets_focused_id", "") or "") == "pigeon_back"
     )
     z0 = SETTINGS_MAIN_ZONES[0]
     back_box = (
