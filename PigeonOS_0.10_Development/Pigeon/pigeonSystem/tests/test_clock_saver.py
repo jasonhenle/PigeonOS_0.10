@@ -67,6 +67,53 @@ class ClockSaverSvgTests(unittest.TestCase):
         self.assertLess(ly, 200.0)
         self.assertAlmostEqual(hy, ly, delta=2.0)
 
+    def test_time_defaults_to_12_hour(self) -> None:
+        from datetime import datetime
+        from unittest.mock import patch
+
+        when = datetime(2026, 1, 1, 13, 30, 5)
+        with patch(
+            "pigeon.widgets.options_settings.clock_uses_24h", return_value=False
+        ):
+            self.assertEqual(cs._time_label(when), "1:30:05")
+        with patch(
+            "pigeon.widgets.options_settings.clock_uses_24h", return_value=True
+        ):
+            self.assertEqual(cs._time_label(when), "13:30:05")
+        with patch(
+            "pigeon.widgets.options_settings.clock_uses_24h",
+            side_effect=RuntimeError("missing"),
+        ):
+            self.assertEqual(cs._time_label(when), "1:30:05")
+
+    def test_face_fits_widget_well(self) -> None:
+        face = cs.render_clock_saver_face_bgra(width=386, height=249)
+        self.assertEqual(face.shape[1], 386)
+        self.assertEqual(face.shape[0], 249)
+        ys, xs = np.where(face[:, :, 3] > 20)
+        self.assertGreater(xs.size, 400)
+        self.assertGreater(int(xs.min()), 2)
+        self.assertLess(int(xs.max()), 383)
+        self.assertGreater(int(xs.max()) - int(xs.min()), 260)
+        self.assertLess(int(ys.min()), 55)
+        self.assertGreater(int(ys.max()), 170)
+
+    def test_apply_state_can_hide_weather(self) -> None:
+        path = cs.default_clock_saver_svg_path()
+        root = cs._svg_tree_from_path(path)
+        cs._apply_clock_saver_svg_state(
+            root, color_hex="#58ff00", include_weather=False
+        )
+        weather = cs._find_by_logical_id(root, "weather")
+        self.assertIsNotNone(weather)
+        assert weather is not None
+        self.assertEqual((weather.get("display") or "").lower(), "none")
+        date_el = cs._find_by_logical_id(
+            root, "today_month_year_text", "tday_month_year_text"
+        )
+        self.assertIsNotNone(date_el)
+        self.assertTrue("".join(date_el.itertext()).strip())
+
     def test_composite_returns_full_frame(self) -> None:
         (frame, rect), (empty, _er) = cs.clock_saver_composite_bgra(
             shadow_bgr=None,

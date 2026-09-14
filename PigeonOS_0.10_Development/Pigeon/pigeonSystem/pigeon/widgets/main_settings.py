@@ -551,6 +551,7 @@ class MainSettingsState:
     preferences_song_title: str | None = None
     preferences_album_title: str | None = None
     preferences_artist_title: str | None = None
+    preferences_tt_bgra: object | None = None  # np.ndarray | None
     # Legacy: settings box1 no longer shows TMDb title treatment.
     zone2_tt_bgra: object | None = None  # np.ndarray | None
     # System color page (settings_pigeon_ui_color) — opened from preferences color.
@@ -1073,6 +1074,7 @@ class MainSettingsState:
         self.close_update_popup()
         self.close_preferences()
         self.close_options()
+        self.close_widgets()
         self.close_metadata_debug()
         self.show_pigeon_settings = False
         self.pigeon_needs_update_prefetch = False
@@ -6510,9 +6512,12 @@ class MainSettingsWidget:
                 id(self._state.preferences_poster_bgra)
                 if self._state.preferences_poster_bgra is not None
                 else 0,
+                id(self._state.preferences_tt_bgra)
+                if self._state.preferences_tt_bgra is not None
+                else 0,
                 tuple(self._state.preferences_cast or ()),
             )
-            if self._state.show_preferences
+            if self._state.show_preferences or self._state.show_widgets
             else (),
         )
 

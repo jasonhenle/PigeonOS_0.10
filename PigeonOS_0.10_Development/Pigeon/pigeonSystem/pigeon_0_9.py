@@ -2074,11 +2074,11 @@ def main() -> int:
             return True
 
         def _sync_preferences_now_playing_progress() -> None:
-            """Feed live NP content into prefs; idle keeps SVG demos."""
+            """Feed live NP content into prefs / widgets; idle keeps SVG demos."""
             if main_settings_widget is None:
                 return
             st_ms = main_settings_widget.state
-            if not st_ms.show_preferences:
+            if not st_ms.show_preferences and not st_ms.show_widgets:
                 return
 
             def _clear_prefs_live() -> None:
@@ -2097,6 +2097,7 @@ def main() -> int:
                 st_ms.preferences_song_title = None
                 st_ms.preferences_album_title = None
                 st_ms.preferences_artist_title = None
+                st_ms.preferences_tt_bgra = None
 
             try:
                 prog = _playback_progress_fraction_for_bar()
@@ -2177,8 +2178,11 @@ def main() -> int:
                 st_ms.preferences_album_title = album_t
                 st_ms.preferences_artist_title = artist_t
                 st_ms.preferences_cast = ()
+                st_ms.preferences_tt_bgra = poster
             else:
-                st_ms.preferences_song_title = ""
+                st_ms.preferences_song_title = str(
+                    active_tmdb_display_title or ""
+                ).strip()
                 st_ms.preferences_album_title = ""
                 st_ms.preferences_artist_title = ""
                 cast_rows: list[tuple[str, str]] = []
@@ -2193,6 +2197,10 @@ def main() -> int:
                 st_ms.preferences_cast = tuple(
                     (str(a or ""), str(c or "")) for a, c in cast_rows[:9]
                 )
+                try:
+                    st_ms.preferences_tt_bgra = _active_tmdb_tt_src_bgra()
+                except Exception:
+                    st_ms.preferences_tt_bgra = None
 
         def _settings_wheel_target_should_ignore(widget: tk.Misc) -> bool:
             """Let Listbox/Text/Entry keep their own scroll behavior."""

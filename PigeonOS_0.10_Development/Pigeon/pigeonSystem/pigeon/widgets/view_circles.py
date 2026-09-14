@@ -107,6 +107,7 @@ from pigeon.np_layout import (
     tt_countdown_16x9_tt_box,
     tt_countdown_16x9_tt_is_portrait,
     tt_countdown_16x9_zone,
+    zone6_span_widget,
     tt_countdown_centered_art_rect,
     tt_countdown_portrait_content_lift,
     layout_shows_tt_countdown_and_volume,
@@ -210,6 +211,14 @@ def _hex_to_bgr(hex_color: str) -> tuple[int, int, int]:
     except ValueError:
         return _COLOR_ACCENT_BGR
     return (b, g, r)
+
+
+def _visible_on_dark_hex(hex_color: str) -> str:
+    """Keep analog ticks off page-white so decanvas / punch cannot eat them."""
+    b, g, r = _hex_to_bgr(hex_color)
+    if r >= 240 and g >= 240 and b >= 240:
+        return _CLOCK_TICK_OFF_HEX
+    return hex_color
 
 
 def _darken_hex(hex_color: str, *, factor: float = 0.5) -> str:
@@ -319,6 +328,8 @@ _CLOCK_INTERIOR_ACCENT_R = 105.54
 _TICK_DIM_FILL = "#800000"
 _TICK_ACTIVE_FILL = "red"
 _CLOCK_MINUTE_TICK_OPACITY = 0.7  # 30% transparent
+# Page-white punch uses 252; analog "off" ticks must stay below that.
+_CLOCK_TICK_OFF_HEX = "#E6E6E6"
 
 _POSTER_MUSIC_X, _POSTER_MUSIC_Y, _POSTER_MUSIC_W, _POSTER_MUSIC_H, _POSTER_MUSIC_RX = (
     int(round(POSTER_1X1_LOCAL[0])),
@@ -892,6 +903,14 @@ def _header_clock_enabled() -> bool:
         return True
 
 
+def _zone_clock_hides_header(assignments: object | None) -> bool:
+    """Zone clock / wide clock already shows the time — skip the header chip."""
+    for key in assignments or ():
+        if str(key or "").strip() in ("clock", "clock_16x9"):
+            return True
+    return False
+
+
 def _saved_zone_widgets(
     content_mode: str | None = None,
 ) -> tuple[str, str, str, str, str]:
@@ -954,8 +973,9 @@ def _effective_zone_widgets(
     zones = [canonical_zone_widget(i + 1, w) for i, w in enumerate(zones[:5])]
     if not content_active:
         keep_vol = {"volume", "clock_saver_volume"}
+        keep_clock = {"clock", "clock_16x9"}
         return tuple(
-            z if z == "clock" or (z in keep_vol and has_volume) else ""
+            z if z in keep_clock or (z in keep_vol and has_volume) else ""
             for z in zones
         )
     if poster_16x9:
@@ -1520,23 +1540,31 @@ def _punch_clock_open_ring_white(bgra: np.ndarray) -> np.ndarray:
 
 def _apply_exterior_seconds_fill(
     clock: ET.Element,
-    zone: int,
+    zone: int | None,
     *,
     sec_idx: int,
     theme: _NpTheme | None = None,
 ) -> None:
     """Accent wedge on the outer black ring only (middle band stays open)."""
     th = theme or np_theme_from_settings()
-    exterior = _find_by_key(clock, f"zone{zone}_clock_exterior_accent")
-    middle = _find_by_key(clock, f"zone{zone}_clock_middle_accent")
-    fill_name = f"zone{zone}_clock_exterior_seconds_fill"
+    exterior = _find_by_key(clock, _clock_accent_key(zone, "exterior"))
+    middle = _find_by_key(clock, _clock_accent_key(zone, "middle"))
+    fill_name = (
+        "clock_exterior_seconds_fill"
+        if zone is None
+        else f"zone{int(zone)}_clock_exterior_seconds_fill"
+    )
     _remove_by_key(clock, fill_name)
     if exterior is None:
         return
+    if zone is None:
+        default_cx, default_cy = CLOCK_LOCAL_CX, CLOCK_LOCAL_CY
+    else:
+        default_cx, default_cy = _zone_clock_center(int(zone))
     cx, cy, r_out = _circle_cx_cy_r(
         exterior,
-        default_cx=_zone_clock_center(zone)[0],
-        default_cy=_zone_clock_center(zone)[1],
+        default_cx=default_cx,
+        default_cy=default_cy,
         default_r=_CLOCK_EXTERIOR_ACCENT_R,
     )
     _mx, _my, r_mid = _circle_cx_cy_r(
@@ -1558,7 +1586,9 @@ def _apply_exterior_seconds_fill(
     wedge.set("d", d)
     wedge.set("fill", th.accent_hex)
     wedge.set("fill-rule", "evenodd")
-    host = _svg_parent(clock, exterior) or clock
+    host = _svg_parent(clock, exterior)
+    if host is None:
+        host = clock
     # Sit above the black outer ring, under tick groups.
     host.insert(2, wedge)
 
@@ -1695,7 +1725,12 @@ def _apply_clock_ticks(
             _set_tick_paint(el, color=th.tick_dim, opacity=_CLOCK_MINUTE_TICK_OPACITY)
     _raise_in_group(minutes_g, current_min)
 
-    _paint_seconds_ticks_alternating(seconds_g, now, ui_hex=th.tick_active)
+    _paint_seconds_ticks_alternating(
+        seconds_g,
+        now,
+        ui_hex=_visible_on_dark_hex(th.tick_active),
+        white_hex=_CLOCK_TICK_OFF_HEX,
+    )
 
 
 def _clock_widget_is_analog() -> bool:
@@ -1705,6 +1740,26 @@ def _clock_widget_is_analog() -> bool:
         return bool(clock_widget_analog())
     except Exception:
         return False
+
+
+def _clock_include_digital_time() -> bool:
+    """Analog uses the radial face; digital HH:MM only belongs on the disc hub."""
+    return not _clock_widget_is_analog()
+
+
+def _raise_clock_tick_groups(root: ET.Element) -> None:
+    """Hours / minutes / seconds must sit above the black rings."""
+    for key in (
+        "clock_hours_group",
+        "clock_minutes_group",
+        "clock_seconds_group",
+    ):
+        el = _find_by_key(root, key)
+        parent = _svg_parent(root, el) if el is not None else None
+        if el is None or parent is None:
+            continue
+        parent.remove(el)
+        parent.append(el)
 
 
 def _detach_clock_tick_groups(root: ET.Element, *, zone: int | None = None) -> None:
@@ -1728,6 +1783,9 @@ def _apply_standalone_clock_ticks(
 ) -> None:
     """Drive the 1280×800 clock widget (no zone prefix)."""
     _apply_clock_black_rings(root, zone=None)
+    second = int(now.second)
+    sec_idx = 60 if second == 0 else second
+    _apply_exterior_seconds_fill(root, None, sec_idx=sec_idx, theme=theme)
     hours_g = _find_by_key(root, "clock_hours_group")
     minutes_g = _find_by_key(root, "clock_minutes_group")
     seconds_g = _find_by_key(root, "clock_seconds_group")
@@ -1738,7 +1796,7 @@ def _apply_standalone_clock_ticks(
         h12 = 12
     minute = int(now.minute)
     min_idx = 60 if minute == 0 else minute
-    ui = theme.tick_active
+    ui = _visible_on_dark_hex(theme.tick_active)
 
     face_name = _HOUR_FACE_NAMES.get(h12, "")
     for el, key in list(_iter_named_children(hours_g)):
@@ -1763,7 +1821,10 @@ def _apply_standalone_clock_ticks(
             current_min = el
     _raise_in_group(minutes_g, current_min)
 
-    _paint_seconds_ticks_alternating(seconds_g, now, ui_hex=ui)
+    _paint_seconds_ticks_alternating(
+        seconds_g, now, ui_hex=ui, white_hex=_CLOCK_TICK_OFF_HEX
+    )
+    _raise_clock_tick_groups(root)
 
     for name in ("clock_digital_text", "day_text", "month_date_text"):
         _clear_text_content(_find_by_key(root, name))
@@ -1851,11 +1912,12 @@ def _rasterize_named_widget(
     theme: _NpTheme,
     zone: int | None = None,
     include_play_overlay: bool = True,
+    include_clock_ticks: bool | None = None,
 ) -> np.ndarray | None:
     path = _now_playing_widget_path(assets_dir, widget_key, zone)
     if not path.is_file():
         return None
-    analog_clock = widget_key == "clock" and _clock_widget_is_analog()
+    paint_ticks = widget_key == "clock" and include_clock_ticks is not False
     cache_key = (
         str(path),
         int(dest_w),
@@ -1864,16 +1926,17 @@ def _rasterize_named_widget(
         widget_key,
         theme.cache_key,
         bool(include_play_overlay),
-        now.hour % 12 if analog_clock else -1,
-        int(now.minute) if analog_clock else -1,
-        int(now.second) if analog_clock else -1,
+        bool(paint_ticks),
+        now.hour % 12 if paint_ticks else -1,
+        int(now.minute) if paint_ticks else -1,
+        int(now.second) if paint_ticks else -1,
     )
     cached = _NAMED_WIDGET_CACHE.get(cache_key)
     if cached is not None:
         return cached
     root = _svg_tree_from_path(path)
     if widget_key == "clock":
-        if _clock_widget_is_analog():
+        if paint_ticks:
             _apply_standalone_clock_ticks(root, now, theme=theme)
         else:
             _apply_clock_black_rings(root, zone=None)
@@ -2041,7 +2104,9 @@ def render_centered_clock_widget_bgra(
         patch = None
     if patch is not None and patch.size > 0:
         _paste_patch_bgra(out, patch, x, y)
-    _draw_clock_labels_in_zone(out, zone, when, include_digital_time=True)
+    _draw_clock_labels_in_zone(
+        out, zone, when, include_digital_time=_clock_include_digital_time()
+    )
     if o < 0.999:
         faded = out.astype(np.float32)
         faded[:, :, 3] *= o
@@ -2191,8 +2256,12 @@ def render_view_circles_svg_base_bgra(
             "tt_countdown",
             TT_COUNTDOWN_16X9_WIDGET,
             "clock_saver_volume",
+            "weather",
         ):
-            # Cast, bar, and TT countdown (type only) are Pillow.
+            # Cast, bar, TT, and weather are Pillow.
+            continue
+        if zone6_span_widget(assignments) == "clock" and z in (1, 2) and key == "clock":
+            # Wide zone-6 clock saver face replaces the portrait disc.
             continue
         widget_key = chrome_keys.get(key)
         if not widget_key:
@@ -3480,6 +3549,13 @@ def _draw_volume_selected_pie(
 
 def _clock_hhmm(now: datetime | None = None) -> str:
     dt = now if now is not None else datetime.now()
+    try:
+        from pigeon.widgets.options_settings import clock_uses_24h
+
+        if clock_uses_24h():
+            return f"{dt.hour:02d}:{dt.minute:02d}"
+    except Exception:
+        pass
     h12 = dt.hour % 12
     if h12 == 0:
         h12 = 12
@@ -4036,25 +4112,23 @@ class ViewCirclesWidget:
         cached = self._svg_chrome_by_key.get(key)
         if cached is not None:
             # Clock second ticks are per-widget; restamp them onto the minute chrome.
-            analog = _clock_widget_is_analog()
-            if analog:
-                clock_zone = _zone_for_widget(self._assignments(), "clock")
-                if clock_zone is not None:
-                    out = cached.copy()
-                    z = _zone_spec(int(clock_zone))
-                    zx, zy, zw, zh = z.xywh
-                    patch = _rasterize_named_widget(
-                        assets_dir=self._assets_dir,
-                        widget_key="clock",
-                        dest_w=zw,
-                        dest_h=zh,
-                        now=now,
-                        theme=self._effective_np_theme(),
-                        zone=int(clock_zone),
-                    )
-                    if patch is not None and patch.size:
-                        _paste_patch_bgra(out, patch, zx, zy)
-                    return out
+            clock_zone = _zone_for_widget(self._assignments(), "clock")
+            if clock_zone is not None:
+                out = cached.copy()
+                z = _zone_spec(int(clock_zone))
+                zx, zy, zw, zh = z.xywh
+                patch = _rasterize_named_widget(
+                    assets_dir=self._assets_dir,
+                    widget_key="clock",
+                    dest_w=zw,
+                    dest_h=zh,
+                    now=now,
+                    theme=self._effective_np_theme(),
+                    zone=int(clock_zone),
+                )
+                if patch is not None and patch.size:
+                    _paste_patch_bgra(out, patch, zx, zy)
+                return out
             return cached
         try:
             base = render_view_circles_svg_base_bgra(
@@ -4372,6 +4446,8 @@ class ViewCirclesWidget:
         """``10:23PM`` in a rounded black chip, centered on the wide TT / album."""
         if not _header_clock_enabled():
             return
+        if _zone_clock_hides_header(self._assignments()):
+            return
         label = now_playing_header_clock_text(now)
         if not label:
             return
@@ -4412,11 +4488,72 @@ class ViewCirclesWidget:
 
     def _draw_clock_digital(self, out: np.ndarray, now: datetime) -> None:
         assignments = self._assignments()
+        if zone6_span_widget(assignments) == "clock":
+            return
         clock_zone = _zone_for_widget(assignments, "clock")
         if clock_zone is None:
             return
         zone = _zone_spec(int(clock_zone))
-        _draw_clock_labels_in_zone(out, zone, now, include_digital_time=True)
+        _draw_clock_labels_in_zone(
+            out, zone, now, include_digital_time=_clock_include_digital_time()
+        )
+
+    def _draw_zone6_span_widget(self, out: np.ndarray) -> None:
+        """Clock-saver face or weather cluster in the wide zone-6 slot."""
+        kind = zone6_span_widget(self._assignments())
+        if kind not in ("clock", "weather"):
+            return
+        z = NOW_PLAYING_ZONES[6]
+        zx, zy, zw, zh = z.xywh
+        if kind == "clock":
+            from pigeon.widgets.clock_saver import render_clock_saver_face_bgra
+
+            patch = render_clock_saver_face_bgra(
+                width=int(zw),
+                height=int(zh),
+                include_weather=False,
+            )
+            _paste_patch_bgra(out, patch, int(zx), int(zy))
+            return
+        self._paste_weather_cluster(out, (int(zx), int(zy), int(zw), int(zh)))
+
+    def _draw_weather_zones(self, out: np.ndarray) -> None:
+        assignments = self._assignments()
+        if zone6_span_widget(assignments) == "weather":
+            return
+        for z_idx in (1, 2, 3, 4, 5):
+            if assignments[z_idx - 1] != "weather":
+                continue
+            zone = _zone_spec(z_idx)
+            self._paste_weather_cluster(out, zone.xywh)
+
+    def _paste_weather_cluster(
+        self, out: np.ndarray, box: tuple[int, int, int, int]
+    ) -> None:
+        from pigeon.widgets.clock_saver import render_clock_saver_weather_cluster_bgra
+
+        try:
+            cluster = render_clock_saver_weather_cluster_bgra(
+                assets_dir=self._assets_dir
+            )
+        except Exception:
+            return
+        if cluster is None or cluster.size == 0:
+            return
+        x, y, w, h = (int(v) for v in box)
+        cropped = _ink_crop_bgra(cluster, pad=2)
+        if cropped is None or cropped.size == 0:
+            return
+        ph, pw = int(cropped.shape[0]), int(cropped.shape[1])
+        if pw < 1 or ph < 1 or w < 1 or h < 1:
+            return
+        scale = min(w / float(pw), h / float(ph))
+        nw = max(1, int(round(pw * scale)))
+        nh = max(1, int(round(ph * scale)))
+        resized = cv2.resize(
+            cropped, (nw, nh), interpolation=cv_resize_interp(pw, ph, nw, nh)
+        )
+        _paste_patch_bgra(out, resized, x + (w - nw) // 2, y + (h - nh) // 2)
 
     def _draw_clock_date_above(
         self,
@@ -5172,6 +5309,8 @@ class ViewCirclesWidget:
             self._draw_audio_group(out, zone=int(vol_zone))
         self._draw_clock_saver_volume(out)
         self._draw_clock_digital(out, now)
+        self._draw_zone6_span_widget(out)
+        self._draw_weather_zones(out)
         self._draw_audio_level_labels(out)
         if self.content_mode == _CONTENT_MODE_MUSIC or self._state.is_youtube:
             self._draw_track_titles(out)
