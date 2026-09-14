@@ -4674,57 +4674,13 @@ def main() -> int:
             _tmdb_tt_src_cache["bgra"] = raw
             return raw
 
-        def _settings_zone2_tt_bgra() -> np.ndarray | None:
-            """TMDb TT for the settings-main zone 2 black card, or ``None``."""
-            if _vv_is_music():
-                return None
-            playing = False
-            paused = False
-            try:
-                playing = bool(_something_playing_now())
-            except Exception:
-                playing = False
-            try:
-                paused = bool(_show_paused_row_overlay())
-            except Exception:
-                paused = False
-            if not playing and not paused:
-                return None
-            raw = _active_tmdb_tt_src_bgra()
-            if raw is not None:
-                return raw
-            if tmdb_logo_app_fallback_active:
-                return None
-            patch = tmdb_logo_patch_bgra
-            if (
-                isinstance(patch, np.ndarray)
-                and patch.size > 0
-                and patch.ndim == 3
-                and patch.shape[2] >= 4
-                and int(patch[:, :, 3].max()) > 8
-            ):
-                return patch
-            return None
-
         def _sync_settings_zone2_tt() -> None:
-            """Center TMDb TT in the settings-main zone 2 card while content is up."""
+            """Box1 stays pigeon wordmark + IP; drop any leftover TT payload."""
             if main_settings_widget is None:
                 return
             st_ms = main_settings_widget.state
-            want = None
-            try:
-                if not bool(st_ms.show_pigeon_settings):
-                    try:
-                        _warm_tmdb_logo_patch()
-                    except Exception:
-                        pass
-                    want = _settings_zone2_tt_bgra()
-            except Exception:
-                want = None
-            prev = getattr(st_ms, "zone2_tt_bgra", None)
-            if want is prev:
-                return
-            st_ms.zone2_tt_bgra = want
+            if getattr(st_ms, "zone2_tt_bgra", None) is not None:
+                st_ms.zone2_tt_bgra = None
 
         def _clear_music_artwork_cache() -> None:
             """Drop cached pyatv music artwork (leaving music / idle / track miss)."""

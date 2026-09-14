@@ -95,52 +95,36 @@ class SettingsRenderTests(unittest.TestCase):
         cyan = (roi[:, :, 0] > 180) & (roi[:, :, 2] < 80)
         self.assertGreater(int(cyan.sum()), 80)
 
-    def test_zone2_uses_tmdb_tt_when_playing(self) -> None:
+    def test_zone2_keeps_wordmark_when_tt_present(self) -> None:
         from pigeon.widgets.main_settings import MainSettingsState
-        from pigeon.widgets.settings_main_1280 import (
-            _column_card_rect,
-            _paired_device_line_boxes,
-            render_settings_main_1280_bgra,
-        )
+        from pigeon.widgets.settings_main_1280 import render_settings_main_1280_bgra
 
         assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        idle = render_settings_main_1280_bgra(
+            MainSettingsState(), assets_dir=assets
+        )
         tt = np.zeros((40, 160, 4), dtype=np.uint8)
         tt[:, :, 0] = 255
         tt[:, :, 3] = 255
         state = MainSettingsState()
         state.zone2_tt_bgra = tt
-        frame = render_settings_main_1280_bgra(state, assets_dir=assets)
-        cx, cy, cw, ch = _column_card_rect(2)
-        pad = 18
-        box = (cx + pad, cy + pad, max(8, cw - 2 * pad), max(8, ch - 2 * pad))
-        bx, by, bw, bh = box
-        roi = frame[by : by + bh, bx : bx + bw, :3]
-        blue = (roi[:, :, 0] > 180) & (roi[:, :, 1] < 80) & (roi[:, :, 2] < 80)
-        cyan = (roi[:, :, 0] > 180) & (roi[:, :, 2] < 80)
-        self.assertGreater(int(blue.sum()), 80)
-        self.assertLess(int(cyan.sum() - blue.sum()), 40)
-        name_box, _ip_box = _paired_device_line_boxes(box)
-        nx, ny, nw, nh = name_box
-        below = frame[ny + nh : by + bh, bx : bx + bw, :3]
-        blue_below = (below[:, :, 0] > 180) & (below[:, :, 1] < 80) & (below[:, :, 2] < 80)
-        self.assertGreater(int(blue_below.sum()), 40)
-
-    def test_tt_ink_flips_black_and_white_with_selection(self) -> None:
-        from pigeon.widgets.settings_main_1280 import _tt_ink_for_column
-
-        black = np.zeros((8, 8, 4), dtype=np.uint8)
-        black[:, :, 3] = 255
-        white = np.full((8, 8, 4), 255, dtype=np.uint8)
-        blue = np.zeros((8, 8, 4), dtype=np.uint8)
-        blue[:, :, 0] = 255
-        blue[:, :, 3] = 255
-        off = _tt_ink_for_column(black, selected=False)
-        on = _tt_ink_for_column(white, selected=True)
-        kept = _tt_ink_for_column(blue, selected=False)
-        self.assertTrue(np.all(off[:, :, :3] == 255))
-        self.assertTrue(np.all(on[:, :, :3] == 0))
-        self.assertTrue(np.all(kept[:, :, 0] == 255))
-        self.assertTrue(np.all(kept[:, :, 1] == 0))
+        playing = render_settings_main_1280_bgra(state, assets_dir=assets)
+        zx, zy, zw, zh = SETTINGS_MAIN_ZONES[2].xywh
+        idle_roi = idle[zy + 40 : zy + 240, zx + 16 : zx + zw - 16, :3]
+        play_roi = playing[zy + 40 : zy + 240, zx + 16 : zx + zw - 16, :3]
+        idle_cyan = int(((idle_roi[:, :, 0] > 180) & (idle_roi[:, :, 2] < 80)).sum())
+        play_cyan = int(((play_roi[:, :, 0] > 180) & (play_roi[:, :, 2] < 80)).sum())
+        play_blue = int(
+            (
+                (play_roi[:, :, 0] > 180)
+                & (play_roi[:, :, 1] < 80)
+                & (play_roi[:, :, 2] < 80)
+            ).sum()
+        )
+        self.assertGreater(idle_cyan, 80)
+        self.assertGreater(play_cyan, 80)
+        self.assertLess(abs(play_cyan - idle_cyan), 40)
+        self.assertLess(play_blue, 40)
 
     def test_pick_box3_updates_displayed_ip(self) -> None:
         from pigeon.widgets.main_settings import MainSettingsState
@@ -599,8 +583,13 @@ class SettingsRenderTests(unittest.TestCase):
             pigeon_focus_ring,
             render_pigeon_settings_bgra,
         )
+        from pigeon.widgets.preferences_settings import (
+            DEFAULT_ZONE_WIDGETS,
+            write_now_playing_zone_widgets,
+        )
         from pigeon.widgets.widgets_settings import widgets_focus_ring
 
+        write_now_playing_zone_widgets(DEFAULT_ZONE_WIDGETS)
         assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
         ring = pigeon_focus_ring()
         plate_y = int(round(MENU_PLATE_XYWH[1]))
@@ -627,7 +616,12 @@ class SettingsRenderTests(unittest.TestCase):
         action = widget.activate()
         self.assertEqual(action, "widgets_open")
         self.assertTrue(preview.show_widgets)
-        self.assertEqual(preview.widgets_focused_id, "artwork")
+        self.assertEqual(preview.widgets_nav, "zones")
+        self.assertEqual(preview.widgets_focused_id, "zone6")
+        self.assertEqual(
+            preview.preferences_zone_widgets,
+            ("tt_countdown_16x9", "", "volume", "cast_info", "status_bar"),
+        )
 
         active = render_pigeon_settings_bgra(preview, assets_dir=assets)
         preview_sum = int(preview_header.astype(np.int32).sum())
@@ -636,20 +630,53 @@ class SettingsRenderTests(unittest.TestCase):
         z0 = SETTINGS_MAIN_ZONES[0].xywh
         active_back = active[z0[1] : z0[1] + z0[3], z0[0] : z0[0] + z0[2], :3]
         self.assertGreater(int(np.count_nonzero(np.all(active_back > 200, axis=2))), 40)
-        # Focused artwork highlights zone 6 with a white stroke on the plate.
+        # Focused zone 6 highlights with a white stroke on the plate.
         zone6_stroke = active[267:271, 385:770, :3]
         self.assertGreater(
             int(np.count_nonzero(np.all(zone6_stroke > 200, axis=2))),
             80,
         )
+        # The old source-tile well (settings_pigeon_connectors) must be gone.
+        # Sample the plate just left of the zone stack.
+        well = active[468:500, 255:300, :3]
+        self.assertLess(int(np.count_nonzero(np.all(well < 40, axis=2))), 200)
 
-        w_ring = widgets_focus_ring()
-        self.assertEqual(w_ring[-1], "pigeon_back")
-        for _ in range(len(w_ring) - 1):
+        from pigeon.widgets.widgets_settings import (
+            ZONE_FOCUS_IDS,
+            widget_id_for_zone,
+        )
+
+        w_ring = widgets_focus_ring(preview)
+        self.assertEqual(w_ring, ZONE_FOCUS_IDS + ("pigeon_back",))
+        self.assertEqual(preview.activate_widgets(), "widgets_zone:zone6")
+        self.assertEqual(preview.widgets_nav, "widgets")
+        self.assertEqual(preview.widgets_active_zone, "zone6")
+        self.assertEqual(preview.widgets_focused_id, "artwork")
+        preview.navigate_widgets(forward=True)
+        self.assertEqual(preview.widgets_focused_id, "clock")
+        self.assertEqual(preview.widgets_active_zone, "zone6")
+        self.assertEqual(widget_id_for_zone(preview, "zone6"), "clock")
+        self.assertEqual(widget_id_for_zone(preview, "zone3"), "volume")
+        labels = render_pigeon_settings_bgra(preview, assets_dir=assets)
+        still_zone6 = labels[267:271, 385:770, :3]
+        self.assertGreater(
+            int(np.count_nonzero(np.all(still_zone6 > 200, axis=2))),
+            80,
+        )
+        self.assertEqual(preview.activate_widgets(), "widgets_assign:clock")
+        self.assertEqual(preview.widgets_nav, "zones")
+        self.assertEqual(preview.widgets_focused_id, "zone6")
+        for _ in range(len(widgets_focus_ring(preview)) - 1):
             preview.navigate_widgets(forward=True)
         self.assertEqual(preview.widgets_focused_id, "pigeon_back")
         self.assertEqual(preview.activate_widgets(), "widgets_back")
         self.assertFalse(preview.show_widgets)
+        from pigeon.widgets.preferences_settings import (
+            DEFAULT_ZONE_WIDGETS,
+            write_now_playing_zone_widgets,
+        )
+
+        write_now_playing_zone_widgets(DEFAULT_ZONE_WIDGETS)
 
     def test_legacy_mark_is_not_part_of_native_frame(self) -> None:
         from pigeon.widgets.main_settings import MainSettingsState

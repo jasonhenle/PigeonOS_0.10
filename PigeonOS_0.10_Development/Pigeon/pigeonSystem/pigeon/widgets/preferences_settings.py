@@ -78,6 +78,7 @@ ZONE_WIDGET_CATALOG: dict[int, tuple[str, ...]] = {
         "volume",
         "now_playing",
         "cast_info",
+        "weather",
     ),
     2: (
         "tt_countdown",
@@ -88,6 +89,7 @@ ZONE_WIDGET_CATALOG: dict[int, tuple[str, ...]] = {
         "volume",
         "now_playing",
         "cast_info",
+        "weather",
     ),
     3: (
         "tt_countdown",
@@ -99,8 +101,9 @@ ZONE_WIDGET_CATALOG: dict[int, tuple[str, ...]] = {
         "now_playing",
         "cast_info",
         "clock_saver_volume",
+        "weather",
     ),
-    4: ("cast_info", "clock_saver_volume"),
+    4: ("cast_info", "clock_saver_volume", "weather"),
     5: ("status_bar", "cast_info"),
 }
 

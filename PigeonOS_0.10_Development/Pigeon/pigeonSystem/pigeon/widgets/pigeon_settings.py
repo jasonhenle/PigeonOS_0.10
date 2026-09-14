@@ -170,6 +170,7 @@ _SELECTABLE_TILES: tuple[tuple[str, str, str, str], ...] = (
 
 # Plate chrome hidden while the now-play widgets page is open.
 _PIGEON_TILE_CHROME_IDS: tuple[str, ...] = (
+    "settings_pigeon_connectors",
     "settings_pigeon_01_color_group",
     "settings_pigeon_02_info_group",
     "settings_pigeon_03_general_group",

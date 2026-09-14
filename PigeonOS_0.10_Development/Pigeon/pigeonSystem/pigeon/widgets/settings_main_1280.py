@@ -253,31 +253,6 @@ def _paired_device_line_boxes(
     )
 
 
-def _tt_ink_for_column(src: np.ndarray, *, selected: bool) -> np.ndarray:
-    """Contrast a TMDb title treatment against the box1 column card.
-
-    Deselected (dark card): black ink → white.
-    Selected (white card): white ink → black.
-    Chromatic pixels stay as they are.
-    """
-    if src.size == 0 or src.ndim != 3 or src.shape[2] < 3:
-        return src
-    out = np.array(src, copy=True)
-    bgr = out[:, :, :3]
-    span = bgr.max(axis=2).astype(np.int16) - bgr.min(axis=2).astype(np.int16)
-    achromatic = span <= 36
-    lum = (
-        0.114 * bgr[:, :, 0].astype(np.float32)
-        + 0.587 * bgr[:, :, 1].astype(np.float32)
-        + 0.299 * bgr[:, :, 2].astype(np.float32)
-    )
-    flip = achromatic & ((lum >= 160.0) if selected else (lum <= 96.0))
-    if not np.any(flip):
-        return out
-    bgr[flip] = (255 - bgr[flip].astype(np.int16)).astype(np.uint8)
-    return out
-
-
 def _tight_crop_logo(logo: np.ndarray) -> np.ndarray:
     if logo.size == 0:
         return logo
@@ -290,24 +265,6 @@ def _tight_crop_logo(logo: np.ndarray) -> np.ndarray:
     return logo[int(ys.min()) : int(ys.max()) + 1, int(xs.min()) : int(xs.max()) + 1]
 
 
-def _contain_center_blit(
-    canvas: np.ndarray,
-    src: np.ndarray,
-    box: tuple[int, int, int, int],
-) -> None:
-    """Contain-fit ``src`` into ``box`` and blit it centered."""
-    zx, zy, zw, zh = box
-    if zw < 1 or zh < 1 or src.size == 0:
-        return
-    lw, lh = int(src.shape[1]), int(src.shape[0])
-    scale = min(zw / max(1, lw), zh / max(1, lh))
-    ww = max(1, int(round(lw * scale)))
-    hh = max(1, int(round(lh * scale)))
-    interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
-    scaled = cv2.resize(src, (ww, hh), interpolation=interp)
-    _blit(canvas, scaled, zx + (zw - ww) // 2, zy + (zh - hh) // 2)
-
-
 def _draw_zone2_pigeon(
     canvas: np.ndarray,
     box: tuple[int, int, int, int],
@@ -315,30 +272,12 @@ def _draw_zone2_pigeon(
     ink: tuple[int, int, int],
     *,
     assets_dir: Path | str | None,
-    tt_bgra: np.ndarray | None = None,
-    selected: bool = False,
 ) -> None:
-    """Pigeon wordmark + IP, matching the predecessor zone-2 card.
-
-    While content is playing, ``tt_bgra`` (TMDb title treatment) is contain-fitted
-    and centered in the column card instead of the name slot. Missing TT
-    keeps the pigeon logo. Black/white TT ink flips with selection so it
-    stays visible on the dark (deselected) and white (selected) cards.
-    """
+    """Pigeon wordmark + host IP in the box1 / zone-2 card."""
     zx, zy, zw, zh = box
     if zw < 8 or zh < 8:
         return
     _name_box, ip_box = _paired_device_line_boxes(box)
-    logo = None
-    if tt_bgra is not None and getattr(tt_bgra, "size", 0):
-        logo = np.asarray(tt_bgra)
-        if logo.ndim == 3 and logo.shape[2] == 3:
-            logo = cv2.cvtColor(logo, cv2.COLOR_BGR2BGRA)
-    using_tt = logo is not None and getattr(logo, "size", 0) > 0
-    if using_tt:
-        art = _tt_ink_for_column(_tight_crop_logo(logo), selected=selected)
-        _contain_center_blit(canvas, art, box)
-        return
     logo = _load_png("pigeon_logo", assets_dir=assets_dir)
     if logo.shape[0] > _PIGEON_WORDMARK_H:
         logo = logo[:_PIGEON_WORDMARK_H]
@@ -1229,7 +1168,6 @@ def _settings_main_structure_sig(
         str(assets_dir or ""),
         str(local_ipv4_address() or ""),
         int(getattr(st, "wifi_level", 0) or 0),
-        0 if getattr(st, "zone2_tt_bgra", None) is None else 1,
         _ui_bright(),
     )
 
@@ -1581,8 +1519,6 @@ def render_settings_main_1280_bgra(
             ip,
             _column_text_rgb(2),
             assets_dir=assets_dir,
-            tt_bgra=getattr(st, "zone2_tt_bgra", None),
-            selected=column_on[2],
         )
 
     def _paint_add_tile(zone_index: int, label: str) -> None:

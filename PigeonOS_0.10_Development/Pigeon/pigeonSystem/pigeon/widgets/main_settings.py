@@ -551,7 +551,7 @@ class MainSettingsState:
     preferences_song_title: str | None = None
     preferences_album_title: str | None = None
     preferences_artist_title: str | None = None
-    # Settings-main zone 2: TMDb title treatment while content is playing.
+    # Legacy: settings box1 no longer shows TMDb title treatment.
     zone2_tt_bgra: object | None = None  # np.ndarray | None
     # System color page (settings_pigeon_ui_color) — opened from preferences color.
     show_ui_color: bool = False
@@ -568,7 +568,10 @@ class MainSettingsState:
     options_values: dict[str, object] = field(default_factory=dict)
     # Now-play widgets page (settings_pigeon_widgets).
     show_widgets: bool = False
+    # "zones" = navigation A; "widgets" = navigation B after a zone is activated.
+    widgets_nav: str = "zones"
     widgets_focus_index: int = 0
+    widgets_active_zone: str = ""
     show_update_popup: bool = False
     update_popup_focus_index: int = 0
     update_available: bool = False
@@ -1250,17 +1253,27 @@ class MainSettingsState:
     def open_widgets(self) -> None:
         """Open the now-play widgets page on settings_pigeon."""
         from pigeon.widgets.preferences_settings import read_now_playing_zone_widgets
+        from pigeon.widgets.widgets_settings import ensure_default_zone_widgets
 
         self.close_ui_color()
         self.close_options()
         self.show_preferences = False
         self.preferences_zone_widgets = read_now_playing_zone_widgets()
+        ensure_default_zone_widgets(self)
         self.show_widgets = True
+        self.widgets_nav = "zones"
+        self.widgets_active_zone = ""
         self.widgets_focus_index = 0
 
     def close_widgets(self) -> None:
+        from pigeon.widgets.widgets_settings import persist_widgets_layout
+
         was = bool(self.show_widgets)
+        if was:
+            persist_widgets_layout(self)
         self.show_widgets = False
+        self.widgets_nav = "zones"
+        self.widgets_active_zone = ""
         self.widgets_focus_index = 0
         if was and self.show_pigeon_settings:
             from pigeon.widgets.pigeon_settings import pigeon_focus_ring
@@ -1273,28 +1286,78 @@ class MainSettingsState:
     def widgets_focused_id(self) -> str:
         from pigeon.widgets.widgets_settings import widgets_focus_ring
 
-        ring = widgets_focus_ring()
+        ring = widgets_focus_ring(self)
         if not ring:
             return "pigeon_back"
         return ring[int(self.widgets_focus_index) % len(ring)]
 
     def navigate_widgets(self, *, forward: bool = True) -> None:
-        from pigeon.widgets.widgets_settings import widgets_focus_ring
+        from pigeon.widgets.widgets_settings import (
+            apply_widget_assignment,
+            widgets_focus_ring,
+        )
 
-        ring = widgets_focus_ring()
+        ring = widgets_focus_ring(self)
         if not ring:
             return
         step = 1 if forward else -1
         self.widgets_focus_index = (int(self.widgets_focus_index) + step) % len(ring)
+        if str(self.widgets_nav or "") != "widgets":
+            return
+        focused = ring[self.widgets_focus_index]
+        if focused == "pigeon_back":
+            return
+        apply_widget_assignment(
+            self,
+            focused,
+            zone_id=str(self.widgets_active_zone or ""),
+            persist=False,
+        )
 
     def activate_widgets(self) -> str:
-        from pigeon.widgets.widgets_settings import apply_widget_assignment
+        from pigeon.widgets.widgets_settings import (
+            ZONE_FOCUS_IDS,
+            apply_widget_assignment,
+            persist_widgets_layout,
+            widget_id_for_zone,
+            widgets_focus_ring,
+        )
 
         focused = self.widgets_focused_id
+        if str(self.widgets_nav or "") != "widgets":
+            if focused == "pigeon_back":
+                self.close_widgets()
+                return "widgets_back"
+            if focused not in ZONE_FOCUS_IDS:
+                return f"widgets_noop:{focused}"
+            self.widgets_nav = "widgets"
+            self.widgets_active_zone = focused
+            ring = widgets_focus_ring(self)
+            current = widget_id_for_zone(self, focused)
+            self.widgets_focus_index = (
+                ring.index(current) if current in ring else 0
+            )
+            return f"widgets_zone:{focused}"
+
         if focused == "pigeon_back":
-            self.close_widgets()
-            return "widgets_back"
-        if apply_widget_assignment(self, focused):
+            persist_widgets_layout(self)
+            zone = str(self.widgets_active_zone or "zone6")
+            self.widgets_nav = "zones"
+            self.widgets_active_zone = ""
+            zring = widgets_focus_ring(self)
+            self.widgets_focus_index = zring.index(zone) if zone in zring else 0
+            return "widgets_labels_back"
+        if apply_widget_assignment(
+            self,
+            focused,
+            zone_id=str(self.widgets_active_zone or ""),
+            persist=True,
+        ):
+            zone = str(self.widgets_active_zone or "zone6")
+            self.widgets_nav = "zones"
+            self.widgets_active_zone = ""
+            zring = widgets_focus_ring(self)
+            self.widgets_focus_index = zring.index(zone) if zone in zring else 0
             return f"widgets_assign:{focused}"
         return f"widgets_noop:{focused}"
 
@@ -6733,6 +6796,8 @@ class MainSettingsWidget:
             int(st.options_focus_index) if st.show_options else -1,
             tuple(st.options_values.items()) if st.show_options else (),
             bool(st.show_widgets),
+            str(st.widgets_nav or "") if st.show_widgets else "",
+            str(st.widgets_active_zone or "") if st.show_widgets else "",
             int(st.widgets_focus_index) if st.show_widgets else -1,
             tuple(st.preferences_zone_widgets) if st.show_widgets else (),
             str(st.theme.ui),
@@ -6848,6 +6913,8 @@ class MainSettingsWidget:
             int(st.options_focus_index) if st.show_options else -1,
             tuple(st.options_values.items()) if st.show_options else (),
             bool(st.show_widgets),
+            str(st.widgets_nav or "") if st.show_widgets else "",
+            str(st.widgets_active_zone or "") if st.show_widgets else "",
             str(st.theme.ui),
             str(st.theme.accent),
             str(st.theme.deselected),
@@ -6953,6 +7020,8 @@ class MainSettingsWidget:
             tuple(st.options_values.items()) if st.show_options else (),
             int(st.widgets_focus_index) if st.show_widgets else -1,
             bool(st.show_widgets),
+            str(st.widgets_nav or "") if st.show_widgets else "",
+            str(st.widgets_active_zone or "") if st.show_widgets else "",
             tuple(st.preferences_zone_widgets) if st.show_widgets else (),
             int(st.update_popup_focus_index) if st.show_update_popup else -1,
             bool(st.show_update_popup),
@@ -7117,7 +7186,7 @@ class MainSettingsWidget:
             from pigeon.widgets.pigeon_settings import render_pigeon_settings_bgra
             from pigeon.widgets.widgets_settings import widgets_focus_ring
 
-            ring = widgets_focus_ring()
+            ring = widgets_focus_ring(st)
             n = len(ring)
             if n <= 1:
                 return
@@ -7442,7 +7511,7 @@ class MainSettingsWidget:
             from pigeon.widgets.pigeon_settings import render_pigeon_settings_bgra
             from pigeon.widgets.widgets_settings import widgets_focus_ring
 
-            ring = widgets_focus_ring()
+            ring = widgets_focus_ring(st)
             n = len(ring)
             if n <= 0:
                 return
