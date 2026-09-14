@@ -112,6 +112,7 @@ WIDGET_FILES: dict[str, tuple[str, ...]] = {
     "pigeon_page": ("pigeon", "settings_pigeon.svg"),
     "ui_color_bar": ("pigeon", "widget_sp_ui_color_zone0.svg"),
     "options_bar": ("pigeon", "widget_sp_options.svg"),
+    "widgets_page": ("pigeon", "settings_pigeon_widgets.svg"),
 }
 
 

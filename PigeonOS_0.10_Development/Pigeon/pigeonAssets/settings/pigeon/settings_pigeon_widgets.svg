@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2365.03 2422.04">
+  <g id="zone_shapes_group">
+    <g id="zone5_shape">
+      <rect x="966.4" y="1298.16" width="582.23" height="68.16" stroke="#202020" stroke-miterlimit="10"/>
+    </g>
+    <g id="zone4_shape">
+      <rect x="966.81" y="1222.23" width="582.23" height="63.14"/>
+    </g>
+    <g id="zone3_shape">
+      <rect x="1359.35" y="960.88" width="192.3" height="248.8" stroke="#202020" stroke-miterlimit="10"/>
+    </g>
+    <g id="zone6_shape">
+      <rect x="966.4" y="960.88" width="385.91" height="248.8" stroke="#fff" stroke-miterlimit="10" stroke-width="7"/>
+    </g>
+  </g>
+  <g id="zone_labels_group">
+    <text id="zone_labels_zone5_text" transform="translate(788.0661 1346.7007)" fill="#fff" font-family="SharpSans-Extrabold, &apos;Sharp Sans&apos;" font-size="52.3" font-weight="700"><tspan x="0" y="0" letter-spacing="-.03em">s</tspan><tspan x="27.56" y="0" letter-spacing="0em">t</tspan><tspan x="50.94" y="0" letter-spacing="-.02em">a</tspan><tspan x="81.43" y="0" letter-spacing="0em">t</tspan><tspan x="104.86" y="0">us</tspan></text>
+    <text id="zone_labels_zone4_text" transform="translate(852.1027 1274.7788)" fill="#fff" font-family="SharpSans-Extrabold, &apos;Sharp Sans&apos;" font-size="52.3" font-weight="700"><tspan x="0" y="0" letter-spacing="0em">i</tspan><tspan x="13.96" y="0" letter-spacing="-.01em">n</tspan><tspan x="44.56" y="0" letter-spacing="-.03em">f</tspan><tspan x="65.48" y="0">o</tspan></text>
+    <text id="zone_labels_zone3_text" transform="translate(1360.4567 939.4156)" fill="#fff" font-family="SharpSans-Extrabold, &apos;Sharp Sans&apos;" font-size="52.3" font-weight="700"><tspan x="0" y="0" letter-spacing="-.03em">v</tspan><tspan x="28.66" y="0" letter-spacing="0em">o</tspan><tspan x="62.18" y="0">l</tspan><tspan x="75.73" y="0" letter-spacing="0em">u</tspan><tspan x="107.21" y="0">me</tspan></text>
+    <text id="zone_labels_zone6_text" transform="translate(966.4 938.27)" fill="#fff" font-family="SharpSans-Extrabold, &apos;Sharp Sans&apos;" font-size="52.3" font-weight="700"><tspan x="0" y="0">ar</tspan><tspan x="55.96" y="0" letter-spacing="0em">t</tspan><tspan x="79.28" y="0" letter-spacing="-.03em">w</tspan><tspan x="124.94" y="0" letter-spacing="0em">o</tspan><tspan x="158.57" y="0" letter-spacing="0em">r</tspan><tspan x="182.73" y="0">k</tspan></text>
+  </g>
+  <g id="widget_labels_group">
+    <text id="widget_labels_volume_text" transform="translate(948.27 841.39)" fill="#d60000" font-family="SharpSans-Extrabold, &apos;Sharp Sans&apos;" font-size="36" font-weight="700"><tspan x="0" y="0" letter-spacing="-.03em">v</tspan><tspan x="19.73" y="0" letter-spacing="0em">o</tspan><tspan x="42.8" y="0">l</tspan><tspan x="52.13" y="0" letter-spacing="0em">u</tspan><tspan x="73.8" y="0">me</tspan></text>
+    <text id="widget_labels_status_text" transform="translate(1128.9827 840.994)" fill="#d60000" font-family="SharpSans-Extrabold, &apos;Sharp Sans&apos;" font-size="36" font-weight="700"><tspan x="0" y="0" letter-spacing="-.03em">s</tspan><tspan x="18.97" y="0" letter-spacing="0em">t</tspan><tspan x="35.06" y="0" letter-spacing="-.02em">a</tspan><tspan x="56.05" y="0" letter-spacing="0em">t</tspan><tspan x="72.18" y="0">us</tspan></text>
+    <text id="widget_labels_info_text" transform="translate(1292.6026 840.9939)" fill="#d60000" font-family="SharpSans-Extrabold, &apos;Sharp Sans&apos;" font-size="36" font-weight="700"><tspan x="0" y="0" letter-spacing="0em">i</tspan><tspan x="9.61" y="0" letter-spacing="-.02em">n</tspan><tspan x="30.67" y="0" letter-spacing="-.03em">f</tspan><tspan x="45.07" y="0" letter-spacing="0em">o</tspan></text>
+    <text id="widget_labels_clock_text" transform="translate(1410.8415 840.9938)" fill="#fff" font-family="SharpSans-Extrabold, &apos;Sharp Sans&apos;" font-size="36" font-weight="700"><tspan x="0" y="0">c</tspan><tspan x="21.92" y="0" letter-spacing="0em">l</tspan><tspan x="31.18" y="0" letter-spacing="0em">ock</tspan></text>
+    <text id="widget_labels_weather_text" transform="translate(1561.1669 840.9937)" fill="#d60000" font-family="SharpSans-Extrabold, &apos;Sharp Sans&apos;" font-size="36" font-weight="700"><tspan x="0" y="0" letter-spacing="-.03em">w</tspan><tspan x="31.43" y="0" letter-spacing="-.01em">e</tspan><tspan x="53.6" y="0" letter-spacing="-.02em">a</tspan><tspan x="74.59" y="0">th</tspan><tspan x="112.39" y="0" letter-spacing="0em">e</tspan><tspan x="134.93" y="0" letter-spacing="0em">r</tspan></text>
+    <text id="widget_labels_artwork_text" transform="translate(747.84 840.99)" fill="#d60000" font-family="SharpSans-Extrabold, &apos;Sharp Sans&apos;" font-size="36" font-weight="700"><tspan x="0" y="0">ar</tspan><tspan x="38.52" y="0" letter-spacing="0em">t</tspan><tspan x="54.58" y="0" letter-spacing="-.03em">w</tspan><tspan x="86" y="0">o</tspan><tspan x="109.15" y="0" letter-spacing="0em">r</tspan><tspan x="125.78" y="0">k</tspan></text>
+  </g>
+</svg>

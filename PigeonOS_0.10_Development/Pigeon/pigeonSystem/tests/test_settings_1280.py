@@ -63,6 +63,7 @@ class SettingsAssetTests(unittest.TestCase):
             "pigeon_page",
             "ui_color_bar",
             "options_bar",
+            "widgets_page",
         ):
             path = settings_widget_path(key, assets_dir=assets)
             self.assertTrue(path.is_file(), msg=str(path))
@@ -590,6 +591,65 @@ class SettingsRenderTests(unittest.TestCase):
         options.navigate_pigeon(forward=True)
         self.assertEqual(options.pigeon_focused_id, "reset_button")
         self.assertFalse(options.show_options)
+
+    def test_now_play_opens_widgets_page(self) -> None:
+        from pigeon.settings_layout import MENU_PLATE_XYWH
+        from pigeon.widgets.main_settings import MainSettingsState, MainSettingsWidget
+        from pigeon.widgets.pigeon_settings import (
+            pigeon_focus_ring,
+            render_pigeon_settings_bgra,
+        )
+        from pigeon.widgets.widgets_settings import widgets_focus_ring
+
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        ring = pigeon_focus_ring()
+        plate_y = int(round(MENU_PLATE_XYWH[1]))
+
+        idle = MainSettingsState()
+        idle.show_pigeon_settings = True
+        idle.pigeon_focus_index = ring.index("pigeon_back")
+        idle_frame = render_pigeon_settings_bgra(idle, assets_dir=assets)
+        idle_header = idle_frame[0:plate_y, 192:1178, :3]
+        idle_lit = int(np.count_nonzero(idle_header.max(axis=2) > 40))
+
+        preview = MainSettingsState()
+        preview.show_pigeon_settings = True
+        preview.pigeon_focus_index = ring.index("info_button")
+        self.assertFalse(preview.show_widgets)
+        preview_frame = render_pigeon_settings_bgra(preview, assets_dir=assets)
+        preview_header = preview_frame[0:plate_y, 192:1178, :3]
+        self.assertGreater(
+            int(np.count_nonzero(preview_header.max(axis=2) > 40)),
+            idle_lit,
+        )
+
+        widget = MainSettingsWidget(assets_dir=assets, state=preview)
+        action = widget.activate()
+        self.assertEqual(action, "widgets_open")
+        self.assertTrue(preview.show_widgets)
+        self.assertEqual(preview.widgets_focused_id, "artwork")
+
+        active = render_pigeon_settings_bgra(preview, assets_dir=assets)
+        preview_sum = int(preview_header.astype(np.int32).sum())
+        active_sum = int(active[0:plate_y, 192:1178, :3].astype(np.int32).sum())
+        self.assertGreater(active_sum, preview_sum)
+        z0 = SETTINGS_MAIN_ZONES[0].xywh
+        active_back = active[z0[1] : z0[1] + z0[3], z0[0] : z0[0] + z0[2], :3]
+        self.assertGreater(int(np.count_nonzero(np.all(active_back > 200, axis=2))), 40)
+        # Focused artwork highlights zone 6 with a white stroke on the plate.
+        zone6_stroke = active[267:271, 385:770, :3]
+        self.assertGreater(
+            int(np.count_nonzero(np.all(zone6_stroke > 200, axis=2))),
+            80,
+        )
+
+        w_ring = widgets_focus_ring()
+        self.assertEqual(w_ring[-1], "pigeon_back")
+        for _ in range(len(w_ring) - 1):
+            preview.navigate_widgets(forward=True)
+        self.assertEqual(preview.widgets_focused_id, "pigeon_back")
+        self.assertEqual(preview.activate_widgets(), "widgets_back")
+        self.assertFalse(preview.show_widgets)
 
     def test_legacy_mark_is_not_part_of_native_frame(self) -> None:
         from pigeon.widgets.main_settings import MainSettingsState
