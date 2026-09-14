@@ -64,12 +64,13 @@ _ARTBOARD_H = 481.0
 _DATE_BASELINE_Y_SVG = 91.98
 _WEATHER_GAP_BELOW_DATE_SVG = 24.0
 # Weather cluster only — date stays put; Digital-7 sits on the seconds bar.
-_WEATHER_SCALE = 1.30
+# Sized to fill the band under the date while leaving room for the volume line.
+_WEATHER_SCALE = 1.90
 _WEATHER_ICON_TOP_SVG = 324.51  # legacy lower bound for older mid-band checks
 _HHMMSS_MID_Y_SVG = (_DATE_BASELINE_Y_SVG + _WEATHER_ICON_TOP_SVG) * 0.5
 _HHMMSS_FONT_SIZE_SVG = 231.0
 # Gap from Digital-7 baseline down to the zone-5 seconds track.
-_HHMMSS_GAP_ABOVE_BAR_PX = 20
+_HHMMSS_GAP_ABOVE_BAR_PX = 12
 # Baked ° / number relationship from clocksaver.svg (high_temp ↔ degrees_left).
 _TEMP_BASELINE_BELOW_DEG_SVG = 338.18 - 310.7
 _TEMP_END_LEFT_OF_DEG_SVG = 2.75
@@ -85,10 +86,34 @@ _HHMMSS_SIDE_PAD_PX = 28
 _HHMMSS_MAX_WIDTH_FRAC = 0.92
 
 # Volume line between weather and HH:MM:SS — width grows from the center with level.
+# Idle saver uses a larger Digital-7 size to fill the band under the temps.
 _VOLUME_FONT_SIZE_PX = 72
+_CLOCK_SAVER_VOLUME_FONT_SIZE_PX = 110
 _VOLUME_LINE_H_PX = 8
+_CLOCK_SAVER_VOLUME_LINE_H_PX = 12
 _VOLUME_GAP_ABOVE_TIME_PX = 20
 _VOLUME_TEXT_PAD_X_PX = 24
+# Keep weather / volume / time from kissing (Digital-7 hangs below ``mm``).
+_VOLUME_CLEARANCE_PX = 12
+
+
+def _color_ink_mask(arr: np.ndarray, *, thresh: int = 40) -> np.ndarray:
+    if arr.ndim != 3 or arr.shape[2] < 3:
+        return np.zeros(arr.shape[:2], dtype=bool)
+    return arr[:, :, :3].max(axis=2) > int(thresh)
+
+
+def _anchor_mm_extents(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.ImageFont,
+) -> tuple[int, int, int]:
+    """``(above, below, width)`` relative to an ``anchor='mm'`` origin."""
+    tb = draw.textbbox((0, 0), text, font=font, anchor="mm")
+    above = max(0, -int(tb[1]))
+    below = max(0, int(tb[3]))
+    width = max(1, int(tb[2] - tb[0]))
+    return above, below, width
 
 
 def _time_color_rgba(now_mono: float) -> tuple[int, int, int, int]:
@@ -955,6 +980,14 @@ def _draw_hhmmss_fixed_cells(
     else:
         cy = int(round(_HHMMSS_MID_Y_SVG * float(canvas_h) / _ARTBOARD_H))
 
+    pre_ink = _color_ink_mask(np.asarray(img)).copy()
+    pre_rows = np.where(pre_ink.any(axis=1))[0]
+    wx_bottom_px = (
+        float(int(pre_rows.max()) + 1)
+        if pre_rows.size
+        else float(weather_bottom or 0.0)
+    )
+
     for region, pair in zip(regions, pairs):
         _draw_pair_in_region(
             draw,
@@ -968,6 +1001,11 @@ def _draw_hhmmss_fixed_cells(
     for cx in colon_cx:
         draw.text((cx, cy), ":", font=font, fill=color, anchor="ms")
 
+    post_ink = _color_ink_mask(np.asarray(img))
+    new_rows = np.where((post_ink & ~pre_ink).any(axis=1))[0]
+    time_box = draw.textbbox((0, int(cy)), "0", font=font, anchor="ms")
+    time_top_px = int(new_rows.min()) if new_rows.size else int(time_box[1])
+
     _draw_clock_saver_volume_line(
         draw,
         volume=volume,
@@ -976,7 +1014,8 @@ def _draw_hhmmss_fixed_cells(
         canvas_w=canvas_w,
         time_cy=cy,
         time_font=font,
-        weather_bottom=weather_bottom,
+        weather_bottom=wx_bottom_px,
+        time_top=time_top_px,
         line_opacity=line_opacity,
     )
 
@@ -997,6 +1036,7 @@ def _draw_clock_saver_volume_line(
     time_cy: int,
     time_font: ImageFont.ImageFont,
     weather_bottom: float | None = None,
+    time_top: int | None = None,
     line_opacity: float = 1.0,
 ) -> None:
     """Centered volume stroke with a Digital-7 level in the middle break."""
@@ -1007,15 +1047,30 @@ def _draw_clock_saver_volume_line(
     from pigeon.widgets.playback_overlay import volume_fraction_from_display_line
 
     time_box = draw.textbbox((0, int(time_cy)), "0", font=time_font, anchor="ms")
-    time_top = int(time_box[1])
-    vol_sz = max(
-        18,
-        int(round(_VOLUME_FONT_SIZE_PX * float(canvas_w) / float(DESIGN_W))),
+    time_limit = int(time_top) if time_top is not None else int(time_box[1])
+    wx_bottom = float(weather_bottom) if weather_bottom is not None else 0.0
+    clearance = max(
+        8,
+        int(round(_VOLUME_CLEARANCE_PX * float(canvas_w) / float(DESIGN_W))),
     )
+    band_top = wx_bottom + clearance if wx_bottom > 0.0 else 0.0
+    band_bot = float(time_limit - clearance)
+    if band_bot <= band_top + 8:
+        band_top = max(0.0, float(time_limit) - float(_VOLUME_GAP_ABOVE_TIME_PX) - 48.0)
+        band_bot = float(time_limit) - float(_VOLUME_GAP_ABOVE_TIME_PX)
+    avail = max(18.0, band_bot - band_top)
+
+    prefer_sz = max(
+        18,
+        int(round(_CLOCK_SAVER_VOLUME_FONT_SIZE_PX * float(canvas_w) / float(DESIGN_W))),
+    )
+    vol_sz = prefer_sz
     vol_font = _load_font(font_path, vol_sz)
-    tb = draw.textbbox((0, 0), label, font=vol_font)
-    text_w = max(1, int(tb[2] - tb[0]))
-    text_h = max(1, int(tb[3] - tb[1]))
+    above, below, text_w = _anchor_mm_extents(draw, label, vol_font)
+    while vol_sz > 18 and (above + below) > avail:
+        vol_sz -= 2
+        vol_font = _load_font(font_path, vol_sz)
+        above, below, text_w = _anchor_mm_extents(draw, label, vol_font)
     try:
         _tx, _ty, track_w, _th, _trx = clock_saver_seconds_track_rect()
         max_w = int(track_w)
@@ -1027,14 +1082,31 @@ def _draw_clock_saver_volume_line(
         text_w=text_w,
         max_width=max_w,
     )
-    line_h = max(2, int(round(_VOLUME_LINE_H_PX * float(canvas_w) / float(DESIGN_W))))
-    cluster_h = max(text_h, line_h)
-    wx_bottom = float(weather_bottom) if weather_bottom is not None else 0.0
-    if wx_bottom > 0.0 and wx_bottom + cluster_h < time_top:
-        cy_vol = (wx_bottom + time_top) / 2.0
+    line_h = max(
+        2,
+        int(
+            round(
+                _CLOCK_SAVER_VOLUME_LINE_H_PX
+                * (float(vol_sz) / float(max(1, prefer_sz)))
+                * float(canvas_w)
+                / float(DESIGN_W)
+            )
+        ),
+    )
+    visual_h = max(above + below, line_h)
+    mid = (band_top + band_bot) / 2.0
+    # ``mm`` is not the visual center for Digital-7 (more ink hangs below).
+    cy_vol = mid - (below - above) / 2.0
+    if visual_h <= (band_bot - band_top):
+        vis_top = cy_vol - above
+        vis_bot = cy_vol + below
+        if vis_top < band_top:
+            cy_vol += band_top - vis_top
+        elif vis_bot > band_bot:
+            cy_vol -= vis_bot - band_bot
     else:
-        cluster_bottom = time_top - int(_VOLUME_GAP_ABOVE_TIME_PX)
-        cy_vol = cluster_bottom - cluster_h / 2.0
+        cluster_bottom = time_limit - int(_VOLUME_GAP_ABOVE_TIME_PX)
+        cy_vol = cluster_bottom - below
     arm_a = int(round(float(color[3]) * max(0.0, min(1.0, float(line_opacity)))))
     if arm_a > 0 and clock_saver_volume_line_visible(volume):
         line_y0 = int(round(cy_vol - line_h / 2.0))

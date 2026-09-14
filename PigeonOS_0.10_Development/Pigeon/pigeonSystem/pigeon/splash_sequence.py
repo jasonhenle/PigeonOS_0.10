@@ -36,6 +36,18 @@ SPLASH_FADE_OUT_FRAMES = 0
 # Earlier frames keep a black underlay.
 SPLASH_CLOCK_REVEAL_FRAME = 90
 
+
+def splash_keep_alpha_for_live_clock(
+    frame_index: int,
+    reveal_frame: int = SPLASH_CLOCK_REVEAL_FRAME,
+) -> bool:
+    """True when this frame must stay BGRA so it can composite over a live clock.
+
+    Flattening reveal frames to RGB over a pre-rasterized saver freezes the time
+    and color until splash ends, then the real clock snaps forward.
+    """
+    return int(frame_index) >= int(reveal_frame)
+
 # Built-in sequence when ``pigeonSplash`` has no PNGs (same nominal size as the window).
 FALLBACK_SPLASH_FRAME_COUNT = 72
 _FALLBACK_SPLASH_INTRO_FRAMES = 12

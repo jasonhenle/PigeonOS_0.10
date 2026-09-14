@@ -86,6 +86,12 @@ class ClockSaverSvgTests(unittest.TestCase):
         ):
             self.assertEqual(cs._time_label(when), "1:30:05")
 
+    def test_time_color_leaves_white_after_hold(self) -> None:
+        white = cs._time_color_rgba(0.0)
+        later = cs._time_color_rgba(20.0)
+        self.assertEqual(white[:3], (255, 255, 255))
+        self.assertNotEqual(later[:3], white[:3])
+
     def test_face_fits_widget_well(self) -> None:
         face = cs.render_clock_saver_face_bgra(width=386, height=249)
         self.assertEqual(face.shape[1], 386)
@@ -345,7 +351,12 @@ class ClockSaverSecondsBarTests(unittest.TestCase):
             loud = cs.render_clock_saver_bgra(layer_opacity=1.0, volume="100")
             mid = cs.render_clock_saver_bgra(layer_opacity=1.0, volume="40")
         _tx, bar_y, track_w, _th, _ = clock_saver_seconds_track_rect()
-        band_y0, band_y1 = 300, 400
+        path = cs.default_clock_saver_svg_path()
+        root = cs._svg_tree_from_path(path)
+        wx_svg = cs._apply_clock_saver_svg_state(root, color_hex="#58ff00")
+        wx_bottom = cs.clock_saver_svg_y_to_design_y(wx_svg, cs.DESIGN_H)
+        # Volume sits in the gap under weather; do not sample the weather cluster.
+        band_y0, band_y1 = int(round(wx_bottom)) + 8, 400
         cx = cs.DESIGN_W // 2
 
         def _extent(frame: np.ndarray) -> tuple[int, int] | None:
@@ -386,7 +397,11 @@ class ClockSaverSecondsBarTests(unittest.TestCase):
             quiet = cs.render_clock_saver_bgra(layer_opacity=1.0, volume="")
             muted = cs.render_clock_saver_bgra(layer_opacity=1.0, volume="mute")
             loud = cs.render_clock_saver_bgra(layer_opacity=1.0, volume="-22.5 dB")
-        band_y0, band_y1 = 300, 400
+        path = cs.default_clock_saver_svg_path()
+        root = cs._svg_tree_from_path(path)
+        wx_svg = cs._apply_clock_saver_svg_state(root, color_hex="#58ff00")
+        wx_bottom = cs.clock_saver_svg_y_to_design_y(wx_svg, cs.DESIGN_H)
+        band_y0, band_y1 = int(round(wx_bottom)) + 8, 400
         cx = cs.DESIGN_W // 2
 
         def _extent(frame: np.ndarray) -> tuple[int, int] | None:
@@ -444,6 +459,42 @@ class ClockSaverSecondsBarTests(unittest.TestCase):
         self.assertGreater(vol_cy, wx_bottom + 8)
         self.assertLess(vol_cy, time_top - 8)
         self.assertAlmostEqual(vol_cy, mid, delta=16)
+
+    def test_volume_does_not_overlap_time_or_weather(self) -> None:
+        from datetime import datetime
+        from unittest.mock import patch
+
+        when = datetime(2026, 9, 14, 12, 2, 30)
+        with (
+            patch(
+                "pigeon.widgets.options_settings.clock_widget_analog",
+                return_value=False,
+            ),
+            patch(
+                "pigeon.widgets.clock_saver._resolve_display_time",
+                return_value=when,
+            ),
+        ):
+            quiet = cs.render_clock_saver_bgra(layer_opacity=1.0, volume="")
+            loud = cs.render_clock_saver_bgra(layer_opacity=1.0, volume="-33.0 dB")
+        delta = np.abs(loud.astype(np.int16) - quiet.astype(np.int16)).max(axis=2) > 20
+        quiet_ink = quiet[:, :, :3].max(axis=2) > 40
+        overlap_rows = np.where((delta & quiet_ink).any(axis=1))[0]
+        self.assertLess(
+            int(overlap_rows.size),
+            3,
+            f"volume overlaps other chrome on rows {overlap_rows[:8]!r}",
+        )
+
+    def test_digital7_volume_hangs_below_mm_anchor(self) -> None:
+        from PIL import Image, ImageDraw
+
+        font_path = cs.resolve_digital7_font() or cs.resolve_ui_font_bold()
+        draw = ImageDraw.Draw(Image.new("RGBA", (64, 64)))
+        font = cs._load_font(font_path, cs._CLOCK_SAVER_VOLUME_FONT_SIZE_PX)
+        above, below, width = cs._anchor_mm_extents(draw, "-33.0", font)
+        self.assertGreater(width, 40)
+        self.assertGreater(below, above)
 
     def test_volume_hold_ignores_stale_poll_during_grace(self) -> None:
         hold = cs.ClockSaverVolumeHold(grace_s=2.0)
