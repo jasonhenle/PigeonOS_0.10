@@ -177,6 +177,12 @@ StatusBarWidget = None  # type: ignore[misc, assignment]
 clock_saver_composite_bgra = None  # type: ignore[misc, assignment]
 ClockSaverVolumeHold = None  # type: ignore[misc, assignment]
 VolumeLineReveal = None  # type: ignore[misc, assignment]
+audio_meter_face_enabled = None  # type: ignore[misc, assignment]
+latest_meter_cache_key = None  # type: ignore[misc, assignment]
+render_audio_meter_composite_bgra = None  # type: ignore[misc, assignment]
+stop_audio_meter_capture = None  # type: ignore[misc, assignment]
+sync_audio_meter_capture = None  # type: ignore[misc, assignment]
+toggle_audio_meter_face = None  # type: ignore[misc, assignment]
 PlaybackOverlayWidget = None  # type: ignore[misc, assignment]
 compose_playback_volume_widget_line = None  # type: ignore[misc, assignment]
 PATCH_LAYER_RECEIVER_AUDIO = "receiver_audio"  # type: ignore[misc, assignment]
@@ -279,6 +285,18 @@ try:
     )
 except ImportError as _exc:
     _log_optional_import_failure("clock_status_widgets", _exc)
+
+try:
+    from pigeon.widgets.audio_meter_saver import (
+        audio_meter_face_enabled,
+        latest_meter_cache_key,
+        render_audio_meter_composite_bgra,
+        stop_audio_meter_capture,
+        sync_audio_meter_capture,
+        toggle_audio_meter_face,
+    )
+except ImportError as _exc:
+    _log_optional_import_failure("audio_meter_saver", _exc)
 
 try:
     from pigeon.view_one_variants import (
@@ -982,6 +1000,11 @@ def main() -> int:
             _kiosk_stopped_pids.clear()
 
     def _quit_pigeon() -> None:
+        try:
+            if stop_audio_meter_capture is not None:
+                stop_audio_meter_capture()
+        except Exception:
+            pass
         _restore_desktop_chrome()
         root.quit()
 
@@ -1185,6 +1208,12 @@ def main() -> int:
                 kwargs["line_opacity"] = _volume_lines.opacity()
             except Exception:
                 kwargs["line_opacity"] = 0.0
+        replace = bool(kwargs.pop("replace_with_meter", False))
+        if replace and render_audio_meter_composite_bgra is not None:
+            op = kwargs.get("time_layer_opacity")
+            if op is None:
+                op = kwargs.get("layer_opacity", 1.0)
+            return render_audio_meter_composite_bgra(layer_opacity=float(op))
         return clock_saver_composite_bgra(**kwargs)
 
     def _rasterize_clock_saver_window_bgr() -> np.ndarray | None:
@@ -3622,6 +3651,21 @@ def main() -> int:
                 return True
             return _clock_saver_active(now)
 
+        def _idle_saver_face_toggle_ok(now: float | None = None) -> bool:
+            """Idle clock/meter face is up (not splash intro, not NP chrome)."""
+            t = time.monotonic() if now is None else float(now)
+            if _clock_startup_intro_opacity(t) is not None:
+                return False
+            if startup_ph[0] is not None:
+                return False
+            return bool(_clock_saver_for_compose(t))
+
+        def _idle_audio_meter_active(now: float | None = None) -> bool:
+            """True when the diagnostic SVG meter should replace the idle clock."""
+            if audio_meter_face_enabled is None or not audio_meter_face_enabled():
+                return False
+            return _idle_saver_face_toggle_ok(now)
+
         def _toggle_clock_saver_force(event: tk.Event | None = None) -> str | None:
             """Shift+2: force clock saver on/off."""
             nonlocal skip_cache
@@ -5525,6 +5569,7 @@ def main() -> int:
                         date_layer_opacity=_cs_dim_v1,
                         date_anchor_row=CLOCK_ANCHOR_ROW,
                         date_anchor_col=CLOCK_ANCHOR_COL,
+                        replace_with_meter=_idle_audio_meter_active(now_cs),
                     )
                     for cs_bgra, (sx, sy, sw, sh) in (
                         (date_bgra, d_rect),
@@ -5620,6 +5665,7 @@ def main() -> int:
                         date_layer_opacity=_date_op,
                         date_anchor_row=CLOCK_ANCHOR_ROW,
                         date_anchor_col=CLOCK_ANCHOR_COL,
+                        replace_with_meter=_idle_audio_meter_active(now_cs),
                     )
                     for cs_bgra, (sx, sy, sw, sh) in (
                         (date_bgra, d_rect),
@@ -6017,6 +6063,7 @@ def main() -> int:
                         date_layer_opacity=_date_op_d,
                         date_anchor_row=CLOCK_ANCHOR_ROW,
                         date_anchor_col=CLOCK_ANCHOR_COL,
+                        replace_with_meter=_idle_audio_meter_active(now_cs),
                     )
                     for cs_bgra, (sx, sy, sw, sh) in (
                         (date_bgra, d_rect),
@@ -13503,6 +13550,30 @@ def main() -> int:
             if dev_phase != DevPhase.OFF:
                 _bump_pigeon_user_activity(event)
                 return "break"
+            if ch == "1":
+                st_key = int(getattr(event, "state", 0))
+                sh_key = bool(st_key & 0x0001)
+                if (
+                    not sh_key
+                    and toggle_audio_meter_face is not None
+                    and _idle_saver_face_toggle_ok()
+                ):
+                    # Steal [1] only while the idle saver is up so NP zone-1 still works.
+                    on = toggle_audio_meter_face()
+                    try:
+                        sys.stderr.write(
+                            "pigeon: idle face "
+                            + ("audio meter\n" if on else "clock saver\n")
+                        )
+                        sys.stderr.flush()
+                    except Exception:
+                        pass
+                    skip_cache = None
+                    try:
+                        render_once()
+                    except Exception:
+                        pass
+                    return "break"
             if ch in "12345678" and display_view_holder[0] == DisplayView.ONE:
                 st_key = int(getattr(event, "state", 0))
                 sh_key = bool(st_key & 0x0001)
@@ -14280,6 +14351,11 @@ def main() -> int:
             _render_tick_t0 = time.perf_counter()
             now = time.monotonic()
             _intro_mono = post_splash_mono[0]
+            if sync_audio_meter_capture is not None:
+                try:
+                    sync_audio_meter_capture(_idle_audio_meter_active(now))
+                except Exception:
+                    pass
             if _maybe_exit_settings_menus_on_idle(now):
                 # Fall through to OFF-phase compose (now-playing or clock saver).
                 pass
@@ -14303,6 +14379,8 @@ def main() -> int:
                 # Post-splash clock fade-up needs a smooth cadence.
                 if _PIGEON_EXT and _clock_startup_intro_opacity(time.monotonic()) is not None:
                     return 33
+                if _PIGEON_EXT and _idle_audio_meter_active():
+                    return 33 if sys.platform.startswith("linux") else 16
                 # WiFi / box scan spinner: keep responsive without 60 FPS full-frame uploads on Pi.
                 if (
                     dev_phase == DevPhase.MAIN_SETTINGS
@@ -14557,6 +14635,8 @@ def main() -> int:
             paused_row_cache_key = 1 if (_PIGEON_EXT and _show_paused_row_overlay()) else 0
             mic_viz_cache_key = 0
             mic_eq_needs_composite = False
+            if _PIGEON_EXT and _idle_audio_meter_active(now) and latest_meter_cache_key is not None:
+                mic_viz_cache_key = int(latest_meter_cache_key())
             if _PIGEON_EXT and status_bar_widget is not None:
                 if status_bar_widget.set_theater_dim_suppressed(idle_s_here >= 0.5):
                     _warm_status_bar_blits()
