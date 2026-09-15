@@ -42,6 +42,30 @@ class ZoneGeometryTests(unittest.TestCase):
         self.assertAlmostEqual(NOW_PLAYING_ZONES[2].x, 442.5)
         self.assertAlmostEqual(NOW_PLAYING_ZONES[3].x, 840.0)
 
+    def test_zone6_span_widget_from_slot_one(self) -> None:
+        from pigeon.np_layout import TT_COUNTDOWN_16X9_WIDGET, zone6_span_widget
+
+        self.assertEqual(
+            zone6_span_widget((TT_COUNTDOWN_16X9_WIDGET, "", "volume", "cast_info", "status_bar")),
+            TT_COUNTDOWN_16X9_WIDGET,
+        )
+        self.assertEqual(
+            zone6_span_widget(("clock_16x9", "", "volume", "cast_info", "status_bar")),
+            "clock",
+        )
+        self.assertEqual(
+            zone6_span_widget(("weather", "", "volume", "cast_info", "status_bar")),
+            "weather",
+        )
+        self.assertEqual(
+            zone6_span_widget(("clock", "poster", "volume", "cast_info", "status_bar")),
+            "",
+        )
+        self.assertEqual(
+            zone6_span_widget(("clock", "", "volume", "cast_info", "status_bar")),
+            "",
+        )
+
     def test_zone9_is_full_frame_idle(self) -> None:
         z9 = NOW_PLAYING_ZONES[9]
         self.assertEqual(z9.x, 0.0)
@@ -178,6 +202,41 @@ class NowPlayingFrameTests(unittest.TestCase):
         self.assertEqual(frame.shape[0], DESIGN_H)
         self.assertEqual(frame.shape[1], DESIGN_W)
         self.assertEqual(frame.shape[2], 4)
+
+    def test_zone6_clock_assignment_draws_wide_face(self) -> None:
+        from pigeon.np_layout import NOW_PLAYING_ZONES
+        from pigeon.widgets import view_circles as vc
+
+        self.addCleanup(_force_default_np_zones)
+        vc._default_zone_widget_assignments = lambda *a, **k: (  # type: ignore[method-assign]
+            "clock_16x9",
+            "",
+            "volume",
+            "cast_info",
+            "status_bar",
+        )
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        widget = vc.ViewCirclesWidget(assets_dir=assets)
+        widget.update_state(
+            progress=0.25,
+            elapsed_text="0:10:00",
+            remaining_text="1:20:00",
+            volume_text="22.5",
+            has_now_playing=True,
+            has_position=True,
+            content_active=True,
+            content_mode="video",
+        )
+        frame = widget.bgra_frame()
+        self.assertIsNotNone(frame)
+        assert frame is not None
+        zx, zy, zw, zh = NOW_PLAYING_ZONES[6].xywh
+        band = frame[
+            zy + zh // 2 - 24 : zy + zh // 2 + 24,
+            zx + 48 : zx + zw - 48,
+            :3,
+        ]
+        self.assertGreater(int(np.count_nonzero(band.max(axis=2) > 40)), 300)
 
     def test_zone4_cast_is_stacked_actor_over_character(self) -> None:
         from pigeon.np_layout import NOW_PLAYING_ZONES
@@ -391,6 +450,7 @@ class NowPlayingFrameTests(unittest.TestCase):
             dest_h=int(CLOCK_VIEW_H),
             now=datetime(2026, 8, 24, 14, 22),
             theme=np_theme_from_settings(),
+            include_clock_ticks=False,
         )
         self.assertIsNotNone(patch)
         assert patch is not None
@@ -486,16 +546,134 @@ class NowPlayingFrameTests(unittest.TestCase):
         self.assertTrue(_find_by_key(root, "seconds_60") is not None)
         self.assertTrue(_tick_fill(root, "seconds_01").endswith("4ea6f7"))
         self.assertTrue(_tick_fill(root, "seconds_15").endswith("4ea6f7"))
-        self.assertTrue(_tick_fill(root, "seconds_16") in ("#ffffff", "white"))
-        self.assertTrue(_tick_fill(root, "seconds_60") in ("#ffffff", "white"))
+        self.assertTrue(_tick_fill(root, "seconds_16") in ("#e6e6e6", "#ffffff", "white"))
+        self.assertTrue(_tick_fill(root, "seconds_60") in ("#e6e6e6", "#ffffff", "white"))
 
         root = _svg_tree_from_path(_now_playing_widget_path(assets, "clock"))
         _apply_standalone_clock_ticks(
             root, datetime(2026, 1, 1, 12, 1, 1), theme=theme
         )
-        self.assertTrue(_tick_fill(root, "seconds_01") in ("#ffffff", "white"))
+        self.assertTrue(_tick_fill(root, "seconds_01") in ("#e6e6e6", "#ffffff", "white"))
         self.assertTrue(_tick_fill(root, "seconds_02").endswith("4ea6f7"))
         self.assertTrue(_tick_fill(root, "seconds_60").endswith("4ea6f7"))
+
+    def test_portrait_clock_paints_ticks_without_analog_option(self) -> None:
+        from datetime import datetime
+        from unittest.mock import patch
+
+        from pigeon.np_layout import (
+            CLOCK_LOCAL_CX,
+            CLOCK_LOCAL_CY,
+            CLOCK_VIEW_H,
+            CLOCK_VIEW_W,
+        )
+        from pigeon.widgets.view_circles import (
+            _CLOCK_INTERIOR_ACCENT_R,
+            _CLOCK_MIDDLE_ACCENT_R,
+            _NAMED_WIDGET_CACHE,
+            _rasterize_named_widget,
+            np_theme_from_settings,
+        )
+
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        _NAMED_WIDGET_CACHE.clear()
+        with patch(
+            "pigeon.widgets.options_settings.clock_widget_analog", return_value=False
+        ):
+            patch_bgra = _rasterize_named_widget(
+                assets_dir=assets,
+                widget_key="clock",
+                dest_w=int(CLOCK_VIEW_W),
+                dest_h=int(CLOCK_VIEW_H),
+                now=datetime(2026, 1, 1, 10, 22, 15),
+                theme=np_theme_from_settings(),
+            )
+        self.assertIsNotNone(patch_bgra)
+        assert patch_bgra is not None
+        h, w = int(patch_bgra.shape[0]), int(patch_bgra.shape[1])
+        yy, xx = np.ogrid[:h, :w]
+        d = np.sqrt((xx - CLOCK_LOCAL_CX) ** 2 + (yy - CLOCK_LOCAL_CY) ** 2)
+        band = (d > (_CLOCK_INTERIOR_ACCENT_R + 6.0)) & (
+            d < (_CLOCK_MIDDLE_ACCENT_R - 6.0)
+        )
+        self.assertGreater(
+            int(np.count_nonzero((patch_bgra[:, :, 3] > 80) & band)),
+            400,
+        )
+
+    def test_analog_clock_paints_radial_seconds_wedge(self) -> None:
+        from datetime import datetime
+        from unittest.mock import patch
+
+        from pigeon.np_layout import (
+            CLOCK_LOCAL_CX,
+            CLOCK_LOCAL_CY,
+            CLOCK_VIEW_H,
+            CLOCK_VIEW_W,
+        )
+        from pigeon.widgets.view_circles import (
+            _CLOCK_INTERIOR_ACCENT_R,
+            _CLOCK_MIDDLE_ACCENT_R,
+            _NAMED_WIDGET_CACHE,
+            _apply_standalone_clock_ticks,
+            _find_by_key,
+            _now_playing_widget_path,
+            _rasterize_named_widget,
+            _svg_tree_from_path,
+            np_theme_from_settings,
+        )
+
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        root = _svg_tree_from_path(_now_playing_widget_path(assets, "clock"))
+        _apply_standalone_clock_ticks(
+            root, datetime(2026, 1, 1, 12, 0, 15), theme=np_theme_from_settings()
+        )
+        wedge = _find_by_key(root, "clock_exterior_seconds_fill")
+        self.assertIsNotNone(wedge)
+        assert wedge is not None
+        self.assertTrue((wedge.get("d") or "").strip())
+
+        when = datetime(2026, 1, 1, 12, 0, 15)
+        _NAMED_WIDGET_CACHE.clear()
+        with patch(
+            "pigeon.widgets.options_settings.clock_widget_analog", return_value=True
+        ):
+            analog = _rasterize_named_widget(
+                assets_dir=assets,
+                widget_key="clock",
+                dest_w=int(CLOCK_VIEW_W),
+                dest_h=int(CLOCK_VIEW_H),
+                now=when,
+                theme=np_theme_from_settings(),
+            )
+        _NAMED_WIDGET_CACHE.clear()
+        with patch(
+            "pigeon.widgets.options_settings.clock_widget_analog", return_value=False
+        ):
+            digital = _rasterize_named_widget(
+                assets_dir=assets,
+                widget_key="clock",
+                dest_w=int(CLOCK_VIEW_W),
+                dest_h=int(CLOCK_VIEW_H),
+                now=when,
+                theme=np_theme_from_settings(),
+                include_clock_ticks=False,
+            )
+        self.assertIsNotNone(analog)
+        self.assertIsNotNone(digital)
+        assert analog is not None and digital is not None
+
+        def _open_band_ink(patch: np.ndarray) -> int:
+            h, w = int(patch.shape[0]), int(patch.shape[1])
+            yy, xx = np.ogrid[:h, :w]
+            d = np.sqrt((xx - CLOCK_LOCAL_CX) ** 2 + (yy - CLOCK_LOCAL_CY) ** 2)
+            band = (d > (_CLOCK_INTERIOR_ACCENT_R + 6.0)) & (
+                d < (_CLOCK_MIDDLE_ACCENT_R - 6.0)
+            )
+            return int(np.count_nonzero((patch[:, :, 3] > 80) & band))
+
+        self.assertGreater(_open_band_ink(analog), 400)
+        self.assertLess(_open_band_ink(digital), 80)
 
     def test_zone2_poster_keeps_cover_art(self) -> None:
         from pigeon.widgets.view_circles import ViewCirclesWidget, _poster_geometry
@@ -519,6 +697,43 @@ class NowPlayingFrameTests(unittest.TestCase):
         self.assertIsNotNone(frame)
         assert frame is not None
         px, py, pw, ph, _prx = _poster_geometry("video", zone=2)
+        roi = frame[
+            py + ph // 3 : py + 2 * ph // 3,
+            px + pw // 3 : px + 2 * pw // 3,
+        ]
+        green = (roi[:, :, 1] > 200) & (roi[:, :, 0] < 40) & (roi[:, :, 2] < 40)
+        self.assertGreater(int(green.sum()), 80)
+
+    def test_zone3_poster_keeps_rounded_cover_art(self) -> None:
+        from pigeon.widgets import view_circles as vc
+        from pigeon.widgets.view_circles import ViewCirclesWidget, _poster_geometry
+
+        self.addCleanup(_force_default_np_zones)
+        vc._default_zone_widget_assignments = lambda *a, **k: (  # type: ignore[method-assign]
+            "tt_countdown_16x9",
+            "",
+            "poster",
+            "cast_info",
+            "status_bar",
+        )
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        widget = ViewCirclesWidget(assets_dir=assets)
+        green_poster = np.full((80, 54, 3), (0, 255, 0), dtype=np.uint8)
+        widget.update_state(
+            progress=0.2,
+            elapsed_text="0:10",
+            remaining_text="-1:00",
+            volume_text="",
+            has_now_playing=True,
+            has_position=True,
+            content_active=True,
+            content_mode="video",
+            poster_bgra=green_poster,
+        )
+        frame = widget.bgra_frame()
+        self.assertIsNotNone(frame)
+        assert frame is not None
+        px, py, pw, ph, _prx = _poster_geometry("video", zone=3)
         roi = frame[
             py + ph // 3 : py + 2 * ph // 3,
             px + pw // 3 : px + 2 * pw // 3,
@@ -916,6 +1131,27 @@ class NowPlayingHeaderClockTests(unittest.TestCase):
             "12:00PM",
         )
 
+    def test_zone_clock_defaults_to_12_hour(self) -> None:
+        from datetime import datetime
+        from unittest.mock import patch
+
+        from pigeon.widgets.view_circles import _clock_hhmm
+
+        when = datetime(2026, 9, 7, 13, 5, 0)
+        with patch(
+            "pigeon.widgets.options_settings.clock_uses_24h", return_value=False
+        ):
+            self.assertEqual(_clock_hhmm(when), "1:05")
+        with patch(
+            "pigeon.widgets.options_settings.clock_uses_24h", return_value=True
+        ):
+            self.assertEqual(_clock_hhmm(when), "13:05")
+        with patch(
+            "pigeon.widgets.options_settings.clock_uses_24h",
+            side_effect=RuntimeError("missing"),
+        ):
+            self.assertEqual(_clock_hhmm(when), "1:05")
+
     def test_header_clock_centers_on_wide_tt(self) -> None:
         from pigeon.np_layout import NOW_PLAYING_ZONES, header_clock_center_x
 
@@ -936,7 +1172,16 @@ class NowPlayingHeaderClockTests(unittest.TestCase):
         )
         from pigeon.widgets.view_circles import ViewCirclesWidget
 
-        _force_default_np_zones()
+        from pigeon.widgets import view_circles as vc
+
+        self.addCleanup(_force_default_np_zones)
+        vc._default_zone_widget_assignments = lambda *a, **k: (  # type: ignore[method-assign]
+            "tt_countdown_16x9",
+            "",
+            "volume",
+            "cast_info",
+            "status_bar",
+        )
         assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
         widget = ViewCirclesWidget(assets_dir=assets)
         widget.update_state(
@@ -966,6 +1211,48 @@ class NowPlayingHeaderClockTests(unittest.TestCase):
         mid_y = int(ink[0].min() + (int(ink[0].max()) - int(ink[0].min())) / 2)
         chip = band[mid_y, 8, :3]
         self.assertLess(int(chip.max()), 24)
+
+    def test_header_clock_hidden_when_zone_has_clock(self) -> None:
+        from datetime import datetime
+        from unittest.mock import patch
+
+        from pigeon.widgets.view_circles import (
+            ViewCirclesWidget,
+            _zone_clock_hides_header,
+        )
+
+        self.assertTrue(
+            _zone_clock_hides_header(("clock", "poster", "volume", "cast_info", "status_bar"))
+        )
+        self.assertTrue(
+            _zone_clock_hides_header(("clock_16x9", "", "volume", "cast_info", "status_bar"))
+        )
+        self.assertFalse(
+            _zone_clock_hides_header(
+                ("tt_countdown_16x9", "", "volume", "cast_info", "status_bar")
+            )
+        )
+        _force_default_np_zones()
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        widget = ViewCirclesWidget(assets_dir=assets)
+        widget.update_state(
+            progress=0.2,
+            elapsed_text="0:10",
+            remaining_text="-1:00",
+            volume_text="",
+            has_now_playing=True,
+            has_position=True,
+            content_active=True,
+            content_mode="video",
+            service_name="",
+        )
+        when = datetime(2026, 9, 7, 22, 23, 0)
+        with patch.object(widget, "_clock_now_for_display", return_value=when):
+            frame = widget.bgra_frame()
+        self.assertIsNotNone(frame)
+        assert frame is not None
+        band = frame[0:90, DESIGN_W // 2 - 160 : DESIGN_W // 2 + 160, :3]
+        self.assertLess(int(np.count_nonzero(band.max(axis=2) > 80)), 20)
 
 
 class ZoneWidgetAssetTests(unittest.TestCase):

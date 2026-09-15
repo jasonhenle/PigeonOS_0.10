@@ -64,12 +64,13 @@ _ARTBOARD_H = 481.0
 _DATE_BASELINE_Y_SVG = 91.98
 _WEATHER_GAP_BELOW_DATE_SVG = 24.0
 # Weather cluster only — date stays put; Digital-7 sits on the seconds bar.
-_WEATHER_SCALE = 1.30
+# Sized to fill the band under the date while leaving room for the volume line.
+_WEATHER_SCALE = 1.90
 _WEATHER_ICON_TOP_SVG = 324.51  # legacy lower bound for older mid-band checks
 _HHMMSS_MID_Y_SVG = (_DATE_BASELINE_Y_SVG + _WEATHER_ICON_TOP_SVG) * 0.5
 _HHMMSS_FONT_SIZE_SVG = 231.0
 # Gap from Digital-7 baseline down to the zone-5 seconds track.
-_HHMMSS_GAP_ABOVE_BAR_PX = 20
+_HHMMSS_GAP_ABOVE_BAR_PX = 12
 # Baked ° / number relationship from clocksaver.svg (high_temp ↔ degrees_left).
 _TEMP_BASELINE_BELOW_DEG_SVG = 338.18 - 310.7
 _TEMP_END_LEFT_OF_DEG_SVG = 2.75
@@ -85,10 +86,34 @@ _HHMMSS_SIDE_PAD_PX = 28
 _HHMMSS_MAX_WIDTH_FRAC = 0.92
 
 # Volume line between weather and HH:MM:SS — width grows from the center with level.
+# Idle saver uses a larger Digital-7 size to fill the band under the temps.
 _VOLUME_FONT_SIZE_PX = 72
+_CLOCK_SAVER_VOLUME_FONT_SIZE_PX = 110
 _VOLUME_LINE_H_PX = 8
+_CLOCK_SAVER_VOLUME_LINE_H_PX = 12
 _VOLUME_GAP_ABOVE_TIME_PX = 20
 _VOLUME_TEXT_PAD_X_PX = 24
+# Keep weather / volume / time from kissing (Digital-7 hangs below ``mm``).
+_VOLUME_CLEARANCE_PX = 12
+
+
+def _color_ink_mask(arr: np.ndarray, *, thresh: int = 40) -> np.ndarray:
+    if arr.ndim != 3 or arr.shape[2] < 3:
+        return np.zeros(arr.shape[:2], dtype=bool)
+    return arr[:, :, :3].max(axis=2) > int(thresh)
+
+
+def _anchor_mm_extents(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.ImageFont,
+) -> tuple[int, int, int]:
+    """``(above, below, width)`` relative to an ``anchor='mm'`` origin."""
+    tb = draw.textbbox((0, 0), text, font=font, anchor="mm")
+    above = max(0, -int(tb[1]))
+    below = max(0, int(tb[3]))
+    width = max(1, int(tb[2] - tb[0]))
+    return above, below, width
 
 
 def _time_color_rgba(now_mono: float) -> tuple[int, int, int, int]:
@@ -392,10 +417,11 @@ def _time_label(now) -> str:
 
         use_24 = bool(clock_uses_24h())
     except Exception:
-        use_24 = True
+        use_24 = False
     if use_24:
         return now.strftime(_TIME_FORMAT_24)
-    return now.strftime(_TIME_FORMAT_12)
+    label = now.strftime(_TIME_FORMAT_12)
+    return label[1:] if label.startswith("0") else label
 
 
 def _format_temp_f(temp_f: int) -> str:
@@ -426,7 +452,9 @@ def _svg_tree_from_path(path: Path) -> ET.Element:
     return copy.deepcopy(template)
 
 
-def _apply_clock_saver_svg_state(root: ET.Element, *, color_hex: str) -> float:
+def _apply_clock_saver_svg_state(
+    root: ET.Element, *, color_hex: str, include_weather: bool = True
+) -> float:
     now = _resolve_display_time()
     date_el = _find_by_logical_id(
         root, "today_month_year_text", "tday_month_year_text"
@@ -436,9 +464,6 @@ def _apply_clock_saver_svg_state(root: ET.Element, *, color_hex: str) -> float:
     low_el = _find_by_logical_id(root, "low_temp")
 
     date_text = _date_label(now)
-    temps = ensure_weather(zip_code=DEFAULT_WEATHER_ZIP)
-    high_s = _format_temp_f(temps.high_f) if temps is not None else "--"
-    low_s = _format_temp_f(temps.low_f) if temps is not None else "--"
 
     if date_el is not None:
         _set_flat_text(date_el, date_text)
@@ -449,19 +474,27 @@ def _apply_clock_saver_svg_state(root: ET.Element, *, color_hex: str) -> float:
     if time_el is not None:
         # Drawn in Pillow with fixed-width cells (Digital-7 glyphs are not tabular).
         _set_visible(time_el, False)
-    if high_el is not None:
-        _set_flat_text(high_el, high_s)
-    if low_el is not None:
-        _set_flat_text(low_el, low_s)
-    # Keep numbers locked to their ° marks / slash; then center the whole cluster.
-    _anchor_temp_to_degree(
-        high_el, _find_by_logical_id(root, "degrees_left_stroke")
-    )
-    _anchor_temp_to_degree(
-        low_el,
-        _find_by_logical_id(root, "degrees_right_stroke", "degrees_rifght_stroke"),
-    )
-    weather_bottom_svg = _place_weather_under_date(root)
+
+    weather_bottom_svg = 0.0
+    if include_weather:
+        temps = ensure_weather(zip_code=DEFAULT_WEATHER_ZIP)
+        high_s = _format_temp_f(temps.high_f) if temps is not None else "--"
+        low_s = _format_temp_f(temps.low_f) if temps is not None else "--"
+        if high_el is not None:
+            _set_flat_text(high_el, high_s)
+        if low_el is not None:
+            _set_flat_text(low_el, low_s)
+        # Keep numbers locked to their ° marks / slash; then center the whole cluster.
+        _anchor_temp_to_degree(
+            high_el, _find_by_logical_id(root, "degrees_left_stroke")
+        )
+        _anchor_temp_to_degree(
+            low_el,
+            _find_by_logical_id(root, "degrees_right_stroke", "degrees_rifght_stroke"),
+        )
+        weather_bottom_svg = _place_weather_under_date(root)
+    else:
+        _set_visible(_find_by_logical_id(root, "weather"), False)
 
     # Hide baked black plate — callers already paint a black stage.
     _set_visible(_find_by_logical_id(root, "Layer_1", "layer_1"), False)
@@ -472,7 +505,8 @@ def _apply_clock_saver_svg_state(root: ET.Element, *, color_hex: str) -> float:
                 _set_visible(el, False)
 
     _paint_cycle_color(root, color_hex)
-    _ensure_degree_strokes(root, color_hex)
+    if include_weather:
+        _ensure_degree_strokes(root, color_hex)
     return weather_bottom_svg
 
 
@@ -946,6 +980,14 @@ def _draw_hhmmss_fixed_cells(
     else:
         cy = int(round(_HHMMSS_MID_Y_SVG * float(canvas_h) / _ARTBOARD_H))
 
+    pre_ink = _color_ink_mask(np.asarray(img)).copy()
+    pre_rows = np.where(pre_ink.any(axis=1))[0]
+    wx_bottom_px = (
+        float(int(pre_rows.max()) + 1)
+        if pre_rows.size
+        else float(weather_bottom or 0.0)
+    )
+
     for region, pair in zip(regions, pairs):
         _draw_pair_in_region(
             draw,
@@ -959,6 +1001,11 @@ def _draw_hhmmss_fixed_cells(
     for cx in colon_cx:
         draw.text((cx, cy), ":", font=font, fill=color, anchor="ms")
 
+    post_ink = _color_ink_mask(np.asarray(img))
+    new_rows = np.where((post_ink & ~pre_ink).any(axis=1))[0]
+    time_box = draw.textbbox((0, int(cy)), "0", font=font, anchor="ms")
+    time_top_px = int(new_rows.min()) if new_rows.size else int(time_box[1])
+
     _draw_clock_saver_volume_line(
         draw,
         volume=volume,
@@ -967,7 +1014,8 @@ def _draw_hhmmss_fixed_cells(
         canvas_w=canvas_w,
         time_cy=cy,
         time_font=font,
-        weather_bottom=weather_bottom,
+        weather_bottom=wx_bottom_px,
+        time_top=time_top_px,
         line_opacity=line_opacity,
     )
 
@@ -988,6 +1036,7 @@ def _draw_clock_saver_volume_line(
     time_cy: int,
     time_font: ImageFont.ImageFont,
     weather_bottom: float | None = None,
+    time_top: int | None = None,
     line_opacity: float = 1.0,
 ) -> None:
     """Centered volume stroke with a Digital-7 level in the middle break."""
@@ -998,15 +1047,30 @@ def _draw_clock_saver_volume_line(
     from pigeon.widgets.playback_overlay import volume_fraction_from_display_line
 
     time_box = draw.textbbox((0, int(time_cy)), "0", font=time_font, anchor="ms")
-    time_top = int(time_box[1])
-    vol_sz = max(
-        18,
-        int(round(_VOLUME_FONT_SIZE_PX * float(canvas_w) / float(DESIGN_W))),
+    time_limit = int(time_top) if time_top is not None else int(time_box[1])
+    wx_bottom = float(weather_bottom) if weather_bottom is not None else 0.0
+    clearance = max(
+        8,
+        int(round(_VOLUME_CLEARANCE_PX * float(canvas_w) / float(DESIGN_W))),
     )
+    band_top = wx_bottom + clearance if wx_bottom > 0.0 else 0.0
+    band_bot = float(time_limit - clearance)
+    if band_bot <= band_top + 8:
+        band_top = max(0.0, float(time_limit) - float(_VOLUME_GAP_ABOVE_TIME_PX) - 48.0)
+        band_bot = float(time_limit) - float(_VOLUME_GAP_ABOVE_TIME_PX)
+    avail = max(18.0, band_bot - band_top)
+
+    prefer_sz = max(
+        18,
+        int(round(_CLOCK_SAVER_VOLUME_FONT_SIZE_PX * float(canvas_w) / float(DESIGN_W))),
+    )
+    vol_sz = prefer_sz
     vol_font = _load_font(font_path, vol_sz)
-    tb = draw.textbbox((0, 0), label, font=vol_font)
-    text_w = max(1, int(tb[2] - tb[0]))
-    text_h = max(1, int(tb[3] - tb[1]))
+    above, below, text_w = _anchor_mm_extents(draw, label, vol_font)
+    while vol_sz > 18 and (above + below) > avail:
+        vol_sz -= 2
+        vol_font = _load_font(font_path, vol_sz)
+        above, below, text_w = _anchor_mm_extents(draw, label, vol_font)
     try:
         _tx, _ty, track_w, _th, _trx = clock_saver_seconds_track_rect()
         max_w = int(track_w)
@@ -1018,14 +1082,31 @@ def _draw_clock_saver_volume_line(
         text_w=text_w,
         max_width=max_w,
     )
-    line_h = max(2, int(round(_VOLUME_LINE_H_PX * float(canvas_w) / float(DESIGN_W))))
-    cluster_h = max(text_h, line_h)
-    wx_bottom = float(weather_bottom) if weather_bottom is not None else 0.0
-    if wx_bottom > 0.0 and wx_bottom + cluster_h < time_top:
-        cy_vol = (wx_bottom + time_top) / 2.0
+    line_h = max(
+        2,
+        int(
+            round(
+                _CLOCK_SAVER_VOLUME_LINE_H_PX
+                * (float(vol_sz) / float(max(1, prefer_sz)))
+                * float(canvas_w)
+                / float(DESIGN_W)
+            )
+        ),
+    )
+    visual_h = max(above + below, line_h)
+    mid = (band_top + band_bot) / 2.0
+    # ``mm`` is not the visual center for Digital-7 (more ink hangs below).
+    cy_vol = mid - (below - above) / 2.0
+    if visual_h <= (band_bot - band_top):
+        vis_top = cy_vol - above
+        vis_bot = cy_vol + below
+        if vis_top < band_top:
+            cy_vol += band_top - vis_top
+        elif vis_bot > band_bot:
+            cy_vol -= vis_bot - band_bot
     else:
-        cluster_bottom = time_top - int(_VOLUME_GAP_ABOVE_TIME_PX)
-        cy_vol = cluster_bottom - cluster_h / 2.0
+        cluster_bottom = time_limit - int(_VOLUME_GAP_ABOVE_TIME_PX)
+        cy_vol = cluster_bottom - below
     arm_a = int(round(float(color[3]) * max(0.0, min(1.0, float(line_opacity)))))
     if arm_a > 0 and clock_saver_volume_line_visible(volume):
         line_y0 = int(round(cy_vol - line_h / 2.0))
@@ -1167,20 +1248,23 @@ def render_clock_saver_bgra(
     svg_path: Path | str | None = None,
     volume: object | None = None,
     line_opacity: float = 1.0,
+    include_weather: bool = True,
+    prefer_digital: bool = False,
 ) -> np.ndarray:
     """Full 1280×800 BGRA idle face: digital clocksaver or centered clock widget."""
-    try:
-        from pigeon.widgets.options_settings import clock_widget_analog
+    if not prefer_digital:
+        try:
+            from pigeon.widgets.options_settings import clock_widget_analog
 
-        if clock_widget_analog():
-            from pigeon.widgets.view_circles import render_centered_clock_widget_bgra
+            if clock_widget_analog():
+                from pigeon.widgets.view_circles import render_centered_clock_widget_bgra
 
-            return render_centered_clock_widget_bgra(
-                layer_opacity=layer_opacity,
-                assets_dir=assets_dir,
-            )
-    except Exception:
-        pass
+                return render_centered_clock_widget_bgra(
+                    layer_opacity=layer_opacity,
+                    assets_dir=assets_dir,
+                )
+        except Exception:
+            pass
     path = (
         Path(svg_path)
         if svg_path is not None
@@ -1201,7 +1285,9 @@ def render_clock_saver_bgra(
         )
 
     root = _svg_tree_from_path(path)
-    weather_bottom_svg = _apply_clock_saver_svg_state(root, color_hex=color_hex)
+    weather_bottom_svg = _apply_clock_saver_svg_state(
+        root, color_hex=color_hex, include_weather=include_weather
+    )
     from pigeon.np_layout import letterbox_legacy_ui
     from pigeon.widgets.settings_svg_text import rasterize_settings_svg_bgra
 
@@ -1212,8 +1298,10 @@ def render_clock_saver_bgra(
         font_mode="preferences",
     )
     framed = letterbox_legacy_ui(native)
-    weather_bottom = clock_saver_svg_y_to_design_y(
-        weather_bottom_svg, int(framed.shape[0])
+    weather_bottom = (
+        clock_saver_svg_y_to_design_y(weather_bottom_svg, int(framed.shape[0]))
+        if include_weather
+        else None
     )
     _draw_hhmmss_fixed_cells(
         framed,
@@ -1227,6 +1315,247 @@ def render_clock_saver_bgra(
         framed, now, fill_bgr=(int(color[2]), int(color[1]), int(color[0]))
     )
     return _apply_layer_opacity(framed, layer_opacity)
+
+
+def render_clock_saver_weather_cluster_bgra(
+    *,
+    assets_dir: Path | str | None = None,
+    svg_path: Path | str | None = None,
+) -> np.ndarray:
+    """High/low weather cluster from clocksaver.svg, without date or time."""
+    path = (
+        Path(svg_path)
+        if svg_path is not None
+        else default_clock_saver_svg_path(assets_dir)
+    )
+    if not path.is_file():
+        return _EMPTY_PATCH.copy()
+    color = _time_color_rgba(time.monotonic())
+    root = _svg_tree_from_path(path)
+    _apply_clock_saver_svg_state(
+        root, color_hex=_rgba_to_hex(color), include_weather=True
+    )
+    _set_visible(_find_by_logical_id(root, "clock"), False)
+    from pigeon.widgets.settings_svg_text import rasterize_settings_svg_bgra
+
+    return rasterize_settings_svg_bgra(
+        root,
+        width=LEGACY_DESIGN_W,
+        height=LEGACY_DESIGN_H,
+        font_mode="preferences",
+    )
+
+
+def render_clock_saver_face_bgra(
+    *,
+    width: int,
+    height: int,
+    include_weather: bool = False,
+    include_seconds_bar: bool = True,
+) -> np.ndarray:
+    """Date + HH:MM:SS (+ optional seconds bar) sized to ``width``×``height``.
+
+    Same type as the digital clock saver, composed for a widget well so the
+    time is fully visible. Weather is omitted unless ``include_weather``.
+    """
+    w = max(32, int(width))
+    h = max(24, int(height))
+    out = np.zeros((h, w, 4), dtype=np.uint8)
+    now = _resolve_display_time()
+    color = _time_color_rgba(time.monotonic())
+    pad = max(4, int(round(min(w, h) * 0.05)))
+    date_h = max(16, int(round(h * 0.16)))
+    bar_h = max(6, int(round(h * 0.08))) if include_seconds_bar else 0
+    weather_h = max(18, int(round(h * 0.18))) if include_weather else 0
+    gap = max(3, int(round(h * 0.03)))
+    y = pad
+    date_cy = y + date_h // 2
+    _draw_face_date(
+        out,
+        _date_label(now),
+        color=color,
+        cy=date_cy,
+        max_w=max(24, w - 2 * pad),
+        max_h=date_h,
+    )
+    y = pad + date_h + gap
+    if include_weather:
+        cluster = render_clock_saver_weather_cluster_bgra()
+        _contain_patch(out, cluster, (pad, y, max(1, w - 2 * pad), weather_h))
+        y += weather_h + gap
+    time_bottom = h - pad - (bar_h + gap if bar_h else 0)
+    time_h = max(16, time_bottom - y)
+    _draw_face_hhmmss(
+        out,
+        _time_label(now),
+        color=color,
+        box=(pad, y, max(24, w - 2 * pad), time_h),
+    )
+    if bar_h:
+        _draw_face_seconds_bar(
+            out,
+            now,
+            fill_bgr=(int(color[2]), int(color[1]), int(color[0])),
+            box=(pad, h - pad - bar_h, max(24, w - 2 * pad), bar_h),
+        )
+    return out
+
+
+def _draw_face_date(
+    bgra: np.ndarray,
+    text: str,
+    *,
+    color: tuple[int, int, int, int],
+    cy: int,
+    max_w: int,
+    max_h: int,
+) -> None:
+    label = str(text or "").strip()
+    if not label or max_w < 8 or max_h < 8:
+        return
+    path = resolve_ui_font_bold()
+    lo, hi = 8, max(10, int(max_h))
+    best = _load_font(path, lo)
+    probe = ImageDraw.Draw(Image.new("RGBA", (4, 4)))
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        font = _load_font(path, mid)
+        box = probe.textbbox((0, 0), label, font=font)
+        tw = max(1, int(box[2] - box[0]))
+        th = max(1, int(box[3] - box[1]))
+        if tw <= max_w and th <= max_h:
+            best = font
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    rgba = np.ascontiguousarray(bgra[:, :, [2, 1, 0, 3]])
+    img = Image.fromarray(rgba)
+    draw = ImageDraw.Draw(img)
+    draw.text((int(bgra.shape[1]) // 2, int(cy)), label, font=best, fill=color, anchor="mm")
+    arr = np.asarray(img)
+    bgra[:, :, 0] = arr[:, :, 2]
+    bgra[:, :, 1] = arr[:, :, 1]
+    bgra[:, :, 2] = arr[:, :, 0]
+    bgra[:, :, 3] = arr[:, :, 3]
+
+
+def _draw_face_hhmmss(
+    bgra: np.ndarray,
+    time_text: str,
+    *,
+    color: tuple[int, int, int, int],
+    box: tuple[int, int, int, int],
+) -> None:
+    x, y, w, h = (int(v) for v in box)
+    if w < 16 or h < 12:
+        return
+    font_path = resolve_digital7_font() or resolve_ui_font_bold()
+    font = _fit_digital7_fixed_cells(
+        font_path,
+        _HHMMSS_MATCHING_UNITS,
+        max_w=max(16, w - 4),
+        max_h=max(12, h - 2),
+        prefer_sz=max(16, h),
+    )
+    rgba = np.ascontiguousarray(bgra[:, :, [2, 1, 0, 3]])
+    img = Image.fromarray(rgba)
+    draw = ImageDraw.Draw(img)
+    matching_w, _cell_h = _cell_metrics(draw, font, _HHMMSS_CHAR_SET)
+    regions, colon_cx = _hhmmss_locked_scaffold(matching_w, w)
+    cy = y + h // 2
+    pairs = _parse_hhmmss_pairs(time_text)
+    for (left, right), pair in zip(regions, pairs):
+        _draw_pair_in_region(
+            draw,
+            pair=pair,
+            region=(x + left, x + right),
+            matching_w=matching_w,
+            cy=cy,
+            font=font,
+            color=color,
+        )
+    for cx in colon_cx:
+        draw.text((x + cx, cy), ":", font=font, fill=color, anchor="ms")
+    arr = np.asarray(img)
+    bgra[:, :, 0] = arr[:, :, 2]
+    bgra[:, :, 1] = arr[:, :, 1]
+    bgra[:, :, 2] = arr[:, :, 0]
+    bgra[:, :, 3] = arr[:, :, 3]
+
+
+def _draw_face_seconds_bar(
+    bgra: np.ndarray,
+    now,
+    *,
+    fill_bgr: tuple[int, int, int],
+    box: tuple[int, int, int, int],
+) -> None:
+    from pigeon.np_layout import (
+        CLOCK_SAVER_SECONDS_GAP_PX,
+        CLOCK_SAVER_SECONDS_SEGMENTS,
+        clock_saver_seconds_filled,
+        clock_saver_seconds_segment_rects,
+    )
+    from pigeon.widgets.view_circles import _draw_rounded_bar_bgra
+
+    x, y, w, h = (int(v) for v in box)
+    if w < 8 or h < 3:
+        return
+    rects = clock_saver_seconds_segment_rects((float(x), float(y), float(w), float(h)))
+    if not rects:
+        n = int(CLOCK_SAVER_SECONDS_SEGMENTS)
+        gap = max(1, min(int(CLOCK_SAVER_SECONDS_GAP_PX), h // 2))
+        cell = max(1, (w - gap * (n - 1)) // n)
+        rects = tuple(
+            (x + i * (cell + gap), y, cell, h) for i in range(n)
+        )
+    filled = clock_saver_seconds_filled(int(getattr(now, "second", 0)))
+    seg_w = min(r[2] for r in rects)
+    radius = max(1, min(seg_w // 2, h // 2))
+    for i, (sx, sy, sw, sh) in enumerate(rects):
+        if i >= filled:
+            break
+        _draw_rounded_bar_bgra(
+            bgra,
+            x=int(sx),
+            y=int(sy),
+            w=int(sw),
+            h=int(sh),
+            fill_bgr=fill_bgr,
+            radius=radius,
+            fill_opacity=1.0,
+            stroke=0,
+        )
+
+
+def _contain_patch(
+    canvas: np.ndarray,
+    patch: np.ndarray | None,
+    box: tuple[int, int, int, int],
+) -> None:
+    if patch is None or patch.size == 0 or patch.ndim < 3:
+        return
+    import cv2
+
+    from pigeon.compositing import cv_resize_interp
+    from pigeon.widgets.view_circles import _ink_crop_bgra, _paste_patch_bgra
+
+    cropped = _ink_crop_bgra(patch, pad=2)
+    if cropped is None or cropped.size == 0:
+        return
+    x, y, w, h = (int(v) for v in box)
+    ph, pw = int(cropped.shape[0]), int(cropped.shape[1])
+    if pw < 1 or ph < 1 or w < 1 or h < 1:
+        return
+    scale = min(w / float(pw), h / float(ph))
+    nw = max(1, int(round(pw * scale)))
+    nh = max(1, int(round(ph * scale)))
+    resized = cv2.resize(
+        cropped, (nw, nh), interpolation=cv_resize_interp(pw, ph, nw, nh)
+    )
+    _paste_patch_bgra(
+        canvas, resized, x + (w - nw) // 2, y + (h - nh) // 2
+    )
 
 
 def _legacy_time_only_bgra(

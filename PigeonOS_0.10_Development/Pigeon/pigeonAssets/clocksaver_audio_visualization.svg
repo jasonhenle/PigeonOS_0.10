@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1281 801">
+  <g id="background">
+    <rect x=".5" y=".5" width="1280" height="800" fill="#050505" stroke="#231f20" stroke-miterlimit="10"/>
+  </g>
+  <g id="left_meter_group">
+    <rect id="left_meter_01_shape" x="548.5" y="752.51" width="47.99" height="47.99" fill="#39b54a" stroke="#231f20" stroke-miterlimit="10"/>
+    <rect id="left_meter_02_shape" x="548.5" y="690.67" width="47.99" height="47.99" fill="#39b54a" stroke="#231f20" stroke-miterlimit="10"/>
+    <rect id="left_meter_03_shape" x="548.5" y="628.82" width="47.99" height="47.99" fill="#39b54a" stroke="#231f20" stroke-miterlimit="10"/>
+    <rect id="left_meter_04_shape" x="548.5" y="566.98" width="47.99" height="47.99" fill="#39b54a" stroke="#231f20" stroke-miterlimit="10"/>
+    <rect id="left_meter_05_shape" x="548.5" y="505.14" width="47.99" height="47.99" fill="#39b54a" stroke="#231f20" stroke-miterlimit="10"/>
+    <rect id="left_meter_06_shape" x="548.5" y="443.29" width="47.99" height="47.99" fill="#39b54a" stroke="#231f20" stroke-miterlimit="10"/>
+    <rect id="left_meter_07_shape" x="548.5" y="381.45" width="47.99" height="47.99" fill="#39b54a" stroke="#231f20" stroke-miterlimit="10"/>
+    <rect id="left_meter_08_shape" x="548.5" y="319.6" width="47.99" height="47.99" fill="#fff200" stroke="#231f20" stroke-miterlimit="10"/>
+    <rect id="left_meter_09_shape" x="548.5" y="257.76" width="47.99" height="47.99" fill="#fff200" stroke="#231f20" stroke-miterlimit="10"/>
+    <rect id="left_meter_10_shape" x="548.5" y="195.92" width="47.99" height="47.99" fill="#d60000" stroke="#231f20" stroke-miterlimit="10"/>
+  </g>
+  <g id="right_meter_grouop">
+    <rect id="right_meter_01_shape" x="684.5" y="752.51" width="47.99" height="47.99" fill="#39b54a" stroke="#231f20" stroke-miterlimit="10"/>
+    <rect id="right_meter_02_shape" x="684.5" y="690.67" width="47.99" height="47.99" fill="#39b54a" stroke="#231f20" stroke-miterlimit="10"/>
+    <rect id="right_meter_03_shape" x="684.5" y="628.82" width="47.99" height="47.99" fill="#39b54a" stroke="#231f20" stroke-miterlimit="10"/>
+    <rect id="right_meter_04_shape" x="684.5" y="566.98" width="47.99" height="47.99" fill="#39b54a" stroke="#231f20" stroke-miterlimit="10"/>
+    <rect id="right_meter_05_shape" x="684.5" y="505.14" width="47.99" height="47.99" fill="#39b54a" stroke="#231f20" stroke-miterlimit="10"/>
+    <rect id="right_meter_06_shape" x="684.5" y="443.29" width="47.99" height="47.99" fill="#39b54a" stroke="#231f20" stroke-miterlimit="10"/>
+    <rect id="right_meter_07_shape" x="684.5" y="381.45" width="47.99" height="47.99" fill="#39b54a" stroke="#231f20" stroke-miterlimit="10"/>
+    <rect id="right_meter_08_shape" x="684.5" y="319.6" width="47.99" height="47.99" fill="#fff200" stroke="#231f20" stroke-miterlimit="10"/>
+    <rect id="right_meter_09_shape" x="684.5" y="257.76" width="47.99" height="47.99" fill="#fff200" stroke="#231f20" stroke-miterlimit="10"/>
+    <rect id="right_meter_10_shape" x="684.5" y="195.92" width="47.99" height="47.99" fill="#d60000" stroke="#231f20" stroke-miterlimit="10"/>
+  </g>
+</svg>

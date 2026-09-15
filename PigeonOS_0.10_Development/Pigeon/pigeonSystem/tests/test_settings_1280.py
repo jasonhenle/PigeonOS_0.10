@@ -636,6 +636,12 @@ class SettingsRenderTests(unittest.TestCase):
             int(np.count_nonzero(np.all(zone6_stroke > 200, axis=2))),
             80,
         )
+        # Zone wells are filled black; sample the top-left corner inside the stroke.
+        zone6_fill = active[276:286, 395:420, :3]
+        self.assertGreater(
+            int(np.count_nonzero(np.all(zone6_fill < 30, axis=2))),
+            80,
+        )
         # The old source-tile well (settings_pigeon_connectors) must be gone.
         # Sample the plate just left of the zone stack.
         well = active[468:500, 255:300, :3]
@@ -663,6 +669,12 @@ class SettingsRenderTests(unittest.TestCase):
             int(np.count_nonzero(np.all(still_zone6 > 200, axis=2))),
             80,
         )
+        # Zone 6 clock is the digital saver (wide time), not the NP disc.
+        clock_band = labels[360:430, 410:740, :3]
+        self.assertGreater(
+            int(np.count_nonzero(clock_band.max(axis=2) > 60)),
+            400,
+        )
         self.assertEqual(preview.activate_widgets(), "widgets_assign:clock")
         self.assertEqual(preview.widgets_nav, "zones")
         self.assertEqual(preview.widgets_focused_id, "zone6")
@@ -677,6 +689,68 @@ class SettingsRenderTests(unittest.TestCase):
         )
 
         write_now_playing_zone_widgets(DEFAULT_ZONE_WIDGETS)
+
+    def test_widgets_page_uses_live_now_playing_metadata(self) -> None:
+        from pigeon.widgets.main_settings import MainSettingsState
+        from pigeon.widgets.widgets_settings import (
+            _render_info_widget_bgra,
+            _render_status_widget_bgra,
+            _render_volume_widget_bgra,
+        )
+
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        live = MainSettingsState()
+        live.preferences_live_content = True
+        live.preferences_volume = "-18.0 dB"
+        live.preferences_volume_fraction = 0.55
+        live.preferences_cast = (
+            ("keanu reeves", "neo"),
+            ("carrie-anne moss", "trinity"),
+            ("laurence fishburne", "morpheus"),
+        )
+        live.preferences_elapsed_text = "0:45:00"
+        live.preferences_remaining_text = "1:15:00"
+        live.preferences_np_progress = 0.375
+        idle = MainSettingsState()
+        live_vol = _render_volume_widget_bgra(assets, live)
+        idle_vol = _render_volume_widget_bgra(assets, idle)
+        self.assertIsNotNone(live_vol)
+        self.assertIsNotNone(idle_vol)
+        assert live_vol is not None and idle_vol is not None
+        self.assertFalse(np.array_equal(live_vol, idle_vol))
+        self.assertFalse(
+            np.array_equal(_render_info_widget_bgra(live), _render_info_widget_bgra(idle))
+        )
+        self.assertFalse(
+            np.array_equal(
+                _render_status_widget_bgra(live), _render_status_widget_bgra(idle)
+            )
+        )
+
+    def test_zone3_artwork_is_rounded_poster(self) -> None:
+        from pigeon.widgets.main_settings import MainSettingsState
+        from pigeon.widgets.widgets_settings import (
+            ZONE_WIDGET_LISTS,
+            apply_widget_assignment,
+            widget_id_for_zone,
+            _render_poster_artwork_widget_bgra,
+        )
+
+        self.assertIn("artwork", ZONE_WIDGET_LISTS["zone3"])
+        state = MainSettingsState()
+        state.widgets_active_zone = "zone3"
+        self.assertTrue(apply_widget_assignment(state, "artwork", persist=False))
+        self.assertEqual(state.preferences_zone_widgets[2], "poster")
+        self.assertEqual(widget_id_for_zone(state, "zone3"), "artwork")
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        poster = np.full((90, 60, 3), (0, 180, 80), dtype=np.uint8)
+        live = MainSettingsState()
+        live.preferences_poster_bgra = poster
+        patch = _render_poster_artwork_widget_bgra(live, assets)
+        self.assertGreater(int(patch[:, :, 3].max()), 200)
+        # Rounded corners stay empty; the fill sits in the 2×3 well.
+        self.assertLess(int(patch[8, 8, 3]), 20)
+        self.assertGreater(int(patch[patch.shape[0] // 2, patch.shape[1] // 2, 3]), 200)
 
     def test_legacy_mark_is_not_part_of_native_frame(self) -> None:
         from pigeon.widgets.main_settings import MainSettingsState

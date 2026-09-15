@@ -74,6 +74,7 @@ ZONE_WIDGET_CATALOG: dict[int, tuple[str, ...]] = {
         "tt_countdown_16x9",
         "audio_levels",
         "clock",
+        "clock_16x9",
         "poster",
         "volume",
         "now_playing",
@@ -85,6 +86,7 @@ ZONE_WIDGET_CATALOG: dict[int, tuple[str, ...]] = {
         "tt_countdown_16x9",
         "audio_levels",
         "clock",
+        "clock_16x9",
         "poster",
         "volume",
         "now_playing",
@@ -301,8 +303,31 @@ def write_np_header_clock(on: bool, *, persist: bool = True) -> bool:
     return flag
 
 
+_CLOCK_12H_DEFAULT_GENERATION = 1
+
+
+def _ensure_clock_12h_default() -> None:
+    """One-shot: persist 12-hour so older 24-hour defaults flip on upgrade."""
+    try:
+        from pigeon.app_state import read_app_state, write_app_state
+
+        if int(read_app_state().get("clock_12h_default_generation") or 0) >= int(
+            _CLOCK_12H_DEFAULT_GENERATION
+        ):
+            return
+        from pigeon.widgets.options_settings import read_options, write_options
+
+        opts = read_options()
+        opts["time_format"] = "12"
+        write_options(opts)
+        write_app_state(clock_12h_default_generation=int(_CLOCK_12H_DEFAULT_GENERATION))
+    except Exception:
+        pass
+
+
 def ensure_now_playing_layout_defaults() -> None:
     """Once per generation: video/music zone defaults, header clock, digital °F."""
+    _ensure_clock_12h_default()
     try:
         from pigeon.app_state import read_app_state, write_app_state
 
@@ -320,6 +345,7 @@ def ensure_now_playing_layout_defaults() -> None:
         from pigeon.widgets.options_settings import read_options, write_options
 
         opts = read_options()
+        opts["time_format"] = "12"
         opts["clock_format"] = "digital"
         opts["temp_format"] = "f"
         write_options(opts)

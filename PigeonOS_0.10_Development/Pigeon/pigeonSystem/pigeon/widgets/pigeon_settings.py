@@ -1181,6 +1181,7 @@ def factory_reset_pigeon_persisted_state() -> None:
         "tmdb_quality_fail_count",
         "source_toggles",
         "settings_options",
+        "clock_12h_default_generation",
     )
     write_ui_color_keys(
         {"accent": "white", "ui": "blue", "button": "black"},

@@ -13,8 +13,10 @@ if _SYS_ROOT not in sys.path:
     sys.path.insert(0, _SYS_ROOT)
 
 from pigeon.splash_sequence import (  # noqa: E402
+    SPLASH_CLOCK_REVEAL_FRAME,
     SPLASH_SEQUENCE_DIRNAME,
     list_splash_png_paths,
+    splash_keep_alpha_for_live_clock,
 )
 
 
@@ -36,6 +38,17 @@ class SplashPngDiscoveryTests(unittest.TestCase):
             root = Path(tmp)
             (root / SPLASH_SEQUENCE_DIRNAME).mkdir()
             self.assertEqual(list_splash_png_paths(root), [])
+
+
+class SplashLiveClockRevealTests(unittest.TestCase):
+    def test_pre_reveal_frames_flatten_over_black(self) -> None:
+        self.assertFalse(splash_keep_alpha_for_live_clock(0))
+        self.assertFalse(splash_keep_alpha_for_live_clock(SPLASH_CLOCK_REVEAL_FRAME - 1))
+
+    def test_reveal_frames_keep_alpha_for_live_clock(self) -> None:
+        self.assertTrue(splash_keep_alpha_for_live_clock(SPLASH_CLOCK_REVEAL_FRAME))
+        self.assertTrue(splash_keep_alpha_for_live_clock(SPLASH_CLOCK_REVEAL_FRAME + 12))
+        self.assertTrue(splash_keep_alpha_for_live_clock(40, reveal_frame=40))
 
 
 if __name__ == "__main__":

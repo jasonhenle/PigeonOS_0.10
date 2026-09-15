@@ -177,6 +177,12 @@ StatusBarWidget = None  # type: ignore[misc, assignment]
 clock_saver_composite_bgra = None  # type: ignore[misc, assignment]
 ClockSaverVolumeHold = None  # type: ignore[misc, assignment]
 VolumeLineReveal = None  # type: ignore[misc, assignment]
+audio_meter_face_enabled = None  # type: ignore[misc, assignment]
+latest_meter_cache_key = None  # type: ignore[misc, assignment]
+render_audio_meter_composite_bgra = None  # type: ignore[misc, assignment]
+stop_audio_meter_capture = None  # type: ignore[misc, assignment]
+sync_audio_meter_capture = None  # type: ignore[misc, assignment]
+toggle_audio_meter_face = None  # type: ignore[misc, assignment]
 PlaybackOverlayWidget = None  # type: ignore[misc, assignment]
 compose_playback_volume_widget_line = None  # type: ignore[misc, assignment]
 PATCH_LAYER_RECEIVER_AUDIO = "receiver_audio"  # type: ignore[misc, assignment]
@@ -209,6 +215,7 @@ resolve_splash_media = None  # type: ignore[misc, assignment]
 resize_bgra_if_needed = None  # type: ignore[misc, assignment]
 splash_end_fade_factor = None  # type: ignore[misc, assignment]
 splash_effective_frame_count = None  # type: ignore[misc, assignment]
+splash_keep_alpha_for_live_clock = None  # type: ignore[misc, assignment]
 
 try:
     from pigeon.compositing import (
@@ -280,6 +287,18 @@ except ImportError as _exc:
     _log_optional_import_failure("clock_status_widgets", _exc)
 
 try:
+    from pigeon.widgets.audio_meter_saver import (
+        audio_meter_face_enabled,
+        latest_meter_cache_key,
+        render_audio_meter_composite_bgra,
+        stop_audio_meter_capture,
+        sync_audio_meter_capture,
+        toggle_audio_meter_face,
+    )
+except ImportError as _exc:
+    _log_optional_import_failure("audio_meter_saver", _exc)
+
+try:
     from pigeon.view_one_variants import (
         ViewOneVariant,
         load_pigeon_temp_logo_bgra,
@@ -346,9 +365,17 @@ try:
         resize_bgra_if_needed,
         splash_effective_frame_count,
         splash_end_fade_factor,
+        splash_keep_alpha_for_live_clock,
     )
 except ImportError as _exc:
     _log_optional_import_failure("splash_sequence", _exc)
+
+if not callable(splash_keep_alpha_for_live_clock):
+    def splash_keep_alpha_for_live_clock(  # type: ignore[misc]
+        frame_index: int,
+        reveal_frame: int = SPLASH_CLOCK_REVEAL_FRAME,
+    ) -> bool:
+        return int(frame_index) >= int(reveal_frame)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -973,6 +1000,11 @@ def main() -> int:
             _kiosk_stopped_pids.clear()
 
     def _quit_pigeon() -> None:
+        try:
+            if stop_audio_meter_capture is not None:
+                stop_audio_meter_capture()
+        except Exception:
+            pass
         _restore_desktop_chrome()
         root.quit()
 
@@ -1031,8 +1063,10 @@ def main() -> int:
     splash_anim_done: list[bool] = [False]
     # Live underlay composited under splash PNG alpha. Stays black until frame 90.
     _splash_underlay_bgr: list[np.ndarray | None] = [None]
-    # Pre-rasterized clock (background thread); swapped into underlay only at frame 90.
+    # Live clock buffer (background thread); copied under the splash from frame 90.
     _splash_clock_ready_bgr: list[np.ndarray | None] = [None]
+    # Stop the live-clock worker once compose owns the display.
+    _splash_clock_refresh_stop: list[bool] = [False]
     # True once splash reaches ``SPLASH_CLOCK_REVEAL_FRAME``.
     _splash_reveal_clock: list[bool] = [False]
     # Registered from bootstrap: keep the real video label in sync after reveal.
@@ -1174,6 +1208,12 @@ def main() -> int:
                 kwargs["line_opacity"] = _volume_lines.opacity()
             except Exception:
                 kwargs["line_opacity"] = 0.0
+        replace = bool(kwargs.pop("replace_with_meter", False))
+        if replace and render_audio_meter_composite_bgra is not None:
+            op = kwargs.get("time_layer_opacity")
+            if op is None:
+                op = kwargs.get("layer_opacity", 1.0)
+            return render_audio_meter_composite_bgra(layer_opacity=float(op))
         return clock_saver_composite_bgra(**kwargs)
 
     def _rasterize_clock_saver_window_bgr() -> np.ndarray | None:
@@ -1224,27 +1264,26 @@ def main() -> int:
             pass
 
     def _reveal_clock_under_splash(*, refresh: bool = False) -> bool:
-        """From frame 90: put clock into underlay + bridge beneath the splash overlay."""
-        if _splash_reveal_clock[0] and _splash_underlay_bgr[0] is not None and not refresh:
-            return True
+        """From frame 90: put the live clock into the underlay + bridge beneath splash."""
         shown = _splash_clock_ready_bgr[0]
-        # Re-rasterize only when we have no buffer yet, or a once-per-second digit refresh.
         if shown is None or refresh:
             shown = _rasterize_clock_saver_window_bgr()
             if shown is not None:
                 _splash_clock_ready_bgr[0] = shown
         if shown is None:
             return False
-        _splash_underlay_bgr[0] = shown
-        _apply_clock_to_bridge_label(shown)
-        _splash_underlay_paint_mono[0] = time.monotonic()
+        # Compose owns the underlay after bootstrap; do not overwrite it with a stale prewarm.
+        if not bootstrap_done[0]:
+            _splash_underlay_bgr[0] = shown
+            _apply_clock_to_bridge_label(shown)
+            _splash_underlay_paint_mono[0] = time.monotonic()
+            paint = _splash_on_reveal_paint[0]
+            if callable(paint):
+                try:
+                    paint()
+                except Exception:
+                    pass
         _splash_reveal_clock[0] = True
-        paint = _splash_on_reveal_paint[0]
-        if callable(paint):
-            try:
-                paint()
-            except Exception:
-                pass
         return True
 
     def _finish_post_splash_startup_transition() -> None:
@@ -1294,6 +1333,23 @@ def main() -> int:
         if post_splash_mono[0] is None:
             post_splash_mono[0] = time.monotonic()
 
+    def _live_clock_until_compose() -> None:
+        """Keep the boot/video clock on wall time until compose owns the display.
+
+        Bootstrap waits for splash, then packs widgets with ``root.update()``
+        (``_splash_pump_maybe``), which lets this tick run so the saver does not
+        freeze again between overlay lift and the first ``render_once``.
+        """
+        if bootstrap_done[0] or _splash_clock_refresh_stop[0]:
+            return
+        if _splash_reveal_clock[0] or splash_anim_done[0]:
+            _reveal_clock_under_splash(refresh=False)
+        if not bootstrap_done[0] and not _splash_clock_refresh_stop[0]:
+            try:
+                root.after(250, _live_clock_until_compose)
+            except tk.TclError:
+                pass
+
     _tk_pack_orig = tk.Widget.pack
     _tk_grid_orig = tk.Widget.grid
     _tk_place_orig = tk.Widget.place
@@ -1306,6 +1362,10 @@ def main() -> int:
         if now < _splash_pump_next[0]:
             return
         _splash_pump_next[0] = now + (1.0 / 30.0)
+        if (_splash_reveal_clock[0] or splash_anim_done[0]) and (
+            now - float(_splash_underlay_paint_mono[0] or 0.0) >= 0.25
+        ):
+            _reveal_clock_under_splash(refresh=False)
         try:
             root.update()
         except tk.TclError:
@@ -1358,11 +1418,20 @@ def main() -> int:
             _boot_clock_label.image = _boot_clock_photo[0]  # type: ignore[attr-defined]
         except Exception:
             pass
-        # Pre-rasterize clock off the UI thread so frame 90 can swap it in instantly.
+        # Keep rasterizing the live saver off the UI thread so splash reveal (and the
+        # post-splash bridge) show wall-clock time and the current color — not a
+        # frame frozen at process start.
         def _prewarm_splash_clock_worker() -> None:
-            shown = _rasterize_clock_saver_window_bgr()
-            if shown is not None:
-                _splash_clock_ready_bgr[0] = shown
+            while not _splash_clock_refresh_stop[0]:
+                try:
+                    shown = _rasterize_clock_saver_window_bgr()
+                    if shown is not None:
+                        _splash_clock_ready_bgr[0] = shown
+                except Exception:
+                    pass
+                if bootstrap_done[0] or _splash_clock_refresh_stop[0]:
+                    break
+                time.sleep(0.25)
 
         try:
             import threading
@@ -1373,7 +1442,18 @@ def main() -> int:
                 daemon=True,
             ).start()
         except Exception:
-            _prewarm_splash_clock_worker()
+            shown = _rasterize_clock_saver_window_bgr()
+            if shown is not None:
+                _splash_clock_ready_bgr[0] = shown
+
+        def _splash_frame_keeps_live_clock(ii: int) -> bool:
+            if not splash_png_paths:
+                return False
+            if callable(splash_keep_alpha_for_live_clock):
+                return bool(
+                    splash_keep_alpha_for_live_clock(ii, reveal_frame=_splash_reveal_i)
+                )
+            return int(ii) >= int(_splash_reveal_i)
 
         # Resolve total frame count AND native fps up front. The PNG / built-in paths lock to
         # SPLASH_FPS, but a video drives its own cadence (e.g. 59.94) so the splash plays at
@@ -1434,8 +1514,8 @@ def main() -> int:
         _splash_reveal_i = int(SPLASH_CLOCK_REVEAL_FRAME)
 
         # Two parallel caches keyed by frame index:
-        #   * _splash_rgb_cache: opaque RGB ready for Tk (preferred — no per-tick composite).
-        #   * _splash_bgra_cache: BGRA fallback for live composite over clock when RGB not ready.
+        #   * _splash_rgb_cache: opaque RGB over black for pre-reveal frames.
+        #   * _splash_bgra_cache: keep alpha for reveal frames so they composite over a live clock.
         _splash_rgb_cache: dict[int, np.ndarray] = {}
         _splash_bgra_cache: dict[int, np.ndarray] = {}
         _splash_photo_cache: dict[int, ImageTk.PhotoImage] = {}
@@ -1450,6 +1530,8 @@ def main() -> int:
             for ii in range(splash_total_frames):
                 if built >= limit:
                     break
+                if _splash_frame_keeps_live_clock(ii):
+                    continue
                 if ii in _splash_photo_cache:
                     continue
                 rgb = _splash_rgb_cache.get(ii)
@@ -1485,19 +1567,8 @@ def main() -> int:
             return np.ascontiguousarray(rgb)
 
         def _splash_store_prebaked(ii: int, bgra_window: np.ndarray) -> None:
-            """Store a window-sized frame. Pre-90 → RGB over black; 90+ → RGB over clock when ready."""
-            if splash_png_paths and ii >= _splash_reveal_i:
-                clock = _splash_clock_ready_bgr[0]
-                if (
-                    clock is not None
-                    and clock.ndim == 3
-                    and clock.shape[:2] == bgra_window.shape[:2]
-                ):
-                    try:
-                        _splash_rgb_cache[ii] = _splash_bgra_over_bgr_to_rgb(bgra_window, clock)
-                        return
-                    except Exception:
-                        pass
+            """Store a window-sized frame. Pre-reveal → RGB over black; reveal PNGs keep BGRA."""
+            if _splash_frame_keeps_live_clock(ii):
                 _splash_bgra_cache[ii] = bgra_window
                 return
             if ii >= _splash_fade_zone_start and _splash_fade_frames > 0:
@@ -1508,25 +1579,18 @@ def main() -> int:
             except Exception:
                 _splash_bgra_cache[ii] = bgra_window
 
-        def _splash_prebake_reveal_over_clock() -> None:
-            """Once the clock buffer exists, bake frames 90+ to RGB over it (off UI thread)."""
-            clock = _splash_clock_ready_bgr[0]
-            if clock is None:
-                return
+        def _splash_prebake_reveal_bgra() -> None:
+            """Warm BGRA for reveal frames; never flatten them over a frozen clock."""
             try:
                 for ii in range(_splash_reveal_i, splash_total_frames):
-                    if ii in _splash_rgb_cache:
+                    _splash_rgb_cache.pop(ii, None)
+                    _splash_photo_cache.pop(ii, None)
+                    if ii in _splash_bgra_cache:
                         continue
-                    bgra = _splash_bgra_cache.get(ii)
-                    if bgra is None:
-                        fr = _splash_raw_bgra(ii)
-                        if fr is None:
-                            continue
-                        bgra = _bgra_to_display_window(fr)
-                        _splash_bgra_cache[ii] = bgra
-                    if clock.shape[:2] != bgra.shape[:2]:
+                    fr = _splash_raw_bgra(ii)
+                    if fr is None:
                         continue
-                    _splash_rgb_cache[ii] = _splash_bgra_over_bgr_to_rgb(bgra, clock)
+                    _splash_bgra_cache[ii] = _bgra_to_display_window(fr)
             except Exception:
                 pass
 
@@ -1541,9 +1605,7 @@ def main() -> int:
                         continue
                     fr = _bgra_to_display_window(fr)
                     _splash_store_prebaked(ii, fr)
-                # If clock prewarm finished first, bake the reveal tail now.
-                if _splash_clock_ready_bgr[0] is not None:
-                    _splash_prebake_reveal_over_clock()
+                _splash_prebake_reveal_bgra()
             except Exception:
                 pass
             finally:
@@ -1624,12 +1686,14 @@ def main() -> int:
             _splash_store_prebaked(ii, fr)
             return fr
 
-        def _splash_composite_bgra_to_photo(bgra_hit: np.ndarray, fade_mul: float) -> None:
+        def _splash_composite_bgra_to_photo(bgra_hit: np.ndarray | None, fade_mul: float) -> None:
             """Composite splash BGRA over underlay into an opaque RGB ``splash_photo``.
 
-            Before frame 90 the underlay is black; from frame 90 it is the clock saver.
+            Before frame 90 the underlay is black; from frame 90 it is the live clock saver.
             Always bake to RGB so the splash layer fully covers content_host.
             """
+            if bgra_hit is None:
+                return
             bgra_out = (
                 apply_splash_global_alpha(bgra_hit, fade_mul)
                 if fade_mul < 0.999 and apply_splash_global_alpha is not None
@@ -1723,13 +1787,18 @@ def main() -> int:
                 _try_remove_splash_overlay()
                 return
 
-            rgb_hit = _splash_rgb_cache.get(i)
+            live_clock_underlay = _splash_frame_keeps_live_clock(i)
+            rgb_hit = None if live_clock_underlay else _splash_rgb_cache.get(i)
             bgra_hit = _splash_bgra_cache.get(i) if rgb_hit is None else None
+            if live_clock_underlay:
+                bgra_hit = _splash_bgra_cache.get(i)
 
             # Worker hasn't reached this index yet: try a short spin before giving up.
             if rgb_hit is None and bgra_hit is None:
-                bgra_fb = _splash_fallback_frame_sync(i)
-                if bgra_fb is not None:
+                _splash_fallback_frame_sync(i)
+                if live_clock_underlay:
+                    bgra_hit = _splash_bgra_cache.get(i)
+                else:
                     rgb_hit = _splash_rgb_cache.get(i)
                     bgra_hit = _splash_bgra_cache.get(i) if rgb_hit is None else None
                 if rgb_hit is None and bgra_hit is None:
@@ -1737,7 +1806,7 @@ def main() -> int:
                     root.after(8, splash_tick)
                     return
 
-            # Frame 90+: swap clock under the splash (prewarmed). Before that: black only.
+            # Frame 90+: live clock under the splash PNG alpha. Before that: black only.
             if i >= _splash_reveal_i:
                 first_reveal = not _splash_reveal_clock[0]
                 _reveal_clock_under_splash(refresh=False)
@@ -1746,12 +1815,12 @@ def main() -> int:
                         import threading
 
                         threading.Thread(
-                            target=_splash_prebake_reveal_over_clock,
+                            target=_splash_prebake_reveal_bgra,
                             name="pigeon-splash-reveal-bake",
                             daemon=True,
                         ).start()
                     except Exception:
-                        _splash_prebake_reveal_over_clock()
+                        _splash_prebake_reveal_bgra()
                     try:
                         sys.stderr.write(
                             f"pigeon: splash clock reveal frame={i} "
@@ -1764,8 +1833,8 @@ def main() -> int:
             splash_idx[0] = i + 1
 
             try:
-                ph = _splash_photo_cache.get(i)
-                if ph is None and rgb_hit is not None:
+                ph = None if live_clock_underlay else _splash_photo_cache.get(i)
+                if ph is None and rgb_hit is not None and not live_clock_underlay:
                     ph = _splash_photo_from_rgb(rgb_hit)
                     _splash_photo_cache[i] = ph
                 if ph is not None:
@@ -1870,6 +1939,10 @@ def main() -> int:
         label = tk.Label(video_area, bd=0, highlightthickness=0, takefocus=True, bg="#000", cursor="none")
         _startup_label_black_photo: list[ImageTk.PhotoImage | None] = [None]
         _early_clock_underlay_photo: list[ImageTk.PhotoImage | None] = [None]
+        ready_clock = _splash_clock_ready_bgr[0]
+        if ready_clock is not None:
+            _splash_underlay_bgr[0] = ready_clock
+            _apply_clock_to_bridge_label(ready_clock)
         _handoff_clock = _boot_clock_photo[0]
         if _handoff_clock is None and _splash_underlay_bgr[0] is not None:
             try:
@@ -1909,7 +1982,7 @@ def main() -> int:
             """Copy clock underlay onto the real video label (under splash / after lift)."""
             if not _splash_reveal_clock[0]:
                 return
-                under = _splash_underlay_bgr[0]
+            under = _splash_underlay_bgr[0]
             if under is None:
                 _reveal_clock_under_splash(refresh=False)
                 under = _splash_underlay_bgr[0]
@@ -2074,11 +2147,11 @@ def main() -> int:
             return True
 
         def _sync_preferences_now_playing_progress() -> None:
-            """Feed live NP content into prefs; idle keeps SVG demos."""
+            """Feed live NP content into prefs / widgets; idle keeps SVG demos."""
             if main_settings_widget is None:
                 return
             st_ms = main_settings_widget.state
-            if not st_ms.show_preferences:
+            if not st_ms.show_preferences and not st_ms.show_widgets:
                 return
 
             def _clear_prefs_live() -> None:
@@ -2097,6 +2170,7 @@ def main() -> int:
                 st_ms.preferences_song_title = None
                 st_ms.preferences_album_title = None
                 st_ms.preferences_artist_title = None
+                st_ms.preferences_tt_bgra = None
 
             try:
                 prog = _playback_progress_fraction_for_bar()
@@ -2177,8 +2251,11 @@ def main() -> int:
                 st_ms.preferences_album_title = album_t
                 st_ms.preferences_artist_title = artist_t
                 st_ms.preferences_cast = ()
+                st_ms.preferences_tt_bgra = poster
             else:
-                st_ms.preferences_song_title = ""
+                st_ms.preferences_song_title = str(
+                    active_tmdb_display_title or ""
+                ).strip()
                 st_ms.preferences_album_title = ""
                 st_ms.preferences_artist_title = ""
                 cast_rows: list[tuple[str, str]] = []
@@ -2193,6 +2270,10 @@ def main() -> int:
                 st_ms.preferences_cast = tuple(
                     (str(a or ""), str(c or "")) for a, c in cast_rows[:9]
                 )
+                try:
+                    st_ms.preferences_tt_bgra = _active_tmdb_tt_src_bgra()
+                except Exception:
+                    st_ms.preferences_tt_bgra = None
 
         def _settings_wheel_target_should_ignore(widget: tk.Misc) -> bool:
             """Let Listbox/Text/Entry keep their own scroll behavior."""
@@ -3569,6 +3650,21 @@ def main() -> int:
             if clock_saver_force_on[0]:
                 return True
             return _clock_saver_active(now)
+
+        def _idle_saver_face_toggle_ok(now: float | None = None) -> bool:
+            """Idle clock/meter face is up (not splash intro, not NP chrome)."""
+            t = time.monotonic() if now is None else float(now)
+            if _clock_startup_intro_opacity(t) is not None:
+                return False
+            if startup_ph[0] is not None:
+                return False
+            return bool(_clock_saver_for_compose(t))
+
+        def _idle_audio_meter_active(now: float | None = None) -> bool:
+            """True when the diagnostic SVG meter should replace the idle clock."""
+            if audio_meter_face_enabled is None or not audio_meter_face_enabled():
+                return False
+            return _idle_saver_face_toggle_ok(now)
 
         def _toggle_clock_saver_force(event: tk.Event | None = None) -> str | None:
             """Shift+2: force clock saver on/off."""
@@ -5473,6 +5569,7 @@ def main() -> int:
                         date_layer_opacity=_cs_dim_v1,
                         date_anchor_row=CLOCK_ANCHOR_ROW,
                         date_anchor_col=CLOCK_ANCHOR_COL,
+                        replace_with_meter=_idle_audio_meter_active(now_cs),
                     )
                     for cs_bgra, (sx, sy, sw, sh) in (
                         (date_bgra, d_rect),
@@ -5568,6 +5665,7 @@ def main() -> int:
                         date_layer_opacity=_date_op,
                         date_anchor_row=CLOCK_ANCHOR_ROW,
                         date_anchor_col=CLOCK_ANCHOR_COL,
+                        replace_with_meter=_idle_audio_meter_active(now_cs),
                     )
                     for cs_bgra, (sx, sy, sw, sh) in (
                         (date_bgra, d_rect),
@@ -5965,6 +6063,7 @@ def main() -> int:
                         date_layer_opacity=_date_op_d,
                         date_anchor_row=CLOCK_ANCHOR_ROW,
                         date_anchor_col=CLOCK_ANCHOR_COL,
+                        replace_with_meter=_idle_audio_meter_active(now_cs),
                     )
                     for cs_bgra, (sx, sy, sw, sh) in (
                         (date_bgra, d_rect),
@@ -13451,6 +13550,30 @@ def main() -> int:
             if dev_phase != DevPhase.OFF:
                 _bump_pigeon_user_activity(event)
                 return "break"
+            if ch == "1":
+                st_key = int(getattr(event, "state", 0))
+                sh_key = bool(st_key & 0x0001)
+                if (
+                    not sh_key
+                    and toggle_audio_meter_face is not None
+                    and _idle_saver_face_toggle_ok()
+                ):
+                    # Steal [1] only while the idle saver is up so NP zone-1 still works.
+                    on = toggle_audio_meter_face()
+                    try:
+                        sys.stderr.write(
+                            "pigeon: idle face "
+                            + ("audio meter\n" if on else "clock saver\n")
+                        )
+                        sys.stderr.flush()
+                    except Exception:
+                        pass
+                    skip_cache = None
+                    try:
+                        render_once()
+                    except Exception:
+                        pass
+                    return "break"
             if ch in "12345678" and display_view_holder[0] == DisplayView.ONE:
                 st_key = int(getattr(event, "state", 0))
                 sh_key = bool(st_key & 0x0001)
@@ -14228,6 +14351,11 @@ def main() -> int:
             _render_tick_t0 = time.perf_counter()
             now = time.monotonic()
             _intro_mono = post_splash_mono[0]
+            if sync_audio_meter_capture is not None:
+                try:
+                    sync_audio_meter_capture(_idle_audio_meter_active(now))
+                except Exception:
+                    pass
             if _maybe_exit_settings_menus_on_idle(now):
                 # Fall through to OFF-phase compose (now-playing or clock saver).
                 pass
@@ -14251,6 +14379,8 @@ def main() -> int:
                 # Post-splash clock fade-up needs a smooth cadence.
                 if _PIGEON_EXT and _clock_startup_intro_opacity(time.monotonic()) is not None:
                     return 33
+                if _PIGEON_EXT and _idle_audio_meter_active():
+                    return 33 if sys.platform.startswith("linux") else 16
                 # WiFi / box scan spinner: keep responsive without 60 FPS full-frame uploads on Pi.
                 if (
                     dev_phase == DevPhase.MAIN_SETTINGS
@@ -14505,6 +14635,8 @@ def main() -> int:
             paused_row_cache_key = 1 if (_PIGEON_EXT and _show_paused_row_overlay()) else 0
             mic_viz_cache_key = 0
             mic_eq_needs_composite = False
+            if _PIGEON_EXT and _idle_audio_meter_active(now) and latest_meter_cache_key is not None:
+                mic_viz_cache_key = int(latest_meter_cache_key())
             if _PIGEON_EXT and status_bar_widget is not None:
                 if status_bar_widget.set_theater_dim_suppressed(idle_s_here >= 0.5):
                     _warm_status_bar_blits()
@@ -15339,6 +15471,7 @@ def main() -> int:
             except tk.TclError:
                 pass
         bootstrap_done[0] = True
+        _splash_clock_refresh_stop[0] = True
         _log_view_one_startup_phase("bootstrap-done")
         # Splash already finished before bootstrap started; run the deferred post-splash hook.
         if startup_ph[0] is None:
@@ -15364,6 +15497,7 @@ def main() -> int:
             bootstrap()
 
         root.after_idle(splash_tick)
+        root.after_idle(_live_clock_until_compose)
         root.after_idle(_bootstrap_after_splash)
     else:
         root.after(1, bootstrap)
