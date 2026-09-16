@@ -1033,6 +1033,12 @@ class MainSettingsState:
             probe_hdmi_presence(force=True)
         except Exception:
             pass
+        try:
+            from pigeon.widgets.audio_meter_saver import program_audio_present
+
+            self.pigeon_audio_ok = bool(program_audio_present())
+        except Exception:
+            pass
         ring = pigeon_focus_ring()
         # Land on COLOR (first selectable tile); BACK remains in the ring.
         if "color_button" in ring:
@@ -6495,6 +6501,7 @@ class MainSettingsWidget:
             1 if kb_open else 0,
             # Prefs live overlays (HH:MM / NP rings / content) refresh each
             # second without busting the heavy SVG structure cache.
+            # Widget-settings demos are static stills — do not tick them.
             (
                 datetime.now().strftime("%H%M%S"),
                 int(round(float(self._state.preferences_np_progress) * 100))
@@ -6517,7 +6524,7 @@ class MainSettingsWidget:
                 else 0,
                 tuple(self._state.preferences_cast or ()),
             )
-            if self._state.show_preferences or self._state.show_widgets
+            if self._state.show_preferences
             else (),
         )
 
@@ -6704,6 +6711,12 @@ class MainSettingsWidget:
 
                 st.pigeon_hdmi_ok = hdmi_capture_available()
                 probe_hdmi_presence()
+            except Exception:
+                pass
+            try:
+                from pigeon.widgets.audio_meter_saver import program_audio_present
+
+                st.pigeon_audio_ok = bool(program_audio_present())
             except Exception:
                 pass
         th = st.theme
@@ -6904,6 +6917,8 @@ class MainSettingsWidget:
             int(st.box3_devices.scroll),
             st.box3_devices.picked,
             bool(st.show_pigeon_settings),
+            bool(st.pigeon_hdmi_ok),
+            bool(st.pigeon_audio_ok),
             bool(st.show_preferences),
             str(st.preferences_nav or ""),
             int(st.preferences_active_zone),

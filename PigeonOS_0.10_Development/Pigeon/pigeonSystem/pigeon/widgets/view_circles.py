@@ -26,7 +26,12 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from pigeon.compositing import alpha_blend_bgra_over_bgr, cv_resize_interp
+from pigeon.compositing import (
+    alpha_blend_bgra_over_bgr,
+    blend_bgra_over_bgr_u8,
+    cv_resize_interp,
+    premultiply_bgra_on_black,
+)
 from pigeon.design import DESIGN_H, DESIGN_W
 from pigeon.np_layout import (
     CAST_ACTOR_SIZE_PX,
@@ -111,6 +116,7 @@ from pigeon.np_layout import (
     tt_countdown_centered_art_rect,
     tt_countdown_portrait_content_lift,
     layout_shows_tt_countdown_and_volume,
+    layout_shows_tt_countdown_and_levels,
     tt_countdown_volume_align_dy,
     tt_countdown_time_anchor,
     tt_countdown_tt_box,
@@ -520,6 +526,11 @@ _ZONE0_DATE_CENTER_X: dict[str, float] = {
 }
 
 
+# Zone 3 shows the volume widget this long after each adjustment, then
+# returns to the saved assignment. Each new tweak restarts the hold.
+ZONE3_VOLUME_TAKEOVER_S = 7.0
+
+
 @dataclass
 class ViewCirclesState:
     progress: float = 0.0
@@ -550,6 +561,8 @@ class ViewCirclesState:
     tt_title: str = ""
     # Paired AVR name — shown above the volume disc when the audio format is unknown.
     receiver_name: str = ""
+    # False only when the host knows the AVR is gone; empty volume is not enough.
+    has_receiver: bool = True
 
 
 def _normalize_content_mode(mode: str | None) -> str:
@@ -890,8 +903,8 @@ def _default_zone_widget_assignments(
     except Exception:
         mode = str(content_mode or "").strip().lower()
         if mode == "music":
-            return ("tt_countdown_16x9", "", "volume", "cast_info", "status_bar")
-        return ("tt_countdown_16x9", "", "volume", "cast_info", "status_bar")
+            return ("tt_countdown_16x9", "", "audio_levels", "cast_info", "status_bar")
+        return ("tt_countdown_16x9", "", "audio_levels", "cast_info", "status_bar")
 
 
 def _header_clock_enabled() -> bool:
@@ -946,6 +959,10 @@ def _effective_zone_widgets(
     has_volume: bool = False,
     loading_cast: bool = False,
     content_mode: str = "",
+    has_title: bool | None = None,
+    has_audio: bool = True,
+    has_receiver: bool = True,
+    has_info: bool | None = None,
 ) -> tuple[str, str, str, str, str]:
     """Show only widgets we have content for; never two copies of the same one.
 
@@ -953,10 +970,13 @@ def _effective_zone_widgets(
     keep the clock only so empty poster/volume/cast/bar shells do not look broken.
     The renderer then expands that clock-only layout to fill the screen.
 
-    Status bar needs a live position. Without it, that zone can show the next
-    unused cast names. A second cast strip is kept only when more names remain.
-    While cast is still loading, keep one empty ``cast_info`` slot for shimmer.
-    Any other repeated widget is dropped so the layout does not duplicate.
+    Saved zone widgets stay on screen. Zone 3 still falls back
+    levels → volume → clock when audio or the receiver is missing. Empty
+    artwork / info / status wells stay those widgets instead of swapping in
+    seconds or pigeonclock. A second cast strip is kept only when more names
+    remain. While cast is still loading, keep one empty ``cast_info`` slot
+    for shimmer. Any other repeated widget is dropped so the layout does not
+    duplicate.
 
     Music ``cast_info`` is track titles, so it stays even with no TMDb names.
 
@@ -987,10 +1007,25 @@ def _effective_zone_widgets(
     # blank the covered sibling portrait slot before dedupe.
     zones = list(apply_tt_countdown_16x9_override(tuple(zones)))
     named = max(0, int(cast_count))
-    if not has_position:
-        for i, widget in enumerate(zones):
-            if is_status_bar_widget(widget, i + 1):
-                zones[i] = "cast_info"
+    title_ok = bool(content_active) if has_title is None else bool(has_title)
+    info_ok = (
+        bool(named > 0 or loading_cast or music)
+        if has_info is None
+        else bool(has_info)
+    )
+    audio_ok = bool(has_audio)
+    recv_ok = bool(has_receiver)
+    zones = list(
+        _apply_connection_fallbacks(
+            tuple(zones),
+            has_title=title_ok,
+            has_audio=audio_ok,
+            has_receiver=recv_ok,
+            has_position=bool(has_position),
+            has_info=info_ok,
+            loading_cast=bool(loading_cast),
+        )
+    )
     seen: set[str] = set()
     cast_used = 0
     cast_skeleton = False
@@ -1003,26 +1038,60 @@ def _effective_zone_widgets(
             zones[i] = ""
             continue
         if key == "cast_info":
+            if key in seen:
+                zones[i] = ""
+                continue
             if music:
-                if key in seen:
-                    zones[i] = ""
-                    continue
                 seen.add(key)
                 continue
             remaining = named - cast_used
             if remaining <= 0:
+                # Keep the selected info well even with no names yet.
+                seen.add(key)
                 if loading_cast and not cast_skeleton:
                     cast_skeleton = True
-                    continue
-                zones[i] = ""
                 continue
             cast_used += cast_names_for_zone(i + 1)
+            seen.add(key)
             continue
         if key in seen:
             zones[i] = ""
             continue
         seen.add(key)
     return (zones[0], zones[1], zones[2], zones[3], zones[4])
+
+
+def _apply_connection_fallbacks(
+    zones: tuple[str, str, str, str, str],
+    *,
+    has_title: bool,
+    has_audio: bool,
+    has_receiver: bool,
+    has_position: bool,
+    has_info: bool,
+    loading_cast: bool,
+) -> tuple[str, str, str, str, str]:
+    """Zone 3 only: keep levels/volume usable when audio or the AVR is gone."""
+    z = list(zones)
+    _ = has_title
+    _ = has_position
+    _ = loading_cast
+
+    def _zone3_audio_chain() -> str:
+        if has_audio:
+            return "audio_levels"
+        if has_receiver:
+            return "volume"
+        return "clock"
+
+    z3 = str(z[2] or "")
+    if z3 == "audio_levels" and not has_audio:
+        z[2] = "volume" if has_receiver else "clock"
+    elif z3 == "volume" and not has_receiver:
+        z[2] = "clock"
+    elif z3 == "cast_info" and not has_info:
+        z[2] = _zone3_audio_chain()
+    return (z[0], z[1], z[2], z[3], z[4])
 
 
 def configured_status_bar_zone(
@@ -1080,7 +1149,7 @@ def _zone_widget_visibility(
         # zone1
         # volume chrome is also used by circular now_playing (playback progress).
         "zone1_volume_group": _is(1, "volume") or _is(1, "now_playing"),
-        "zone1_audio_levels_group": _is(1, "audio_levels"),
+        "zone1_audio_levels_group": False,
         "zone1_clock_group": _is(1, "clock"),
         "zone1_poster_2x3": z1_poster,
         "zone1_album_art_1x1": z1_album,
@@ -1088,8 +1157,8 @@ def _zone_widget_visibility(
         "zone1_play_button": play_z1,
         # zone2
         "zone2_volume_group": _is(2, "volume") or _is(2, "now_playing"),
-        "zone2_audio_levels_group": _is(2, "audio_levels"),
-        "zone2_audio_levles_gtoup": _is(2, "audio_levels"),  # Illustrator typo id
+        "zone2_audio_levels_group": False,
+        "zone2_audio_levles_gtoup": False,  # Illustrator typo id
         "zone2_clock_group": _is(2, "clock"),
         "zone2_poster_2x3": z2_poster,
         "zone2_album_art_1x1": z2_album,
@@ -1097,7 +1166,7 @@ def _zone_widget_visibility(
         "zone2_play_button": play_z2,
         # zone3
         "zone3_volume_group": _is(3, "volume") or _is(3, "now_playing"),
-        "zone3_audio_levels_group": _is(3, "audio_levels"),
+        "zone3_audio_levels_group": False,
         "zone3_clock_group": _is(3, "clock"),
         "zone3_poster_2x3": z3_poster,
         "zone3_2x3_poster_group": z3_poster,
@@ -1733,7 +1802,12 @@ def _apply_clock_ticks(
     )
 
 
+_FORCE_ANALOG_CLOCK = False
+
+
 def _clock_widget_is_analog() -> bool:
+    if _FORCE_ANALOG_CLOCK:
+        return True
     try:
         from pigeon.widgets.options_settings import clock_widget_analog
 
@@ -1913,11 +1987,16 @@ def _rasterize_named_widget(
     zone: int | None = None,
     include_play_overlay: bool = True,
     include_clock_ticks: bool | None = None,
+    freeze_seconds: bool = False,
 ) -> np.ndarray | None:
     path = _now_playing_widget_path(assets_dir, widget_key, zone)
     if not path.is_file():
         return None
     paint_ticks = widget_key == "clock" and include_clock_ticks is not False
+    hold_seconds = bool(paint_ticks and freeze_seconds)
+    h12 = now.hour % 12
+    if h12 == 0:
+        h12 = 12
     cache_key = (
         str(path),
         int(dest_w),
@@ -1927,9 +2006,9 @@ def _rasterize_named_widget(
         theme.cache_key,
         bool(include_play_overlay),
         bool(paint_ticks),
-        now.hour % 12 if paint_ticks else -1,
+        h12 if paint_ticks else -1,
         int(now.minute) if paint_ticks else -1,
-        int(now.second) if paint_ticks else -1,
+        -1 if hold_seconds else (int(now.second) if paint_ticks else -1),
     )
     cached = _NAMED_WIDGET_CACHE.get(cache_key)
     if cached is not None:
@@ -1937,7 +2016,8 @@ def _rasterize_named_widget(
     root = _svg_tree_from_path(path)
     if widget_key == "clock":
         if paint_ticks:
-            _apply_standalone_clock_ticks(root, now, theme=theme)
+            tick_now = now.replace(second=0, microsecond=0) if hold_seconds else now
+            _apply_standalone_clock_ticks(root, tick_now, theme=theme)
         else:
             _apply_clock_black_rings(root, zone=None)
             _detach_clock_tick_groups(root, zone=None)
@@ -2549,7 +2629,16 @@ def _paste_patch_bgra(canvas: np.ndarray, patch: np.ndarray, x: int, y: int) -> 
     src = patch[sy0 : sy0 + (cy1 - cy0), sx0 : sx0 + (cx1 - cx0)]
     roi = canvas[cy0:cy1, cx0:cx1]
     if roi.ndim == 3 and roi.shape[2] == 3:
-        roi[:] = alpha_blend_bgra_over_bgr(roi, src)
+        if src.shape[2] < 4:
+            roi[:] = src[:, :, :3]
+            return
+        alpha_u8 = src[:, :, 3]
+        if int(alpha_u8.max()) <= 0:
+            return
+        if int(alpha_u8.min()) >= 255:
+            roi[:] = src[:, :, :3]
+            return
+        roi[:] = blend_bgra_over_bgr_u8(roi, src)
     elif roi.ndim == 3 and roi.shape[2] >= 4:
         blended = alpha_blend_bgra_over_bgr(roi[:, :, :3], src)
         roi[:, :, :3] = blended
@@ -2776,6 +2865,57 @@ def _paste_centered(canvas: np.ndarray, patch: np.ndarray, cx: float, cy: float)
         return
     ph, pw = patch.shape[:2]
     _paste_patch_bgra(canvas, patch, int(round(cx - pw / 2.0)), int(round(cy - ph / 2.0)))
+
+
+def draw_levels_volume_readout(
+    out: np.ndarray,
+    box: tuple[int, int, int, int],
+    volume_raw: object,
+    *,
+    muted: bool = False,
+) -> None:
+    """Digital-7 volume number in the reserved band under the levels bars."""
+    from pigeon.widgets.audio_meter_saver import levels_readout_center_y
+
+    zx, zy, zw, zh = (int(v) for v in box)
+    if zw < 16 or zh < 16:
+        return
+    from pigeon.widgets.audio_meter_saver import stereo_meter_volume_band_h
+
+    reserve = stereo_meter_volume_band_h(zh)
+    if reserve < 12:
+        return
+    vol = volume_widget_value_text(volume_raw)
+    is_mute = bool(muted) or vol.strip().lower() in ("mute", "muted", "off")
+    cx = float(zx) + float(zw) * 0.5
+    cy = levels_readout_center_y(zy, zh)
+    max_w = max(24, int(round(zw * 0.92)))
+    size = max(12, int(TT_COUNTDOWN_TEXT_SIZE_PX))
+    if is_mute:
+        label = "MUTE"
+        font = _load_sharp_extrabold(size)
+        patch, pw, _ph = _text_patch_font(
+            label, font=font, fill_rgb=_look_ink_rgb()
+        )
+        while pw > max_w and size > 14:
+            size -= 2
+            font = _load_sharp_extrabold(size)
+            patch, pw, _ph = _text_patch_font(
+                label, font=font, fill_rgb=_look_ink_rgb()
+            )
+        _paste_centered(out, patch, cx, cy)
+        return
+    if not vol:
+        return
+    patch, pw, _ph = _text_patch_digital7(
+        vol, size_px=size, fill_rgb=_look_ink_rgb()
+    )
+    while pw > max_w and size > 16:
+        size -= 2
+        patch, pw, _ph = _text_patch_digital7(
+            vol, size_px=size, fill_rgb=_look_ink_rgb()
+        )
+    _paste_centered(out, patch, cx, cy)
 
 
 def _paste_baseline_centered(
@@ -3585,6 +3725,9 @@ class ViewCirclesWidget:
         self._tt_patch_cache: dict[tuple[object, ...], np.ndarray | None] = {}
         self._cached_bgra: np.ndarray | None = None
         self._cached_sig: tuple[object, ...] | None = None
+        self._static_bgr: np.ndarray | None = None
+        self._ticking_under: np.ndarray | None = None
+        self._ticking_under_sig: tuple[object, ...] | None = None
         self._svg_chrome_by_key: dict[tuple[object, ...], np.ndarray] = {}
         self._bar_overlay_layer: np.ndarray | None = None
         self._artwork_blur_bgra: np.ndarray | None = None
@@ -3603,6 +3746,7 @@ class ViewCirclesWidget:
         self._shimmer_rects: list[tuple[int, int, int, int, int]] = []
         self._shimmer_work: np.ndarray | None = None
         self._volume_line_changed_mono = 0.0
+        self._volume_takeover_until = 0.0
 
     @property
     def chrome_visible(self) -> bool:
@@ -3619,6 +3763,9 @@ class ViewCirclesWidget:
     def clear_cache(self) -> None:
         self._cached_bgra = None
         self._cached_sig = None
+        self._static_bgr = None
+        self._ticking_under = None
+        self._ticking_under_sig = None
 
     def _clear_artwork_blur_cache(self) -> None:
         self._artwork_blur_bgra = None
@@ -3647,6 +3794,16 @@ class ViewCirclesWidget:
 
         t = time.monotonic() if now is None else float(now)
         return volume_line_fade_opacity(t, float(self._volume_line_changed_mono or 0.0))
+
+    def note_volume_adjustment(self, now: float | None = None) -> None:
+        """Show the volume widget in zone 3 and restart the hold timer."""
+        t = time.monotonic() if now is None else float(now)
+        self._volume_takeover_until = t + float(ZONE3_VOLUME_TAKEOVER_S)
+        self.clear_cache()
+
+    def volume_takeover_active(self, now: float | None = None) -> bool:
+        t = time.monotonic() if now is None else float(now)
+        return t < float(self._volume_takeover_until or 0.0)
 
     def set_now_playing_chrome_visible(self, visible: bool) -> bool:
         v = bool(visible)
@@ -3738,6 +3895,7 @@ class ViewCirclesWidget:
         tt_bgra: np.ndarray | None = None,
         tt_title: str | None = None,
         receiver_name: str | None = None,
+        has_receiver: bool | None = None,
     ) -> bool:
         changed = False
         if self.set_now_playing_chrome_visible(has_now_playing):
@@ -3874,11 +4032,33 @@ class ViewCirclesWidget:
             if rn != self._state.receiver_name:
                 self._state.receiver_name = rn
                 changed = True
+        if has_receiver is not None:
+            want_recv = bool(has_receiver)
+            if want_recv != self._state.has_receiver:
+                self._state.has_receiver = want_recv
+                changed = True
         if self.set_tt_bgra(tt_bgra):
             changed = True
+        self._sync_meter_content_key()
         if changed:
             self.clear_cache()
         return changed
+
+    def _sync_meter_content_key(self) -> None:
+        from pigeon.widgets.audio_meter_saver import (
+            meter_content_key,
+            set_meter_content_key,
+        )
+
+        title = str(self._state.tt_title or self._state.song_title or "").strip()
+        artist = str(self._state.artist_title or "").strip()
+        set_meter_content_key(
+            meter_content_key(
+                title=title,
+                artist=artist,
+                mode=self._state.content_mode,
+            )
+        )
 
     def _advance_status_bar_handoff(self, now: float | None = None) -> bool:
         """Lerp parked-elapsed → service + traveling elapsed. True if ``t`` changed."""
@@ -3969,10 +4149,84 @@ class ViewCirclesWidget:
         src = self._poster_bgra
         return src is not None and src.size > 0
 
+    def _has_title_info(self) -> bool:
+        st = self._state
+        if st.searching:
+            return True
+        if str(st.tt_title or "").strip():
+            return True
+        if str(st.song_title or "").strip():
+            return True
+        if str(st.artist_title or "").strip():
+            return True
+        if str(st.album_title or "").strip():
+            return True
+        src = self._tt_source_bgra() if hasattr(self, "_tt_source_bgra") else self._tt_bgra
+        return src is not None and getattr(src, "size", 0) > 0
+
+    def _has_info_content(self) -> bool:
+        st = self._state
+        if st.searching:
+            return True
+        if any(str(actor or "").strip() for actor, _role in (st.cast or [])):
+            return True
+        title, artist, album = self._info_text_lines()
+        return bool(title or artist or album)
+
+    def _info_text_lines(self) -> tuple[str, str, str]:
+        """Cast-info / title stack: track or show name, then AVR lines if needed."""
+        st = self._state
+        title = (
+            str(st.song_title or "").strip()
+            or str(st.tt_title or "").strip()
+            or str(st.service_name or "").strip()
+            or str(st.incoming or "").strip()
+        )
+        artist = str(st.artist_title or "").strip() or str(st.config or "").strip()
+        album = str(st.album_title or "").strip()
+        if title or artist:
+            album = album or str(st.receiver_name or "").strip()
+
+        def _same(a: str, b: str) -> bool:
+            return bool(a) and bool(b) and a.casefold() == b.casefold()
+
+        if _same(artist, title):
+            artist = str(st.config or "").strip()
+            if _same(artist, title):
+                artist = ""
+        if _same(album, title) or _same(album, artist):
+            album = ""
+        return title, artist, album
+
+    def _has_receiver_connection(self) -> bool:
+        return bool(self._state.has_receiver)
+
+    def _zone3_clock_is_analog_fallback(self) -> bool:
+        """No-receiver zone 3 clock is always the analog face."""
+        assignments = self._assignments()
+        return (not self._has_receiver_connection()) and str(
+            assignments[2] if len(assignments) > 2 else ""
+        ) == "clock"
+
+    def _has_audio_connection(self) -> bool:
+        try:
+            from pigeon.widgets.audio_meter_saver import audio_connection_ok
+
+            return bool(audio_connection_ok())
+        except Exception:
+            return False
+
+    def wants_live_audio(self) -> bool:
+        """True when NP needs the ALSA capture thread (levels, visualizer, VU)."""
+        if not self._state.content_active:
+            return False
+        keys = set(self._assignments())
+        return bool(keys & {"visualizer", "audio_levels", "vu"})
+
     def _assignments(self) -> tuple[str, str, str, str, str]:
         named = sum(1 for actor, _role in (self._state.cast or []) if str(actor or "").strip())
         has_poster = self._has_drawable_poster()
-        return _effective_zone_widgets(
+        zones = _effective_zone_widgets(
             has_position=bool(self._state.has_position),
             cast_count=named,
             content_active=bool(self._state.content_active),
@@ -3983,7 +4237,14 @@ class ViewCirclesWidget:
             has_volume=bool(_receiver_volume_display_line(self._state.volume)),
             loading_cast=self._cast_widget_loading(),
             content_mode=self.content_mode,
+            has_title=self._has_title_info(),
+            has_audio=self._has_audio_connection(),
+            has_receiver=self._has_receiver_connection(),
+            has_info=self._has_info_content(),
         )
+        if self.volume_takeover_active() and self._state.chrome_visible:
+            return (zones[0], zones[1], "volume", zones[3], zones[4])
+        return zones
 
     def _poster_zone(self) -> int | None:
         if self._wants_16x9_poster() and self._state.content_active:
@@ -4023,7 +4284,7 @@ class ViewCirclesWidget:
             button_hex=base.button_hex,
         )
 
-    def _cache_sig(self) -> tuple[object, ...]:
+    def _cache_sig(self, *, ticking: bool = True) -> tuple[object, ...]:
         st = self._state
         cast_sig = tuple(st.cast[:21])
         poster_id = id(self._poster_bgra) if self._poster_bgra is not None else None
@@ -4036,14 +4297,16 @@ class ViewCirclesWidget:
         zone_widgets = self._assignments()
         theme_key = self._effective_np_theme().cache_key
         header_on = _header_clock_enabled()
+        fullscreen_clock = _layout_is_fullscreen_clock(zone_widgets)
+        keep_second = bool(ticking or fullscreen_clock)
         return (
-            59,  # cache schema — 30/70 unfilled tracks
+            60,  # cache schema — live audio does not rebuild chrome on progress
             st.content_mode,
             st.has_position,
             st.content_active,
-            round(st.progress, 6),
-            st.elapsed_text,
-            st.remaining_text,
+            round(st.progress, 6) if ticking else 0.0,
+            st.elapsed_text if ticking else "",
+            st.remaining_text if ticking else "",
             st.volume,
             round(vol_disp, 5),
             st.volume_muted and not st.searching,
@@ -4065,14 +4328,130 @@ class ViewCirclesWidget:
             st.is_youtube,
             h12,
             int(now.minute),
-            int(now.second),
+            int(now.second) if keep_second else -1,
             _format_zone0_date(datetime.now()),
             zone_widgets,
             theme_key,
             round(self._bar_handoff, 2),
             header_on,
             round(self._volume_line_opacity(), 3),
+            self._zone3_clock_is_analog_fallback(),
+            self.volume_takeover_active(),
         )
+
+    def _paused_clock_in_zone6(self) -> bool:
+        """Paused NP: clock-saver face in zone 6 over the backdrop, not a play glyph."""
+        if not self._state.paused or not self._state.content_active:
+            return False
+        if zone6_span_widget(self._assignments()) == "clock":
+            return False
+        return True
+
+    def _ticking_needs_wall_second(self) -> bool:
+        keys = self._assignments()
+        if self._paused_clock_in_zone6():
+            return True
+        if any(k == "clock_saver_seconds" for k in keys):
+            return True
+        if zone6_span_widget(keys) == "clock":
+            return True
+        # VU / visualizer already paint at 30 Hz. Rebuilding the analog clock
+        # SVG every wall-clock second hitchs those widgets for ~100 ms.
+        if self._live_audio_widgets_on():
+            return False
+        return any(k in ("clock", "clock_16x9") for k in keys)
+
+    def _ticking_sig(self) -> tuple[object, ...]:
+        now = self._clock_now_for_display()
+        st = self._state
+        second = int(now.second) if self._ticking_needs_wall_second() else -1
+        return (
+            now.hour,
+            now.minute,
+            second,
+            st.elapsed_text,
+            st.remaining_text,
+            int(round(max(0.0, min(1.0, float(st.progress))) * 200.0)),
+        )
+
+    def _stamp_clock_widget(self, out: np.ndarray, now: datetime) -> None:
+        assignments = self._assignments()
+        if zone6_span_widget(assignments) == "clock":
+            self._draw_zone6_span_widget(out)
+            return
+        clock_zone = _zone_for_widget(assignments, "clock")
+        if clock_zone is None or int(clock_zone) in (4, 5):
+            return
+        z = _zone_spec(int(clock_zone))
+        zx, zy, zw, zh = z.xywh
+        patch = _rasterize_named_widget(
+            assets_dir=self._assets_dir,
+            widget_key="clock",
+            dest_w=zw,
+            dest_h=zh,
+            now=now,
+            theme=self._effective_np_theme(),
+            zone=int(clock_zone),
+            freeze_seconds=self._live_audio_widgets_on(),
+        )
+        if patch is not None and patch.size:
+            _paste_patch_bgra(out, patch, zx, zy)
+
+    def _ticking_dirty_rects(self) -> list[tuple[int, int, int, int]]:
+        """Zones restamped by ``_overlay_ticking`` — restore these instead of the full frame."""
+        rects: list[tuple[int, int, int, int]] = []
+        assignments = self._assignments()
+        if _header_clock_enabled() and not _zone_clock_hides_header(assignments):
+            header_h = int(
+                round(
+                    float(NP_HEADER_CLOCK_TOP_PAD_PX)
+                    + float(NP_HEADER_CLOCK_SIZE_PX)
+                    + float(NP_HEADER_CLOCK_BG_PAD_Y) * 2.0
+                    + 8.0
+                )
+            )
+            rects.append((0, 0, int(DESIGN_W), max(1, header_h)))
+        if zone6_span_widget(assignments) == "clock" or self._paused_clock_in_zone6():
+            z = NOW_PLAYING_ZONES[6]
+            zx, zy, zw, zh = (int(v) for v in z.xywh)
+            rects.append((zx, zy, zw, zh))
+        clock_zone = _zone_for_widget(assignments, "clock")
+        if clock_zone is not None:
+            z = _zone_spec(int(clock_zone))
+            zx, zy, zw, zh = (int(v) for v in z.xywh)
+            rects.append((zx, zy, zw, zh))
+        for i, key in enumerate(assignments):
+            if key == "clock_saver_seconds" or is_status_bar_widget(key, i + 1):
+                z = _zone_spec(i + 1)
+                zx, zy, zw, zh = (int(v) for v in z.xywh)
+                rects.append((zx, zy, zw, zh))
+        return rects
+
+    def _restore_ticking_rects(self, under: np.ndarray) -> None:
+        src = self._static_bgr
+        if src is None or src.shape != under.shape:
+            return
+        for x, y, w, h in self._ticking_dirty_rects():
+            y0 = max(0, int(y))
+            x0 = max(0, int(x))
+            y1 = min(int(under.shape[0]), y0 + max(0, int(h)))
+            x1 = min(int(under.shape[1]), x0 + max(0, int(w)))
+            if y1 <= y0 or x1 <= x0:
+                continue
+            under[y0:y1, x0:x1] = src[y0:y1, x0:x1]
+
+    def _overlay_ticking(self, out: np.ndarray) -> None:
+        if _layout_is_fullscreen_clock(self._assignments()):
+            return
+        now = self._clock_now_for_display()
+        self._stamp_clock_widget(out, now)
+        self._draw_paused_zone6_clock_saver(out, now)
+        self._draw_clock_digital(out, now)
+        self._draw_header_clock(out, now)
+        self._draw_seconds_bar_zones(out, now)
+        assignments = self._assignments()
+        if any(is_status_bar_widget(assignments[i], i + 1) for i in range(5)):
+            self._draw_status_bar(out)
 
     def _svg_chrome_cache_key(self, now: datetime) -> tuple[object, ...]:
         mode = self.content_mode
@@ -4105,9 +4484,20 @@ class ViewCirclesWidget:
             13,  # chrome pipeline — 30/70 unfilled volume track
             zone_widgets,
             self._effective_np_theme().cache_key,
+            self._zone3_clock_is_analog_fallback(),
         )
 
     def _render_svg_base(self, now: datetime) -> np.ndarray:
+        global _FORCE_ANALOG_CLOCK
+        prev_analog = _FORCE_ANALOG_CLOCK
+        if self._zone3_clock_is_analog_fallback():
+            _FORCE_ANALOG_CLOCK = True
+        try:
+            return self._render_svg_base_inner(now)
+        finally:
+            _FORCE_ANALOG_CLOCK = prev_analog
+
+    def _render_svg_base_inner(self, now: datetime) -> np.ndarray:
         key = self._svg_chrome_cache_key(now)
         cached = self._svg_chrome_by_key.get(key)
         if cached is not None:
@@ -4151,10 +4541,10 @@ class ViewCirclesWidget:
     ) -> None:
         mask = _rounded_rect_mask(pw, ph, prx)
         plate = np.zeros((ph, pw, 4), dtype=np.uint8)
-        plate[:, :, 0] = 28
-        plate[:, :, 1] = 28
-        plate[:, :, 2] = 28
-        plate[:, :, 3] = np.minimum(np.uint8(210), mask)
+        plate[:, :, 0] = 78
+        plate[:, :, 1] = 78
+        plate[:, :, 2] = 78
+        plate[:, :, 3] = np.minimum(np.uint8(230), mask)
         _paste_patch_bgra(out, plate, px, py)
         try:
             from pigeon.font_paths import resolve_ui_font_extrabold
@@ -4267,7 +4657,7 @@ class ViewCirclesWidget:
             y=ty,
             w=tw,
             h=th,
-            fill_bgr=_COLOR_UNFILLED_BGR,
+            fill_bgr=(122, 122, 122),
             radius=trx,
             stroke_bgr=None,
             fill_opacity=1.0,
@@ -4292,6 +4682,8 @@ class ViewCirclesWidget:
         et = format_status_bar_timecode(st.elapsed_text, remaining=False)
         rt = format_status_bar_timecode(st.remaining_text, remaining=True)
         svc = str(st.service_name or "").strip()
+        if svc.lower() in ("", "unknown", "none", "n/a", "na", "--"):
+            svc = str(st.incoming or "").strip()
         if svc.lower() in ("", "unknown", "none", "n/a", "na", "--"):
             svc = ""
 
@@ -4398,6 +4790,8 @@ class ViewCirclesWidget:
             self.content_mode, zone=int(poster_zone)
         )
         if int(poster_zone) in (6, 7):
+            if self._paused_clock_in_zone6():
+                return
             mask = _rounded_rect_mask(pw, ph, prx)
             dim = np.zeros((ph, pw, 4), dtype=np.uint8)
             dim[:, :, 3] = (mask.astype(np.float32) * 127.0).astype(np.uint8)
@@ -4487,19 +4881,152 @@ class ViewCirclesWidget:
         )
 
     def _draw_clock_digital(self, out: np.ndarray, now: datetime) -> None:
+        global _FORCE_ANALOG_CLOCK
         assignments = self._assignments()
         if zone6_span_widget(assignments) == "clock":
             return
         clock_zone = _zone_for_widget(assignments, "clock")
         if clock_zone is None:
             return
+        if int(clock_zone) in (4, 5):
+            self._draw_strip_clock(out, int(clock_zone), now)
+            return
         zone = _zone_spec(int(clock_zone))
-        _draw_clock_labels_in_zone(
-            out, zone, now, include_digital_time=_clock_include_digital_time()
+        prev_analog = _FORCE_ANALOG_CLOCK
+        if self._zone3_clock_is_analog_fallback():
+            _FORCE_ANALOG_CLOCK = True
+        try:
+            _draw_clock_labels_in_zone(
+                out, zone, now, include_digital_time=_clock_include_digital_time()
+            )
+        finally:
+            _FORCE_ANALOG_CLOCK = prev_analog
+
+    def _draw_strip_clock(self, out: np.ndarray, zone_idx: int, now: datetime) -> None:
+        zone = _zone_spec(int(zone_idx))
+        zx, zy, zw, zh = zone.xywh
+        label = now_playing_header_clock_text(now)
+        if not label:
+            return
+        px = max(22, min(58, int(round(zh * 0.48))))
+        patch, pw, ph = _text_patch_font(
+            label,
+            font=_load_sharp_extrabold(px),
+            fill_rgb=_look_ink_rgb(),
         )
+        if pw > zw - 24 and px > 18:
+            px = max(18, int(px * (zw - 24) / float(max(pw, 1))))
+            patch, pw, ph = _text_patch_font(
+                label,
+                font=_load_sharp_extrabold(px),
+                fill_rgb=_look_ink_rgb(),
+            )
+        _paste_centered(out, patch, zx + zw * 0.5, zy + zh * 0.5)
+
+    def _draw_seconds_bar_zones(self, out: np.ndarray, now: datetime) -> None:
+        from pigeon.widgets.clock_saver import render_seconds_bar_widget_bgra
+
+        assignments = self._assignments()
+        for i, key in enumerate(assignments):
+            if key != "clock_saver_seconds":
+                continue
+            zone = _zone_spec(i + 1)
+            zx, zy, zw, zh = zone.xywh
+            patch = render_seconds_bar_widget_bgra(int(zw), int(zh), now=now)
+            _paste_patch_bgra(out, patch, int(zx), int(zy))
+
+    def _draw_pigeonclock_zones(self, out: np.ndarray) -> None:
+        assignments = self._assignments()
+        for i, key in enumerate(assignments):
+            if key != "pigeonclock":
+                continue
+            zone = _zone_spec(i + 1)
+            zx, zy, zw, zh = zone.xywh
+            px = max(22, min(72, int(round(zh * 0.55))))
+            patch, pw, ph = _text_patch_font(
+                "pigeonclock",
+                font=_load_sharp_extrabold(px),
+                fill_rgb=_look_ink_rgb(),
+            )
+            if pw > zw - 16 and px > 16:
+                px = max(16, int(px * (zw - 16) / float(max(pw, 1))))
+                patch, pw, ph = _text_patch_font(
+                    "pigeonclock",
+                    font=_load_sharp_extrabold(px),
+                    fill_rgb=_look_ink_rgb(),
+                )
+            _paste_centered(out, patch, zx + zw * 0.5, zy + zh * 0.5)
+
+    def _draw_live_audio_widgets(self, out: np.ndarray) -> None:
+        assignments = self._assignments()
+        bgr = out.ndim == 3 and int(out.shape[2]) == 3
+        if zone6_span_widget(assignments) == "visualizer":
+            z = NOW_PLAYING_ZONES[6]
+            zx, zy, zw, zh = z.xywh
+            if bgr:
+                from pigeon.widgets.audio_visualizer import render_audio_visualizer_into_bgr
+
+                render_audio_visualizer_into_bgr(
+                    out[int(zy) : int(zy) + int(zh), int(zx) : int(zx) + int(zw)]
+                )
+            else:
+                from pigeon.widgets.audio_visualizer import render_audio_visualizer_bgra
+
+                patch = render_audio_visualizer_bgra(int(zw), int(zh))
+                _paste_patch_bgra(out, patch, int(zx), int(zy))
+        elif zone6_span_widget(assignments) == "vu":
+            z = NOW_PLAYING_ZONES[6]
+            zx, zy, zw, zh = z.xywh
+            if bgr:
+                from pigeon.widgets.vu_meters import render_vu_meters_into_bgr
+
+                render_vu_meters_into_bgr(
+                    out[int(zy) : int(zy) + int(zh), int(zx) : int(zx) + int(zw)],
+                    face_key=self._cached_sig,
+                )
+            else:
+                from pigeon.widgets.vu_meters import render_vu_meters_bgra
+
+                patch = render_vu_meters_bgra(int(zw), int(zh))
+                _paste_patch_bgra(out, patch, int(zx), int(zy))
+        for i, key in enumerate(assignments):
+            if key != "audio_levels":
+                continue
+            zone = _zone_spec(i + 1)
+            zx, zy, zw, zh = zone.xywh
+            from pigeon.widgets.audio_meter_saver import render_stereo_meter_widget_bgra
+
+            patch = render_stereo_meter_widget_bgra(int(zw), int(zh))
+            _paste_patch_bgra(out, patch, int(zx), int(zy))
+            draw_levels_volume_readout(
+                out,
+                (int(zx), int(zy), int(zw), int(zh)),
+                self._state.volume,
+                muted=bool(self._state.volume_muted),
+            )
+
+    def _draw_paused_zone6_clock_saver(
+        self, out: np.ndarray, now: datetime | None = None
+    ) -> None:
+        """Scale the clock-saver face into zone 6 over the backdrop / poster."""
+        if not self._paused_clock_in_zone6():
+            return
+        z = NOW_PLAYING_ZONES[6]
+        zx, zy, zw, zh = z.xywh
+        from pigeon.widgets.clock_saver import render_clock_saver_face_bgra
+
+        patch = render_clock_saver_face_bgra(
+            width=int(zw),
+            height=int(zh),
+            include_weather=False,
+            when=now,
+        )
+        if patch is None or patch.size == 0:
+            return
+        _paste_patch_bgra(out, patch, int(zx), int(zy))
 
     def _draw_zone6_span_widget(self, out: np.ndarray) -> None:
-        """Clock-saver face or weather cluster in the wide zone-6 slot."""
+        """Clock-saver face, weather cluster, or visualizer in the wide zone-6 slot."""
         kind = zone6_span_widget(self._assignments())
         if kind not in ("clock", "weather"):
             return
@@ -4721,6 +5248,11 @@ class ViewCirclesWidget:
         ):
             self._draw_cast_shimmer(out, zone=zone, z_idx=z_idx)
             return
+        if not any(
+            str(actor or "").strip() or str(role or "").strip() for actor, role in cast
+        ):
+            self._draw_track_titles(out)
+            return
         if z_idx in (4, 5):
             mid_y = float(zone.y) + float(zone.h) * 0.5
             for i, (x0, col_w) in enumerate(strip_cast_columns(zone)):
@@ -4845,9 +5377,7 @@ class ViewCirclesWidget:
             zone = int(zone_i)
             # Portrait (zone 3) auto-packs; the zone-4 strip keeps its grid frac.
             subtitle_frac = _ZONE4_SUBTITLE_TOP_FRAC if zone == 4 else None
-        title = str(st.song_title or "").strip()
-        artist = str(st.artist_title or "").strip()
-        album = str(st.album_title or "").strip()
+        title, artist, album = self._info_text_lines()
         zx, zy, zw, zh = self._title_box_xywh(zone)
         if not title and not artist and not album:
             if self._title_widget_loading():
@@ -4914,7 +5444,7 @@ class ViewCirclesWidget:
         _paste_patch_bgra(out, patch, zx, zy)
 
     def _tt_source_bgra(self) -> np.ndarray | None:
-        """Image for the TT slot: album art while music is playing, else TMDb TT."""
+        """Image for the TT slot: album art, TMDb logo, or the poster fallback."""
         if self.content_mode == _CONTENT_MODE_MUSIC:
             src = self._poster_bgra
             if src is not None and getattr(src, "size", 0) > 0:
@@ -4922,7 +5452,18 @@ class ViewCirclesWidget:
         src = self._tt_bgra
         if src is not None and getattr(src, "size", 0) > 0:
             return src
+        src = self._poster_bgra
+        if src is not None and getattr(src, "size", 0) > 0:
+            return src
         return None
+
+    def _tt_art_is_poster_fallback(self) -> bool:
+        """True when the artwork slot is using poster/album art, not a TT logo."""
+        tt = self._tt_bgra
+        if tt is not None and getattr(tt, "size", 0) > 0:
+            return False
+        poster = self._poster_bgra
+        return poster is not None and getattr(poster, "size", 0) > 0
 
     def _tt_countdown_tt_patch(
         self,
@@ -4968,7 +5509,10 @@ class ViewCirclesWidget:
             box_w = max(1, int(round(x1 - x0)))
             box_h = max(1, int(round(y1 - y0)))
         src = self._tt_source_bgra()
-        title = str(self._state.tt_title or "").strip()
+        title = (
+            str(self._state.tt_title or "").strip()
+            or str(self._state.song_title or "").strip()
+        )
         key: tuple[object, ...]
         if src is not None and src.size > 0:
             key = ("img", self.content_mode, id(src), box_w, box_h)
@@ -4983,7 +5527,7 @@ class ViewCirclesWidget:
             arr = src
             if arr.ndim == 3 and arr.shape[2] == 3:
                 arr = cv2.cvtColor(arr, cv2.COLOR_BGR2BGRA)
-            if self.content_mode != _CONTENT_MODE_MUSIC:
+            if self.content_mode != _CONTENT_MODE_MUSIC and not self._tt_art_is_poster_fallback():
                 try:
                     from pigeon.tmdb_tt_contrast import whiten_dark_tt_bgra
 
@@ -5046,7 +5590,7 @@ class ViewCirclesWidget:
         st = self._state
         music = self.content_mode == _CONTENT_MODE_MUSIC
         tpatch = None
-        if st.has_position and not music:
+        if not music:
             label = format_countdown_timecode(st.remaining_text)
             if label:
                 sx = float(z.w) / view_w
@@ -5055,6 +5599,7 @@ class ViewCirclesWidget:
 
         shimmer_id = None
         shimmer_radius = max(8, int(round(float(WIDGET_SHIMMER_RADIUS))))
+        pin_trt_to_levels = False
 
         def _paste_group(pastes: list[tuple[np.ndarray, int, int]]) -> None:
             if not pastes:
@@ -5081,7 +5626,18 @@ class ViewCirclesWidget:
             y1 = max(s[1] for s in spans)
             zx, zy, zw, zh = z.xywh
             dy = 0.0
-            if layout_shows_tt_countdown_and_volume(self._assignments()):
+            if pin_trt_to_levels:
+                from pigeon.widgets.audio_meter_saver import stereo_meter_volume_band_h
+
+                reserve = stereo_meter_volume_band_h(int(zh))
+                usable_bottom = float(zy + zh - reserve)
+                zone_cy = (float(zy) + usable_bottom) * 0.5
+                dy = zone_cy - (y0 + y1) * 0.5
+                min_dy = float(zy) - y0
+                max_dy = usable_bottom - y1
+                if max_dy >= min_dy:
+                    dy = min(max(dy, min_dy), max_dy)
+            elif layout_shows_tt_countdown_and_volume(self._assignments()):
                 vol_zone = _zone_for_widget(self._assignments(), "volume")
                 if vol_zone is not None:
                     _vcx, vcy = _zone_volume_center(int(vol_zone))
@@ -5227,9 +5783,13 @@ class ViewCirclesWidget:
             tt_local_h = float(patch.shape[0]) * scale_y
         if tpatch is not None and tpatch.size > 0:
             trt_local_h = float(tpatch.shape[0]) * scale_y
+        pin_trt_to_levels = bool(
+            wide and layout_shows_tt_countdown_and_levels(self._assignments())
+        )
         if wide:
             lift = tt_countdown_16x9_content_lift(
-                tt_local_h, trt_height=trt_local_h
+                tt_local_h,
+                trt_height=0.0 if pin_trt_to_levels else trt_local_h,
             )
         else:
             lift = tt_countdown_portrait_content_lift(
@@ -5249,6 +5809,7 @@ class ViewCirclesWidget:
             px = cx_d - pw / 2.0
             py = bottom_d - ph
             pastes.append((patch, int(round(px)), int(round(py))))
+        trt_paste = None
         if tpatch is not None and tpatch.size > 0:
             ax, ay = (
                 tt_countdown_16x9_time_anchor(lift=lift)
@@ -5262,8 +5823,17 @@ class ViewCirclesWidget:
             )
             tw_p = tpatch.shape[1]
             px = cx_d - tw_p / 2.0
-            pastes.append((tpatch, int(round(px)), int(round(top_d))))
+            if pin_trt_to_levels:
+                from pigeon.widgets.audio_meter_saver import levels_readout_center_y
+
+                cy = levels_readout_center_y(float(z.y), float(z.h))
+                trt_paste = (tpatch, float(cx_d), cy)
+            else:
+                pastes.append((tpatch, int(round(px)), int(round(top_d))))
         _paste_group(pastes)
+        if trt_paste is not None:
+            img, cx_t, cy_t = trt_paste
+            _paste_centered(out, img, cx_t, cy_t)
 
     def _render_static_bgra(self) -> np.ndarray:
         self._shimmer_rects = []
@@ -5311,7 +5881,8 @@ class ViewCirclesWidget:
         self._draw_clock_digital(out, now)
         self._draw_zone6_span_widget(out)
         self._draw_weather_zones(out)
-        self._draw_audio_level_labels(out)
+        self._draw_seconds_bar_zones(out, now)
+        self._draw_pigeonclock_zones(out)
         if self.content_mode == _CONTENT_MODE_MUSIC or self._state.is_youtube:
             self._draw_track_titles(out)
         if any(is_status_bar_widget(assignments[i], i + 1) for i in range(5)):
@@ -5321,7 +5892,7 @@ class ViewCirclesWidget:
             if assignments[z - 1] == "tt_countdown":
                 self._draw_tt_countdown(out, zone=z)
         wide_tt_zone = tt_countdown_16x9_zone(assignments)
-        if wide_tt_zone is not None:
+        if wide_tt_zone is not None and not self._paused_clock_in_zone6():
             self._draw_tt_countdown(out, zone=int(wide_tt_zone), wide=True)
         if self.content_mode != _CONTENT_MODE_MUSIC and not self._state.is_youtube:
             for z in (1, 2, 3, 4, 5):
@@ -5384,23 +5955,39 @@ class ViewCirclesWidget:
         )
         stamp_bright_artwork_mask(_rounded_rect_mask(pw, ph, prx), px, py)
 
+    def _live_audio_widgets_on(self) -> bool:
+        keys = self._assignments()
+        return any(
+            k in ("visualizer", "audio_levels", "vu") for k in keys
+        ) or zone6_span_widget(keys) in ("visualizer", "vu")
+
     def bgra_frame(self) -> np.ndarray | None:
         if not self._state.chrome_visible:
             return None
-        sig = self._cache_sig()
+        sig = self._cache_sig(ticking=False)
         if self._cached_bgra is None or self._cached_sig != sig:
             self._cached_bgra = self._render_static_bgra()
             self._cached_sig = sig
+            self._static_bgr = None
+            self._ticking_under = None
+            self._ticking_under_sig = None
         self._stamp_current_poster_protect()
-        if not self._shimmer_rects:
-            return self._cached_bgra
+        frame = self._cached_bgra
+        if _layout_is_fullscreen_clock(self._assignments()):
+            return frame
         work = self._shimmer_work
-        cached = self._cached_bgra
+        cached = frame
         if work is None or work.shape != cached.shape:
             work = cached.copy()
             self._shimmer_work = work
         else:
             work[:] = cached
+        self._overlay_ticking(work)
+        frame = work
+        if self._live_audio_widgets_on():
+            self._draw_live_audio_widgets(work)
+        if not self._shimmer_rects:
+            return frame
         self._paint_live_shimmers(work)
         return work
 
@@ -5411,12 +5998,47 @@ class ViewCirclesWidget:
         if not self._state.chrome_visible:
             canvas_bgr[:] = (0, 0, 0)
             return
-        frame = self.bgra_frame()
-        if frame is None:
+        if self._shimmer_rects:
+            frame = self.bgra_frame()
+            if frame is None:
+                return
+            if frame.shape[2] >= 4:
+                canvas_bgr[:] = alpha_blend_bgra_over_bgr(canvas_bgr, frame)
+            else:
+                h = min(canvas_bgr.shape[0], frame.shape[0])
+                w = min(canvas_bgr.shape[1], frame.shape[1])
+                canvas_bgr[:h, :w] = frame[:h, :w, :3]
             return
-        if frame.shape[2] >= 4:
-            canvas_bgr[:] = alpha_blend_bgra_over_bgr(canvas_bgr, frame)
-        else:
-            h = min(canvas_bgr.shape[0], frame.shape[0])
-            w = min(canvas_bgr.shape[1], frame.shape[1])
-            canvas_bgr[:h, :w] = frame[:h, :w, :3]
+        sig = self._cache_sig(ticking=False)
+        if self._cached_bgra is None or self._cached_sig != sig:
+            self._cached_bgra = self._render_static_bgra()
+            self._cached_sig = sig
+            self._static_bgr = None
+            self._ticking_under = None
+            self._ticking_under_sig = None
+        self._stamp_current_poster_protect()
+        static = self._cached_bgra
+        if self._static_bgr is None or self._static_bgr.shape[:2] != static.shape[:2]:
+            self._static_bgr = premultiply_bgra_on_black(static)
+        tick = self._ticking_sig()
+        under = self._ticking_under
+        if (
+            under is None
+            or under.shape != canvas_bgr.shape
+            or self._ticking_under_sig != (sig, tick)
+        ):
+            if under is None or under.shape != canvas_bgr.shape:
+                under = self._static_bgr.copy()
+                self._ticking_under = under
+            elif (
+                self._ticking_under_sig is not None
+                and self._ticking_under_sig[0] == sig
+            ):
+                self._restore_ticking_rects(under)
+            else:
+                under[:] = self._static_bgr
+            self._overlay_ticking(under)
+            self._ticking_under_sig = (sig, tick)
+        canvas_bgr[:] = under
+        if self._live_audio_widgets_on():
+            self._draw_live_audio_widgets(canvas_bgr)

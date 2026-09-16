@@ -43,9 +43,12 @@ _WIDGETS_VIEWBOX = (
     float(DESIGN_H),
 )
 
-# Header labels, left → right in the export.
+# Header labels shown for the focused / activated zone (Pillow, not SVG).
 WIDGET_FOCUS_IDS: tuple[str, ...] = (
     "artwork",
+    "visualizer",
+    "vu",
+    "levels",
     "volume",
     "status",
     "info",
@@ -80,17 +83,17 @@ _ZONE_SHAPE_SVG: dict[str, tuple[float, float, float, float]] = {
     "zone5": (966.4, 1298.16, 582.23, 68.16),
 }
 
-# Each zone has its own list. Clock / weather / info can appear in more than one.
+# Each zone has its own list. Clock / info / levels can appear in more than one.
 ZONE_WIDGET_LISTS: dict[str, tuple[str, ...]] = {
-    "zone6": ("artwork", "clock", "weather"),
-    "zone3": ("volume", "clock", "artwork"),
-    "zone4": ("info", "weather"),
-    "zone5": ("status", "info"),
+    "zone6": ("artwork", "visualizer", "vu", "clock"),
+    "zone3": ("levels", "volume", "clock", "info"),
+    "zone4": ("status", "info", "levels", "clock", "weather"),
+    "zone5": ("status", "info", "levels", "clock", "weather"),
 }
 
 _DEFAULT_WIDGET_BY_ZONE: dict[str, str] = {
     "zone6": "artwork",
-    "zone3": "volume",
+    "zone3": "levels",
     "zone4": "info",
     "zone5": "status",
 }
@@ -107,8 +110,25 @@ _DEMO_ELAPSED = "0:30:00"
 _DEMO_PROGRESS = 30.0 / 120.0
 _DEMO_VOLUME = "22.5"
 _DEMO_VOLUME_FRAC = 0.72
+_DEMO_CLOCK_WHEN = datetime(2026, 9, 16, 10, 30, 0)
+_STATIC_WIDGET_PATCHES: dict[tuple[object, ...], np.ndarray] = {}
+_STATIC_WIDGET_PATCHES_MAX = 24
 _ZONE_INSET = 12.0
 _WIDGET_FIT = 0.90
+
+
+def header_catalog_zone(state: MainSettingsState | None, *, preview: bool = False) -> str:
+    """Zone whose widget labels should sit at the top of the widgets page."""
+    if state is None or preview:
+        return "zone6"
+    nav = str(getattr(state, "widgets_nav", "zones") or "zones")
+    active = str(getattr(state, "widgets_active_zone", "") or "")
+    if nav == "widgets" and active in ZONE_FOCUS_IDS:
+        return active
+    focused = str(getattr(state, "widgets_focused_id", "") or "")
+    if focused in ZONE_FOCUS_IDS:
+        return focused
+    return "zone6"
 
 
 def widgets_focus_ring(state: MainSettingsState | None = None) -> tuple[str, ...]:
@@ -146,6 +166,10 @@ def widget_id_for_zone(state: MainSettingsState | None, zone_id: str) -> str:
     if zone_id == "zone6":
         if z1 in ("clock", "clock_16x9"):
             return "clock"
+        if z1 == "visualizer":
+            return "visualizer"
+        if z1 == "vu":
+            return "vu"
         if z1 == "weather":
             return "weather"
         if z1 in _ARTWORK_KEYS or not z1:
@@ -154,14 +178,52 @@ def widget_id_for_zone(state: MainSettingsState | None, zone_id: str) -> str:
     if zone_id == "zone3":
         if z3 == "clock":
             return "clock"
+        if z3 == "cast_info":
+            return "info"
+        if z3 == "audio_levels":
+            return "levels"
         if z3 == "poster":
             return "artwork"
         return "volume"
     if zone_id == "zone4":
-        return "weather" if z4 == "weather" else "info"
+        return _strip_widget_id(z4, default="info")
     if zone_id == "zone5":
-        return "info" if z5 == "cast_info" else "status"
+        return _strip_widget_id(z5, default="status")
     return _DEFAULT_WIDGET_BY_ZONE.get(zone_id, "")
+
+
+def _strip_widget_id(key: str, *, default: str) -> str:
+    if key == "weather":
+        return "weather"
+    if key == "clock":
+        return "clock"
+    if key == "audio_levels":
+        return "levels"
+    if key == "cast_info":
+        return "info"
+    if key in ("status_bar", "now_playing"):
+        return "status"
+    if key == "clock_saver_seconds":
+        return "clock"
+    if key == "pigeonclock":
+        return "status"
+    if not key:
+        return default
+    return default
+
+
+def _prefs_key_for_strip(widget_id: str) -> str:
+    if widget_id == "status":
+        return "status_bar"
+    if widget_id == "info":
+        return "cast_info"
+    if widget_id == "levels":
+        return "audio_levels"
+    if widget_id == "clock":
+        return "clock"
+    if widget_id == "weather":
+        return "weather"
+    return ""
 
 
 def assigned_widget_ids(state: MainSettingsState) -> frozenset[str]:
@@ -240,23 +302,33 @@ def apply_widget_assignment(
     if zone == "zone6":
         if widget_id == "artwork":
             current[0], current[1] = "tt_countdown_16x9", ""
+        elif widget_id == "visualizer":
+            current[0], current[1] = "visualizer", ""
+        elif widget_id == "vu":
+            current[0], current[1] = "vu", ""
         elif widget_id == "clock":
             current[0], current[1] = "clock_16x9", ""
-        elif widget_id == "weather":
-            current[0], current[1] = "weather", ""
         else:
             return False
     elif zone == "zone3":
         if widget_id == "clock":
             current[2] = "clock"
-        elif widget_id == "artwork":
-            current[2] = "poster"
-        else:
+        elif widget_id == "info":
+            current[2] = "cast_info"
+        elif widget_id == "levels":
+            current[2] = "audio_levels"
+        elif widget_id == "volume":
             current[2] = "volume"
+        else:
+            return False
     elif zone == "zone4":
-        current[3] = "weather" if widget_id == "weather" else "cast_info"
+        current[3] = _prefs_key_for_strip(widget_id)
+        if not current[3]:
+            return False
     elif zone == "zone5":
-        current[4] = "cast_info" if widget_id == "info" else "status_bar"
+        current[4] = _prefs_key_for_strip(widget_id)
+        if not current[4]:
+            return False
     else:
         return False
     state.preferences_zone_widgets = (
@@ -356,26 +428,9 @@ def apply_widgets_svg_state(
     nav = str(getattr(state, "widgets_nav", "zones") or "zones")
     focused = "" if preview else str(getattr(state, "widgets_focused_id", "") or "")
     active_zone = "" if preview else str(getattr(state, "widgets_active_zone", "") or "")
-    assigned = assigned_widget_ids(state)
-    catalog = ZONE_WIDGET_LISTS.get(active_zone, ()) if nav == "widgets" else ()
 
-    for wid, lid in _WIDGET_LABEL_IDS.items():
-        el = _find_by_logical_id(root, lid)
-        _nudge_translate(el, _LABELS_SHIFT_X)
-        if preview:
-            color = _COLOR_WHITE if wid in assigned else _COLOR_IDLE
-        elif nav == "widgets":
-            if wid not in catalog:
-                color = _COLOR_UNAVAILABLE
-            elif wid == focused:
-                color = _COLOR_WHITE
-            elif wid == widget_id_for_zone(state, active_zone):
-                color = _COLOR_WHITE
-            else:
-                color = _COLOR_IDLE
-        else:
-            color = _COLOR_WHITE if wid in assigned else _COLOR_IDLE
-        _paint_text(el, color)
+    # Header labels are redrawn in Pillow for the focused zone's catalog.
+    _set_visible(_find_by_logical_id(root, "widget_labels_group"), False)
 
     highlight_zone = ""
     if not preview:
@@ -684,7 +739,7 @@ def _render_np_clock_widget_bgra(assets_dir: Path | str | None) -> np.ndarray | 
     vw = int(round(CLOCK_VIEW_W))
     vh = int(round(CLOCK_VIEW_H))
     out = np.zeros((vh, vw, 4), dtype=np.uint8)
-    now = datetime.now()
+    now = _DEMO_CLOCK_WHEN
     try:
         chrome = _rasterize_named_widget(
             assets_dir=assets_dir,
@@ -717,6 +772,7 @@ def _render_zone6_clock_bgra(
             width=max(32, int(w)),
             height=max(24, int(h)),
             include_weather=False,
+            when=_DEMO_CLOCK_WHEN,
         )
     except Exception:
         return None
@@ -864,9 +920,65 @@ def _render_weather_widget_bgra(assets_dir: Path | str | None) -> np.ndarray | N
     from pigeon.widgets.clock_saver import render_clock_saver_weather_cluster_bgra
 
     try:
-        return render_clock_saver_weather_cluster_bgra(assets_dir=assets_dir)
+        return render_clock_saver_weather_cluster_bgra(
+            assets_dir=assets_dir, preview=True
+        )
     except Exception:
         return None
+
+
+def _draw_header_widget_labels(
+    out: np.ndarray,
+    state: MainSettingsState,
+    *,
+    preview: bool = False,
+) -> None:
+    from pigeon.widgets.view_circles import (
+        _load_sharp_extrabold,
+        _paste_patch_bgra,
+        _text_patch_font,
+    )
+
+    zone = header_catalog_zone(state, preview=preview)
+    catalog = ZONE_WIDGET_LISTS.get(zone, ())
+    if not catalog:
+        return
+    nav = str(getattr(state, "widgets_nav", "zones") or "zones")
+    focused = "" if preview else str(getattr(state, "widgets_focused_id", "") or "")
+    assigned = widget_id_for_zone(state, zone)
+    labels: list[tuple[str, np.ndarray]] = []
+    px = 36
+    font = _load_sharp_extrabold(px)
+    for wid in catalog:
+        color = _COLOR_IDLE
+        if preview:
+            color = _COLOR_WHITE if wid == assigned else _COLOR_IDLE
+        elif nav == "widgets":
+            if wid == focused or wid == assigned:
+                color = _COLOR_WHITE
+            else:
+                color = _COLOR_IDLE
+        else:
+            color = _COLOR_WHITE if wid == assigned else _COLOR_IDLE
+        rgb = (255, 255, 255) if color == _COLOR_WHITE else (214, 0, 0)
+        patch, _pw, _ph = _text_patch_font(wid, font=font, fill_rgb=rgb)
+        labels.append((wid, patch))
+    if not labels:
+        return
+    gap = 28
+    total = sum(int(p.shape[1]) for _w, p in labels) + gap * (len(labels) - 1)
+    # Board artwork x=747.84 plus the historic 56px nudge, converted to canvas.
+    x0 = 222
+    max_w = 1100
+    if total > max_w and len(labels) > 1:
+        gap = max(12, int((max_w - sum(int(p.shape[1]) for _w, p in labels)) / (len(labels) - 1)))
+        total = sum(int(p.shape[1]) for _w, p in labels) + gap * (len(labels) - 1)
+    x = x0
+    baseline_y = 147
+    for _wid, patch in labels:
+        ph, pw = patch.shape[:2]
+        _paste_patch_bgra(out, patch, int(x), int(baseline_y - ph))
+        x += pw + gap
 
 
 def _draw_zone_label(
@@ -906,23 +1018,66 @@ def _widget_patch_for_zone(
     assets_dir: Path | str | None,
     box: tuple[int, int, int, int],
 ) -> np.ndarray | None:
+    theme_ui = str(getattr(getattr(state, "theme", None), "ui", "") or "")
+    cache_key = (zone, widget_id, int(box[2]), int(box[3]), theme_ui)
+    hit = _STATIC_WIDGET_PATCHES.get(cache_key)
+    if hit is not None:
+        return hit
+    # Settings demos are identify-only stills. Do not follow live NP content
+    # or start capture / weather / clock timers.
+    demo_state = None
     if zone == "zone6" and widget_id == "clock":
-        return _render_zone6_clock_bgra(box)
-    if widget_id == "artwork":
+        patch = _render_zone6_clock_bgra(box)
+    elif widget_id == "visualizer":
+        from pigeon.widgets.audio_visualizer import render_audio_visualizer_bgra
+
+        _x, _y, w, h = box
+        patch = render_audio_visualizer_bgra(
+            max(32, int(w)), max(24, int(h)), preview=True
+        )
+    elif widget_id == "vu":
+        from pigeon.widgets.vu_meters import render_vu_meters_bgra
+
+        _x, _y, w, h = box
+        patch = render_vu_meters_bgra(
+            max(32, int(w)), max(24, int(h)), preview=True
+        )
+    elif widget_id == "levels":
+        from pigeon.widgets.audio_meter_saver import render_stereo_meter_widget_bgra
+        from pigeon.widgets.view_circles import draw_levels_volume_readout
+
+        _x, _y, w, h = box
+        patch = render_stereo_meter_widget_bgra(
+            max(24, int(w)), max(24, int(h)), left_fill=0.0, right_fill=0.0
+        )
+        if patch is not None and patch.size:
+            draw_levels_volume_readout(
+                patch,
+                (0, 0, int(patch.shape[1]), int(patch.shape[0])),
+                _DEMO_VOLUME,
+            )
+    elif widget_id == "artwork":
         if zone == "zone3":
-            return _render_poster_artwork_widget_bgra(state, assets_dir)
-        return _render_artwork_widget_bgra(state, assets_dir)
-    if widget_id == "volume":
-        return _render_volume_widget_bgra(assets_dir, state)
-    if widget_id == "clock":
-        return _render_np_clock_widget_bgra(assets_dir)
-    if widget_id == "info":
-        return _render_info_widget_bgra(state)
-    if widget_id == "status":
-        return _render_status_widget_bgra(state)
-    if widget_id == "weather":
-        return _render_weather_widget_bgra(assets_dir)
-    return None
+            patch = _render_poster_artwork_widget_bgra(demo_state, assets_dir)
+        else:
+            patch = _render_artwork_widget_bgra(demo_state, assets_dir)
+    elif widget_id == "volume":
+        patch = _render_volume_widget_bgra(assets_dir, demo_state)
+    elif widget_id == "clock":
+        patch = _render_np_clock_widget_bgra(assets_dir)
+    elif widget_id == "info":
+        patch = _render_info_widget_bgra(demo_state)
+    elif widget_id == "status":
+        patch = _render_status_widget_bgra(demo_state)
+    elif widget_id == "weather":
+        patch = _render_weather_widget_bgra(assets_dir)
+    else:
+        patch = None
+    if patch is not None:
+        if len(_STATIC_WIDGET_PATCHES) >= _STATIC_WIDGET_PATCHES_MAX:
+            _STATIC_WIDGET_PATCHES.clear()
+        _STATIC_WIDGET_PATCHES[cache_key] = patch
+    return patch
 
 
 def _draw_zone_demos_bgra(
@@ -940,7 +1095,7 @@ def _draw_zone_demos_bgra(
         patch = _widget_patch_for_zone(
             zone, wid, state=state, assets_dir=assets_dir, box=box
         )
-        if zone == "zone6" and wid == "clock" and patch is not None:
+        if zone == "zone6" and wid in ("clock", "visualizer", "vu") and patch is not None:
             _paste_patch_bgra(out, patch, int(box[0]), int(box[1]))
             continue
         _contain_paste(out, patch, box)
@@ -970,7 +1125,10 @@ def render_widgets_page_bgra(
         font_mode="preferences",
     )
     if not preview:
+        _draw_header_widget_labels(frame, state, preview=False)
         _draw_zone_demos_bgra(frame, state, assets_dir=assets_dir)
+    else:
+        _draw_header_widget_labels(frame, state, preview=True)
     return frame
 
 
@@ -982,6 +1140,7 @@ __all__ = [
     "apply_widgets_svg_state",
     "assigned_widget_ids",
     "ensure_default_zone_widgets",
+    "header_catalog_zone",
     "persist_widgets_layout",
     "render_widgets_page_bgra",
     "widget_id_for_zone",

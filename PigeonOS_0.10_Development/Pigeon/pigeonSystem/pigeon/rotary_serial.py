@@ -35,6 +35,7 @@ Optional: ``PIGEON_ADB=/path/to/adb`` custom adb binary.
 
 from __future__ import annotations
 
+import atexit
 import glob
 import os
 import shutil
@@ -95,6 +96,17 @@ _VOLUME_LINE_TO_ACTION = {
     "MUTE_TOGGLE": "mute_toggle",
     "PUSH": "mute_toggle",
 }
+# Marker in ``python3 -c`` helpers so a restart can reap orphans holding GPIO.
+_GPIO_HELPER_MARK = "PIGEON_GPIO_HELPER"
+_GPIO_HELPER_PREAMBLE = f"""# {_GPIO_HELPER_MARK}
+import ctypes, os
+try:
+    ctypes.CDLL(None).prctl(1, 15)
+    if os.getppid() == 1:
+        raise SystemExit(0)
+except Exception:
+    pass
+"""
 
 
 def _stderr(msg: str) -> None:
@@ -478,6 +490,72 @@ def _dispatch_action(
         inject_keysym(root, keysym)
 
 
+def _reap_stale_gpio_helpers() -> int:
+    """Kill leftover gpiozero helpers that still hold encoder pins.
+
+    ``python3 -c`` GPIO listeners are children of Pigeon. If the parent is
+    killed without its stop callback, they get reparented to init, keep the
+    pins, and the next start logs ``GPIO busy``.
+    """
+    if not sys.platform.startswith("linux"):
+        return 0
+    my_pid = os.getpid()
+    mark = _GPIO_HELPER_MARK.encode("ascii")
+    victims: list[int] = []
+    try:
+        names = os.listdir("/proc")
+    except Exception:
+        return 0
+    for name in names:
+        if not name.isdigit():
+            continue
+        pid = int(name)
+        if pid == my_pid:
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                raw = fh.read()
+        except Exception:
+            continue
+        if mark not in raw and b"from gpiozero import" not in raw:
+            continue
+        if b"RotaryEncoder(" not in raw and b"PLAY_PAUSE" not in raw:
+            continue
+        victims.append(pid)
+    killed = 0
+    for pid in victims:
+        try:
+            os.kill(pid, 15)
+            killed += 1
+        except OSError:
+            pass
+    if not killed:
+        return 0
+    time.sleep(0.2)
+    for pid in victims:
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
+    _stderr(f"pigeon: rotary_gpio: reaped {killed} stale helper(s)")
+    return killed
+
+
+def _spawn_gpio_helper(script: str) -> subprocess.Popen[str] | None:
+    body = _GPIO_HELPER_PREAMBLE + script
+    try:
+        return subprocess.Popen(
+            ["/usr/bin/python3", "-u", "-c", body],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+    except Exception as exc:
+        _stderr(f"pigeon: rotary_gpio: helper spawn failed: {exc}")
+        return None
+
+
 def _start_gpio_listener(
     root,
     *,
@@ -507,13 +585,9 @@ pause()
 """
 
     try:
-        proc = subprocess.Popen(
-            ["/usr/bin/python3", "-u", "-c", helper],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-        )
+        proc = _spawn_gpio_helper(helper)
+        if proc is None:
+            return None
     except Exception as exc:
         _stderr(f"pigeon: rotary_gpio: not started: {exc}")
         return None
@@ -592,13 +666,9 @@ pause()
 """
 
     try:
-        proc = subprocess.Popen(
-            ["/usr/bin/python3", "-u", "-c", helper],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-        )
+        proc = _spawn_gpio_helper(helper)
+        if proc is None:
+            return None
     except Exception as exc:
         _stderr(f"pigeon: rotary_volume_gpio: not started: {exc}")
         return None
@@ -670,13 +740,9 @@ pause()
 """
 
     try:
-        proc = subprocess.Popen(
-            ["/usr/bin/python3", "-u", "-c", helper],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-        )
+        proc = _spawn_gpio_helper(helper)
+        if proc is None:
+            return None
     except Exception as exc:
         _stderr(f"pigeon: play_pause_gpio: not started: {exc}")
         return None
@@ -1037,6 +1103,7 @@ def start_rotary_serial_listener(
     if not enabled:
         return None
 
+    _reap_stale_gpio_helpers()
     stop = threading.Event()
     invert = _env_invert()
     gate = _ActionGate()
@@ -1148,4 +1215,5 @@ def start_rotary_serial_listener(
             except Exception:
                 pass
 
+    atexit.register(stop_all)
     return stop_all

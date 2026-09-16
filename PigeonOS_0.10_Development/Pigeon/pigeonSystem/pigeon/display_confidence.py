@@ -162,6 +162,25 @@ def content_should_stay_active(
     return False
 
 
+def metadata_is_playback_idle(metadata: Mapping[str, Any] | None) -> bool:
+    """True when the player has no usable title and reports idle/stopped.
+
+    A real title wins even if ``device_state`` says Idle (Netflix / YouTube MRP).
+    """
+    md = metadata if isinstance(metadata, dict) else {}
+    if identity_displayable(md) or player_metadata_adequate(md):
+        return False
+    q = str(md.get("query") or md.get("title") or md.get("ocr_title") or "").strip()
+    if q and not is_placeholder_identity(q):
+        return False
+    ds = str(md.get("device_state") or "")
+    if "Playing" in ds:
+        return False
+    if "Idle" in ds or "Stopped" in ds:
+        return True
+    return not q
+
+
 def scores_for_metadata(
     metadata: Mapping[str, Any] | None,
     *,

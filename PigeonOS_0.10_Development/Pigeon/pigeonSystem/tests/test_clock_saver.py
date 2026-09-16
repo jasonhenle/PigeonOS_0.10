@@ -635,6 +635,14 @@ class ClockSaverTriggerTests(unittest.TestCase):
                 content_idle=False,
             )
         )
+        self.assertFalse(
+            clock_saver_due_for_no_content(
+                playing=False,
+                paused_with_content=False,
+                content_idle=True,
+                incoming_audio=True,
+            )
+        )
         self.assertTrue(
             tmdb_should_skip_refetch_on_resume(
                 content_key="show|auto|Show",

@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import queue
 import re
@@ -182,6 +183,10 @@ latest_meter_cache_key = None  # type: ignore[misc, assignment]
 render_audio_meter_composite_bgra = None  # type: ignore[misc, assignment]
 stop_audio_meter_capture = None  # type: ignore[misc, assignment]
 sync_audio_meter_capture = None  # type: ignore[misc, assignment]
+latest_visualizer_cache_key = None  # type: ignore[misc, assignment]
+audio_connection_ok = None  # type: ignore[misc, assignment]
+program_audio_present = None  # type: ignore[misc, assignment]
+program_audio_session_present = None  # type: ignore[misc, assignment]
 toggle_audio_meter_face = None  # type: ignore[misc, assignment]
 PlaybackOverlayWidget = None  # type: ignore[misc, assignment]
 compose_playback_volume_widget_line = None  # type: ignore[misc, assignment]
@@ -288,8 +293,12 @@ except ImportError as _exc:
 
 try:
     from pigeon.widgets.audio_meter_saver import (
+        audio_connection_ok,
         audio_meter_face_enabled,
         latest_meter_cache_key,
+        latest_visualizer_cache_key,
+        program_audio_present,
+        program_audio_session_present,
         render_audio_meter_composite_bgra,
         stop_audio_meter_capture,
         sync_audio_meter_capture,
@@ -841,6 +850,9 @@ def _apply_brightness(frame_bgr: np.ndarray, factor: float) -> np.ndarray:
     return cv2.convertScaleAbs(frame_bgr, alpha=factor, beta=0)
 
 
+_TK_RGB_SCRATCH: np.ndarray | None = None
+
+
 def _bgr_to_tk_image(frame_bgr: np.ndarray) -> ImageTk.PhotoImage:
     try:
         from pigeon.widgets.options_settings import apply_ui_look_bgr
@@ -861,6 +873,8 @@ def _update_label_photo_from_bgr(
     """
     Reuse one ``PhotoImage`` and ``paste`` each frame. Creating hundreds of new
     ``PhotoImage`` objects per second leaks native Tk storage and locks up after a short run.
+
+    Pillow's ``ImageTk.PhotoImage.paste`` on the Pi takes only the image (no dest box).
     """
     try:
         from pigeon.widgets.options_settings import apply_ui_look_bgr
@@ -868,10 +882,16 @@ def _update_label_photo_from_bgr(
         frame_bgr = apply_ui_look_bgr(frame_bgr)
     except Exception:
         pass
-    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-    h, w = int(rgb.shape[0]), int(rgb.shape[1])
+    src = np.ascontiguousarray(frame_bgr)
+    h, w = int(src.shape[0]), int(src.shape[1])
     if h < 1 or w < 1:
         return
+    global _TK_RGB_SCRATCH
+    rgb = _TK_RGB_SCRATCH
+    if rgb is None or int(rgb.shape[0]) != h or int(rgb.shape[1]) != w:
+        rgb = np.empty((h, w, 3), dtype=np.uint8)
+        _TK_RGB_SCRATCH = rgb
+    cv2.cvtColor(src, cv2.COLOR_BGR2RGB, dst=rgb)
     pil_img = Image.fromarray(rgb)
     ph = holder[0]
     try:
@@ -1126,6 +1146,16 @@ def main() -> int:
 
         _volume_lines = _NullVolumeLineReveal()
 
+    def _note_zone3_volume_takeover() -> None:
+        """Hold the NP volume widget in zone 3 for 7s after an adjustment."""
+        try:
+            if view_circles_widget is not None:
+                view_circles_widget.note_volume_adjustment()
+        except NameError:
+            pass
+        except Exception:
+            pass
+
     def _note_volume_graphics(raw: object) -> None:
         prev_label = str(getattr(_volume_lines, "last_label", "") or "")
         try:
@@ -1137,6 +1167,8 @@ def main() -> int:
         new_label = str(getattr(_volume_lines, "last_label", "") or "")
         if not new_label or new_label == prev_label:
             return
+        if prev_label:
+            _note_zone3_volume_takeover()
         try:
             if _clock_saver_volume.is_stale_poll(raw):
                 return
@@ -2599,16 +2631,24 @@ def main() -> int:
                     return False
             except Exception:
                 pass
+            try:
+                from pigeon.display_confidence import metadata_is_playback_idle
+
+                return bool(metadata_is_playback_idle(metadata))
+            except Exception:
+                pass
             ds = str(metadata.get("device_state") or "")
-            if "Idle" in ds or "Stopped" in ds:
-                return True
-            if "Playing" in ds:
-                return False
             if resolve_metadata_tmdb_query is not None and resolve_metadata_tmdb_query(metadata):
                 return False
             if metadata_has_playback_title is not None and metadata_has_playback_title(metadata):
                 return False
             q = str(metadata.get("query") or "").strip()
+            if q:
+                return False
+            if "Idle" in ds or "Stopped" in ds:
+                return True
+            if "Playing" in ds:
+                return False
             return not q
 
         def _apple_tv_is_off() -> bool:
@@ -3380,7 +3420,9 @@ def main() -> int:
             return "Playing" in str(lm.get("device_state") or "")
 
         def _np_widgets_content_active(*, incoming: str = "", config: str = "") -> bool:
-            """True when NP should show more than the clock (title / play / AVR broadcast)."""
+            """True when NP should show more than the clock (title / play / AVR / audio)."""
+            if _program_audio_session():
+                return True
             if _apple_tv_is_off():
                 return False
             if _something_playing_now() or _show_paused_row_overlay():
@@ -3510,6 +3552,18 @@ def main() -> int:
                 return False
             if dev_phase != DevPhase.OFF:
                 return False
+            if _program_audio_session():
+                _boot_clock_saver_until_playback[0] = False
+                return False
+            try:
+                inc_cs, cfg_cs, _vol_cs = _resolve_receiver_lines_for_now_playing()
+            except Exception:
+                inc_cs, cfg_cs = "", ""
+            if (not bool(receiver_standby_holder[0])) and (
+                str(inc_cs or "").strip() or str(cfg_cs or "").strip()
+            ):
+                _boot_clock_saver_until_playback[0] = False
+                return False
             if _apple_tv_is_off():
                 return True
             # Do not require ``scene_enabled``: view ONE now-playing (circles) commonly
@@ -3521,7 +3575,7 @@ def main() -> int:
             # Boot: if nothing is playing after splash, stay on the saver until playback
             # starts or a local control dismisses it.
             if _boot_clock_saver_until_playback[0]:
-                if _something_playing_now():
+                if _something_playing_now() or _program_audio_session():
                     _boot_clock_saver_until_playback[0] = False
                     _note_metadata_activity(now)
                 elif startup_ph[0] is None or _splash_reveal_clock[0]:
@@ -3535,6 +3589,7 @@ def main() -> int:
                 paused_with_content=paused,
                 live=bool(apple_tv_playback_clock.get("live_mode")),
                 content_idle=_clock_saver_content_is_idle(),
+                incoming_audio=_program_audio_session(),
             ):
                 return True
             # HDMI-only: 24 consecutive unchanged OCR frames → saver.
@@ -3666,6 +3721,102 @@ def main() -> int:
                 return False
             return _idle_saver_face_toggle_ok(now)
 
+        def _program_audio_present() -> bool:
+            if program_audio_present is None:
+                return False
+            try:
+                return bool(program_audio_present())
+            except Exception:
+                return False
+
+        def _program_audio_session() -> bool:
+            """True through quiet scenes after program audio has been heard."""
+            if program_audio_session_present is not None:
+                try:
+                    return bool(program_audio_session_present())
+                except Exception:
+                    pass
+            return _program_audio_present()
+
+        def _idle_audio_listen(now: float | None = None) -> bool:
+            """Keep ALSA open on the clock saver so incoming audio can wake NP."""
+            if not _view_one_uses_now_playing_screen():
+                return False
+            t = time.monotonic() if now is None else float(now)
+            try:
+                return bool(_clock_saver_for_compose(t))
+            except Exception:
+                return False
+
+        def _settings_audio_led_listen() -> bool:
+            """Keep ALSA open on settings_pigeon so the audio LED can follow signal."""
+            if main_settings_widget is None:
+                return False
+            try:
+                st = main_settings_widget.state
+            except Exception:
+                return False
+            if not bool(getattr(st, "show_pigeon_settings", False)):
+                return False
+            if bool(getattr(st, "show_widgets", False)):
+                return False
+            if bool(getattr(st, "show_options", False)):
+                return False
+            if bool(getattr(st, "show_ui_color", False)):
+                return False
+            if bool(getattr(st, "show_preferences", False)):
+                return False
+            if bool(getattr(st, "show_metadata_debug", False)):
+                return False
+            if not bool(getattr(st, "source_audio_on", True)):
+                return False
+            return True
+
+        def _np_wants_live_audio() -> bool:
+            if view_circles_widget is None:
+                return False
+            if not _view_one_uses_now_playing_screen():
+                return False
+            try:
+                if _clock_saver_for_compose(time.monotonic()):
+                    return False
+            except Exception:
+                pass
+            try:
+                return bool(view_circles_widget.wants_live_audio())
+            except Exception:
+                return False
+
+        def _np_drawing_live_audio() -> bool:
+            """True when NP is actually painting visualizer / VU / levels this frame.
+
+            Capture can stay on for countdown widgets; skip-cache cadence follows
+            what is on screen. Now-playing forces ``scene_enabled`` off, so this
+            must also drive the scene-off skip key (otherwise the well is 1 Hz).
+            """
+            if view_circles_widget is None:
+                return False
+            if not _view_one_uses_now_playing_screen():
+                return False
+            try:
+                if _clock_saver_for_compose(time.monotonic()):
+                    return False
+            except Exception:
+                pass
+            try:
+                return bool(view_circles_widget._live_audio_widgets_on())
+            except Exception:
+                return False
+
+        def _audio_capture_wanted(now: float | None = None) -> bool:
+            if _idle_audio_meter_active(now):
+                return True
+            if _settings_audio_led_listen():
+                return True
+            if _np_wants_live_audio():
+                return True
+            return _idle_audio_listen(now)
+
         def _toggle_clock_saver_force(event: tk.Event | None = None) -> str | None:
             """Shift+2: force clock saver on/off."""
             nonlocal skip_cache
@@ -3748,6 +3899,47 @@ def main() -> int:
             return idle_dim_anim_strength
 
         _compose_idle_strength_holder: list[float] = [0.0]
+        _live_perf: list[float] = [0.0, 0.0, 0.0, 0.0, 0.0]
+        _hitch_parts: list[float] = [0.0, 0.0]
+        _np_state_sync_mono: list[float] = [0.0]
+        _np_dump_mono: list[float] = [0.0]
+
+        def _record_live_audio_timing(t0: float, t1: float, t2: float) -> None:
+            compose_ms = (t1 - t0) * 1000.0
+            upload_ms = (t2 - t1) * 1000.0
+            _live_perf[1] += 1.0
+            _live_perf[2] += compose_ms
+            _live_perf[3] += upload_ms
+            if compose_ms > _live_perf[4]:
+                _live_perf[4] = compose_ms
+            if compose_ms >= 40.0:
+                try:
+                    sys.stderr.write(
+                        "pigeon: live hitch "
+                        f"compose={compose_ms:.1f}ms "
+                        f"sync={_hitch_parts[0]:.1f}ms "
+                        f"render={_hitch_parts[1]:.1f}ms "
+                        f"upload={upload_ms:.1f}ms\n"
+                    )
+                except Exception:
+                    pass
+            if t2 - _live_perf[0] < 2.0 or _live_perf[1] < 1.0:
+                return
+            n = max(1.0, _live_perf[1])
+            try:
+                sys.stderr.write(
+                    "pigeon: live audio "
+                    f"{int(n)}f compose={_live_perf[2] / n:.1f}ms "
+                    f"max={_live_perf[4]:.1f}ms "
+                    f"upload={_live_perf[3] / n:.1f}ms\n"
+                )
+            except Exception:
+                pass
+            _live_perf[0] = t2
+            _live_perf[1] = 0.0
+            _live_perf[2] = 0.0
+            _live_perf[3] = 0.0
+            _live_perf[4] = 0.0
 
         scaled_display: np.ndarray | None = None
         scaled_version = 0
@@ -3966,11 +4158,9 @@ def main() -> int:
             nav_hot = bool(coalescer is not None and coalescer.is_hot())
             if not nav_hot:
                 try:
-                    _sync_preferences_now_playing_progress()
-                except Exception:
-                    pass
-                try:
-                    _sync_settings_zone2_tt()
+                    if not bool(getattr(main_settings_widget.state, "show_widgets", False)):
+                        _sync_preferences_now_playing_progress()
+                        _sync_settings_zone2_tt()
                 except Exception:
                     pass
             main_settings_widget.render(canvas)
@@ -4012,6 +4202,8 @@ def main() -> int:
             try:
                 from pigeon.hdmi_ocr import probe_hdmi_presence
 
+                # HDMI probe grabs a capture frame on a worker; numpy on that
+                # frame holds the GIL and hitchs live widgets every ~1.5 s.
                 probe_hdmi_presence()
             except Exception:
                 pass
@@ -4029,8 +4221,6 @@ def main() -> int:
                     played_text = _format_hmmss(int(pair[0]))
                     remaining_text = _format_hmmss(int(pair[1]))
             inc, cfg, vol = _resolve_receiver_lines_for_now_playing()
-            if _apple_tv_is_off():
-                inc, cfg = "", ""
             circles_poster_bgra = _circles_poster_bgra()
             has_np = _effective_display_view() == DisplayView.ONE
             sb = streaming_badge_state
@@ -4091,6 +4281,12 @@ def main() -> int:
                     ).strip()
             except Exception:
                 recv_name = ""
+            if not str(circles_service or "").strip() and inc:
+                circles_service = inc
+            svc_l = str(circles_service or "").strip().casefold()
+            recv_l = recv_name.casefold()
+            if svc_l and recv_l and (svc_l == recv_l or svc_l in recv_l or recv_l in svc_l):
+                circles_service = ""
             if _vv_is_music():
                 lm_music = apple_tv_auto_state.get("last_metadata")
                 song_t = album_t = artist_t = ""
@@ -4126,6 +4322,10 @@ def main() -> int:
                     tt_bgra=circles_poster_bgra,
                     tt_title=song_t,
                     receiver_name=recv_name,
+                    has_receiver=(
+                        not bool(receiver_standby_holder[0])
+                        and bool(recv_name or inc or cfg or vol)
+                    ),
                 ):
                     changed = True
             else:
@@ -4169,7 +4369,19 @@ def main() -> int:
                     tt_src = _active_tmdb_tt_src_bgra()
                 except Exception:
                     tt_src = None
-                tt_fallback = str(active_tmdb_display_title or "").strip() or song_t
+                atv_title = ""
+                if not yt_now:
+                    lm_vid = apple_tv_auto_state.get("last_metadata")
+                    if isinstance(lm_vid, dict) and not _atv_metadata_is_content_idle(lm_vid):
+                        atv_title = str(
+                            lm_vid.get("title")
+                            or lm_vid.get("query")
+                            or lm_vid.get("ocr_title")
+                            or ""
+                        ).strip()
+                tt_fallback = (
+                    str(active_tmdb_display_title or "").strip() or song_t or atv_title
+                )
                 if view_circles_widget.update_state(
                     progress=progress,
                     elapsed_text=played_text,
@@ -4195,10 +4407,68 @@ def main() -> int:
                     tt_bgra=tt_src,
                     tt_title=tt_fallback,
                     receiver_name=recv_name,
+                    has_receiver=(
+                        not bool(receiver_standby_holder[0])
+                        and bool(recv_name or inc or cfg or vol)
+                    ),
                 ):
                     changed = True
             if changed:
                 skip_cache = None
+            try:
+                t_dump = time.monotonic()
+                if t_dump - _np_dump_mono[0] >= 5.0:
+                    _np_dump_mono[0] = t_dump
+                    lm = apple_tv_auto_state.get("last_metadata")
+                    lm_d = lm if isinstance(lm, dict) else {}
+                    st = view_circles_widget._state if view_circles_widget is not None else None
+                    Path("/tmp/pigeon-np-zones.json").write_text(
+                        json.dumps(
+                            {
+                                "title_key": active_tmdb_title_key,
+                                "display_title": active_tmdb_display_title,
+                                "tt_title": getattr(st, "tt_title", None),
+                                "cast_n": len(getattr(st, "cast", None) or []),
+                                "cast0": (getattr(st, "cast", None) or [None])[0],
+                                "has_position": bool(getattr(st, "has_position", False)),
+                                "remaining": getattr(st, "remaining_text", ""),
+                                "incoming": getattr(st, "incoming", ""),
+                                "config": getattr(st, "config", ""),
+                                "service": getattr(st, "service_name", ""),
+                                "mode": getattr(st, "content_mode", ""),
+                                "youtube": bool(getattr(st, "is_youtube", False)),
+                                "searching": bool(getattr(st, "searching", False)),
+                                "md_state": str(lm_d.get("device_state") or ""),
+                                "md_title": str(lm_d.get("title") or ""),
+                                "md_query": str(lm_d.get("query") or ""),
+                                "md_app": str(lm_d.get("app_name") or ""),
+                                "assignments": list(view_circles_widget._assignments())
+                                if view_circles_widget is not None
+                                else [],
+                            },
+                            ensure_ascii=False,
+                        ),
+                        encoding="utf-8",
+                    )
+            except Exception:
+                pass
+
+        def _sync_now_playing_screen_state_for_frame() -> None:
+            """Throttle NP metadata while live audio widgets are painting at 30 Hz."""
+            live = False
+            try:
+                live = bool(
+                    view_circles_widget is not None
+                    and view_circles_widget._live_audio_widgets_on()
+                )
+            except Exception:
+                live = False
+            if live:
+                t_sync = time.monotonic()
+                if t_sync - _np_state_sync_mono[0] < 1.0:
+                    return
+                _np_state_sync_mono[0] = t_sync
+            _sync_now_playing_screen_state()
 
         def _clear_now_playing_view_caches() -> None:
             if view_circles_widget is not None:
@@ -4476,6 +4746,85 @@ def main() -> int:
 
         def _design_rect_to_window(wx: int, wy: int, ww: int, wh: int) -> tuple[int, int, int, int]:
             return _design_rect_to_target(wx, wy, ww, wh, display_dims[0], display_dims[1])
+
+        def _saver_layer_is_full_frame(
+            canvas: np.ndarray,
+            overlay_bgra: np.ndarray,
+            rect: tuple[int, int, int, int],
+        ) -> bool:
+            sx, sy, sw, sh = (int(v) for v in rect)
+            return (
+                sx == 0
+                and sy == 0
+                and sw == int(canvas.shape[1])
+                and sh == int(canvas.shape[0])
+                and int(overlay_bgra.shape[0]) == int(canvas.shape[0])
+                and int(overlay_bgra.shape[1]) == int(canvas.shape[1])
+                and int(overlay_bgra.shape[2]) >= 3
+            )
+
+        def _blit_saver_layers_design(
+            canvas: np.ndarray,
+            time_bgra: np.ndarray,
+            t_rect: tuple[int, int, int, int],
+            date_bgra: np.ndarray,
+            d_rect: tuple[int, int, int, int],
+            *,
+            copy_full_bgr: bool = False,
+        ) -> None:
+            """Blit saver layers. Full-frame meter art is opaque BGR — skip alpha."""
+            for cs_bgra, rect in ((date_bgra, d_rect), (time_bgra, t_rect)):
+                sx, sy, sw, sh = (int(v) for v in rect)
+                if copy_full_bgr and _saver_layer_is_full_frame(canvas, cs_bgra, rect):
+                    np.copyto(canvas, cs_bgra[:, :, :3])
+                    continue
+                roi2 = canvas[sy : sy + sh, sx : sx + sw]
+                roi2[:] = alpha_blend_bgra_over_bgr(roi2, cs_bgra)
+
+        def _blit_saver_layers_target(
+            base: np.ndarray,
+            time_bgra: np.ndarray,
+            t_rect: tuple[int, int, int, int],
+            date_bgra: np.ndarray,
+            d_rect: tuple[int, int, int, int],
+            cap_w: int,
+            cap_h: int,
+            *,
+            copy_full_bgr: bool = False,
+        ) -> None:
+            for cs_bgra, rect in ((date_bgra, d_rect), (time_bgra, t_rect)):
+                sx, sy, sw, sh = (int(v) for v in rect)
+                x, y, rw, rh = _design_rect_to_target(sx, sy, sw, sh, cap_w, cap_h)
+                _ch, _cw = cs_bgra.shape[:2]
+                if (
+                    copy_full_bgr
+                    and sx == 0
+                    and sy == 0
+                    and sw == int(DESIGN_W)
+                    and sh == int(DESIGN_H)
+                    and int(x) == 0
+                    and int(y) == 0
+                    and int(rw) == int(base.shape[1])
+                    and int(rh) == int(base.shape[0])
+                ):
+                    bgr = cs_bgra[:, :, :3]
+                    if _cw == rw and _ch == rh:
+                        np.copyto(base, bgr)
+                    else:
+                        np.copyto(
+                            base,
+                            cv2.resize(
+                                bgr,
+                                (rw, rh),
+                                interpolation=cv_resize_interp(_cw, _ch, rw, rh),
+                            ),
+                        )
+                    continue
+                patch = cv2.resize(
+                    cs_bgra, (rw, rh), interpolation=cv_resize_interp(_cw, _ch, rw, rh)
+                )
+                sub = base[y : y + rh, x : x + rw]
+                sub[:] = alpha_blend_bgra_over_bgr(sub, patch)
 
         def _warm_status_bar_blits() -> None:
             nonlocal status_bar_blits
@@ -4868,7 +5217,23 @@ def main() -> int:
                     pass
             track_key = _music_artwork_track_key(md)
             art_bytes = md.get("artwork_bytes")
+            art_id = md.get("artwork_id")
+            sig = (
+                track_key,
+                str(art_id or ""),
+                int(len(art_bytes)) if isinstance(art_bytes, (bytes, bytearray)) else 0,
+            )
+            have = apple_tv_auto_state.get("music_artwork_bgra")
+            if not isinstance(have, np.ndarray) or have.size == 0:
+                have = apple_tv_auto_state.get("video_artwork_bgra")
+            if (
+                apple_tv_auto_state.get("decoded_artwork_sig") == sig
+                and isinstance(have, np.ndarray)
+                and have.size > 0
+            ):
+                return
             bgra = _decode_artwork_bytes_bgra(art_bytes)
+            apple_tv_auto_state["decoded_artwork_sig"] = sig
             if is_music:
                 _clear_video_artwork_cache()
                 prev_key = apple_tv_auto_state.get("music_artwork_key")
@@ -5499,6 +5864,15 @@ def main() -> int:
             _clock_patch_sig[1] = acc
 
         _playback_overlay_fast_sig: list[tuple[bool, bool, bool, bool, bool] | None] = [None]
+        _view1_canvas_bgr: list[np.ndarray | None] = [None]
+
+        def _acquire_view1_canvas() -> np.ndarray:
+            h, w = int(DESIGN_H), int(DESIGN_W)
+            c = _view1_canvas_bgr[0]
+            if c is None or int(c.shape[0]) != h or int(c.shape[1]) != w:
+                c = np.zeros((h, w, 3), dtype=np.uint8)
+                _view1_canvas_bgr[0] = c
+            return c
 
         def compose_display_fast_no_grid(
             frame_bgr: np.ndarray | None,
@@ -5517,13 +5891,22 @@ def main() -> int:
                 return base_pause
             # View 1: 070326 now-playing screen only (no classic chrome / TMDB backdrop stack).
             if _effective_display_view() == DisplayView.ONE:
-                _set_playback_overlay_clock_saver_volume_flag()
-                _warm_tmdb_logo_patch()
-                canvas_np = np.zeros((int(DESIGN_H), int(DESIGN_W), 3), dtype=np.uint8)
-                canvas_np[:] = (0, 0, 0)
                 now_cs = time.monotonic()
+                meter_v1 = _idle_audio_meter_active(now_cs)
+                if not meter_v1:
+                    _set_playback_overlay_clock_saver_volume_flag()
+                    _warm_tmdb_logo_patch()
+                canvas_np = _acquire_view1_canvas()
                 intro_op = _clock_startup_intro_opacity(now_cs)
                 cs_v1 = _clock_saver_for_compose(now_cs)
+                np_live = (
+                    not meter_v1
+                    and intro_op is None
+                    and not (dev_phase == DevPhase.MAIN_SETTINGS and main_settings_widget is not None)
+                    and not cs_v1
+                )
+                if not meter_v1 and not np_live:
+                    canvas_np[:] = (0, 0, 0)
                 # Pre-reveal splash: black underlay. From frame 90: full clock under PNG alpha.
                 if startup_ph[0] is not None and not _splash_reveal_clock[0]:
                     pass
@@ -5561,7 +5944,9 @@ def main() -> int:
                         else None
                     )
                     _cs_dim_v1 = _clock_saver_layer_opacity(now_cs)
-                    _clock_saver_dim_pre_digit_canvas(canvas_np, _cs_dim_v1)
+                    _meter_face_v1 = meter_v1
+                    if not _meter_face_v1:
+                        _clock_saver_dim_pre_digit_canvas(canvas_np, _cs_dim_v1)
                     (time_bgra, t_rect), (date_bgra, d_rect) = _clock_saver_layers(
                         shadow_bgr=acc_cs,
                         layer_opacity=_cs_dim_v1,
@@ -5569,18 +5954,24 @@ def main() -> int:
                         date_layer_opacity=_cs_dim_v1,
                         date_anchor_row=CLOCK_ANCHOR_ROW,
                         date_anchor_col=CLOCK_ANCHOR_COL,
-                        replace_with_meter=_idle_audio_meter_active(now_cs),
+                        replace_with_meter=_meter_face_v1,
                     )
-                    for cs_bgra, (sx, sy, sw, sh) in (
-                        (date_bgra, d_rect),
-                        (time_bgra, t_rect),
-                    ):
-                        roi2 = canvas_np[sy : sy + sh, sx : sx + sw]
-                        roi2[:] = alpha_blend_bgra_over_bgr(roi2, cs_bgra)
+                    _blit_saver_layers_design(
+                        canvas_np,
+                        time_bgra,
+                        t_rect,
+                        date_bgra,
+                        d_rect,
+                        copy_full_bgr=_meter_face_v1,
+                    )
                 else:
-                    _sync_now_playing_screen_state()
+                    t_sync0 = time.perf_counter()
+                    _sync_now_playing_screen_state_for_frame()
+                    t_sync1 = time.perf_counter()
                     if view_circles_widget is not None:
                         view_circles_widget.render(canvas_np)
+                    _hitch_parts[0] = (t_sync1 - t_sync0) * 1000.0
+                    _hitch_parts[1] = (time.perf_counter() - t_sync1) * 1000.0
                 if (
                     int(cap_w) == int(DESIGN_W)
                     and int(cap_h) == int(DESIGN_H)
@@ -5654,7 +6045,8 @@ def main() -> int:
                         else None
                     )
                     _cs_dim = _clock_saver_layer_opacity(now_cs)
-                    if intro_op is None:
+                    _meter_face = _idle_audio_meter_active(now_cs)
+                    if intro_op is None and not _meter_face:
                         _clock_saver_dim_pre_digit_canvas(base, _cs_dim)
                     _time_op = float(intro_op) if intro_op is not None else 1.0
                     _date_op = float(intro_op) if intro_op is not None else _cs_dim
@@ -5665,19 +6057,18 @@ def main() -> int:
                         date_layer_opacity=_date_op,
                         date_anchor_row=CLOCK_ANCHOR_ROW,
                         date_anchor_col=CLOCK_ANCHOR_COL,
-                        replace_with_meter=_idle_audio_meter_active(now_cs),
+                        replace_with_meter=_meter_face,
                     )
-                    for cs_bgra, (sx, sy, sw, sh) in (
-                        (date_bgra, d_rect),
-                        (time_bgra, t_rect),
-                    ):
-                        x, y, rw, rh = _design_rect_to_target(sx, sy, sw, sh, cap_w, cap_h)
-                        _ch, _cw = cs_bgra.shape[:2]
-                        patch = cv2.resize(
-                            cs_bgra, (rw, rh), interpolation=cv_resize_interp(_cw, _ch, rw, rh)
-                        )
-                        sub = base[y : y + rh, x : x + rw]
-                        sub[:] = alpha_blend_bgra_over_bgr(sub, patch)
+                    _blit_saver_layers_target(
+                        base,
+                        time_bgra,
+                        t_rect,
+                        date_bgra,
+                        d_rect,
+                        cap_w,
+                        cap_h,
+                        copy_full_bgr=_meter_face,
+                    )
                     if (
                         (
                             playback_overlay_flags.get("clock_saver_volume_only")
@@ -6041,9 +6432,13 @@ def main() -> int:
                 elif dev_phase == DevPhase.MAIN_SETTINGS and main_settings_widget is not None:
                     _composite_settings_on_canvas(canvas)
                 else:
-                    _sync_now_playing_screen_state()
+                    t_sync0 = time.perf_counter()
+                    _sync_now_playing_screen_state_for_frame()
+                    t_sync1 = time.perf_counter()
                     if view_circles_widget is not None:
                         view_circles_widget.render(canvas)
+                    _hitch_parts[0] = (t_sync1 - t_sync0) * 1000.0
+                    _hitch_parts[1] = (time.perf_counter() - t_sync1) * 1000.0
             elif cs:
                 if alpha_blend_bgra_over_bgr is not None:
                     acc_cs = (
@@ -6052,7 +6447,8 @@ def main() -> int:
                         else None
                     )
                     _cs_dim_d = _clock_saver_layer_opacity(now_cs)
-                    if intro_op is None:
+                    _meter_face_d = _idle_audio_meter_active(now_cs)
+                    if intro_op is None and not _meter_face_d:
                         _clock_saver_dim_pre_digit_canvas(canvas, _cs_dim_d)
                     _time_op_d = float(intro_op) if intro_op is not None else 1.0
                     _date_op_d = float(intro_op) if intro_op is not None else _cs_dim_d
@@ -6063,14 +6459,16 @@ def main() -> int:
                         date_layer_opacity=_date_op_d,
                         date_anchor_row=CLOCK_ANCHOR_ROW,
                         date_anchor_col=CLOCK_ANCHOR_COL,
-                        replace_with_meter=_idle_audio_meter_active(now_cs),
+                        replace_with_meter=_meter_face_d,
                     )
-                    for cs_bgra, (sx, sy, sw, sh) in (
-                        (date_bgra, d_rect),
-                        (time_bgra, t_rect),
-                    ):
-                        roi2 = canvas[sy : sy + sh, sx : sx + sw]
-                        roi2[:] = alpha_blend_bgra_over_bgr(roi2, cs_bgra)
+                    _blit_saver_layers_design(
+                        canvas,
+                        time_bgra,
+                        t_rect,
+                        date_bgra,
+                        d_rect,
+                        copy_full_bgr=_meter_face_d,
+                    )
                     if playback_overlay_widget is not None and (
                         playback_overlay_flags.get("clock_saver_volume_only")
                         or playback_overlay_flags.get("clock_saver_netflix_full_overlay")
@@ -11871,6 +12269,8 @@ def main() -> int:
             nonlocal skip_cache
             if status_bar_widget is None:
                 return
+            if _idle_audio_meter_active():
+                return
             try:
                 clk = apple_tv_playback_clock
                 if clk.get("live_mode"):
@@ -11956,8 +12356,9 @@ def main() -> int:
                     root.after(max(1, int(round((nf - now_m) * 1000))), _playback_ui_tick)
                     return
                 clk["trt_next_fire_mono"] = nf
-                _refresh_extrapolated_timecodes(tick_steps=tick_steps)
-                _refresh_content_indicator()
+                if not _idle_audio_meter_active():
+                    _refresh_extrapolated_timecodes(tick_steps=tick_steps)
+                    _refresh_content_indicator()
                 now2 = time.monotonic()
                 next_nf_raw = clk.get("trt_next_fire_mono")
                 if next_nf_raw is None:
@@ -12091,6 +12492,9 @@ def main() -> int:
             from pigeon.streaming_service_badges import resolve_streaming_badge_media
 
             assets = Path(_PROJECT_DIR) / "pigeonAssets"
+            prev_show = bool(streaming_badge_state.get("show"))
+            prev_filename = str(streaming_badge_state.get("filename") or "")
+            prev_label = str(streaming_badge_state.get("label") or "")
             show = False
             filename = ""
             label = ""
@@ -12143,6 +12547,14 @@ def main() -> int:
             streaming_badge_state["show"] = show
             streaming_badge_state["filename"] = filename
             streaming_badge_state["label"] = label
+            if (
+                prev_show == show
+                and prev_filename == filename
+                and prev_label == label
+            ):
+                return
+            if _idle_audio_meter_active():
+                return
             _warm_playback_overlay_blits()
             skip_cache = None
             _apply_netflix_backdrop_when_running()
@@ -12159,6 +12571,17 @@ def main() -> int:
             if not _atv_metadata_is_content_idle(metadata):
                 return
             if _view_one_uses_now_playing_screen():
+                if _program_audio_session():
+                    # Incoming audio is still holding NP through quiet scenes.
+                    return
+                try:
+                    _inc_idle, _cfg_idle, _vol_idle = _resolve_receiver_lines_for_now_playing()
+                except Exception:
+                    _inc_idle, _cfg_idle = "", ""
+                if (not bool(receiver_standby_holder[0])) and (
+                    str(_inc_idle or "").strip() or str(_cfg_idle or "").strip()
+                ):
+                    return
                 # Keep displayed TMDB art through brief idle polls, but clear the spawn
                 # identity so the next title is not suppressed as "same tmdb_key".
                 apple_tv_auto_state["tmdb_key"] = None
@@ -12431,6 +12854,7 @@ def main() -> int:
                 def finish() -> None:
                     nonlocal skip_cache
                     apple_tv_auto_state["running"] = False
+                    meter_up = bool(_idle_audio_meter_active())
                     pyatv_ok = bool(ok_w and isinstance(metadata_w, dict))
                     md_for_status: dict[str, object] | None = metadata_w if pyatv_ok else None
                     next_poll_ms = APPLE_TV_POLL_MS
@@ -12484,40 +12908,41 @@ def main() -> int:
                                             advance_delegation_active(lid_log, "title", ndev)
                                 except Exception:
                                     pass
-                    try:
-                        from pigeon.observed_capability import (
-                            update_observed_capabilities_from_player_poll,
-                        )
-
-                        _lid_ob = str(read_current_location_id() or "").strip()
-                        if _lid_ob and device_identifier and device_address:
-                            row_poll: dict[str, str] | None = None
-                            for _r in read_saved_streaming_devices_all():
-                                if (
-                                    str(_r.get("identifier") or "").strip()
-                                    == str(device_identifier).strip()
-                                    and str(_r.get("address") or "").strip()
-                                    == str(device_address).strip()
-                                ):
-                                    row_poll = dict(_r)
-                                    break
-                            if row_poll is None:
-                                row_poll = {
-                                    "identifier": str(device_identifier).strip(),
-                                    "address": str(device_address).strip(),
-                                    "name": str(current_apple_tv.get("name") or "").strip(),
-                                    "label": str(current_apple_tv.get("label") or "").strip(),
-                                }
-                            update_observed_capabilities_from_player_poll(
-                                _lid_ob,
-                                row_poll,
-                                ok=bool(ok_w),
-                                metadata=metadata_w if isinstance(metadata_w, dict) else None,
+                    if not meter_up:
+                        try:
+                            from pigeon.observed_capability import (
+                                update_observed_capabilities_from_player_poll,
                             )
-                    except Exception:
-                        pass
-                    _refresh_observed_pairing_led_rows()
-                    _refresh_content_indicator()
+
+                            _lid_ob = str(read_current_location_id() or "").strip()
+                            if _lid_ob and device_identifier and device_address:
+                                row_poll: dict[str, str] | None = None
+                                for _r in read_saved_streaming_devices_all():
+                                    if (
+                                        str(_r.get("identifier") or "").strip()
+                                        == str(device_identifier).strip()
+                                        and str(_r.get("address") or "").strip()
+                                        == str(device_address).strip()
+                                    ):
+                                        row_poll = dict(_r)
+                                        break
+                                if row_poll is None:
+                                    row_poll = {
+                                        "identifier": str(device_identifier).strip(),
+                                        "address": str(device_address).strip(),
+                                        "name": str(current_apple_tv.get("name") or "").strip(),
+                                        "label": str(current_apple_tv.get("label") or "").strip(),
+                                    }
+                                update_observed_capabilities_from_player_poll(
+                                    _lid_ob,
+                                    row_poll,
+                                    ok=bool(ok_w),
+                                    metadata=metadata_w if isinstance(metadata_w, dict) else None,
+                                )
+                        except Exception:
+                            pass
+                        _refresh_observed_pairing_led_rows()
+                        _refresh_content_indicator()
                     md_for_spawn: dict[str, object] | None = None
                     if metadata_w:
                         if ok_w:
@@ -12666,57 +13091,58 @@ def main() -> int:
                         except Exception:
                             pass
                         apple_tv_auto_state["last_metadata"] = merged_md
-                        try:
-                            _schedule_hdmi_ocr_from_poll(merged_md)
-                        except Exception:
-                            pass
-                        # Music artwork (bytes live only on the poll dict; not stored in last_metadata).
-                        try:
-                            art_md = dict(merged_md)
-                            if isinstance(metadata_w, dict) and metadata_w.get("artwork_bytes"):
-                                art_md["artwork_bytes"] = metadata_w.get("artwork_bytes")
-                                if metadata_w.get("artwork_id"):
-                                    art_md["artwork_id"] = metadata_w.get("artwork_id")
-                            _store_music_artwork_from_metadata(art_md)
-                        except Exception:
-                            pass
-                        _update_status_bar_from_metadata(metadata_w)
-                        if playback_overlay_widget is not None:
-                            row_av = streaming_slot_holder[0]
-                            if row_av and row_is_playback_apple_tv(row_av):
-                                from pigeon.widgets.playback_overlay import (
-                                    volume_percent_to_widget_line,
-                                )
+                        if not meter_up:
+                            try:
+                                _schedule_hdmi_ocr_from_poll(merged_md)
+                            except Exception:
+                                pass
+                            # Music artwork (bytes live only on the poll dict; not stored in last_metadata).
+                            try:
+                                art_md = dict(merged_md)
+                                if isinstance(metadata_w, dict) and metadata_w.get("artwork_bytes"):
+                                    art_md["artwork_bytes"] = metadata_w.get("artwork_bytes")
+                                    if metadata_w.get("artwork_id"):
+                                        art_md["artwork_id"] = metadata_w.get("artwork_id")
+                                _store_music_artwork_from_metadata(art_md)
+                            except Exception:
+                                pass
+                            _update_status_bar_from_metadata(metadata_w)
+                            if playback_overlay_widget is not None:
+                                row_av = streaming_slot_holder[0]
+                                if row_av and row_is_playback_apple_tv(row_av):
+                                    from pigeon.widgets.playback_overlay import (
+                                        volume_percent_to_widget_line,
+                                    )
 
-                                v_line = volume_percent_to_widget_line(
-                                    metadata_w.get("volume_percent")
-                                )
-                                # The Denon poll runs on its own short cadence and is the
-                                # authoritative source whenever it has produced a usable
-                                # reading recently — Apple TV's ``volume_percent`` reads 0
-                                # when a physical AV receiver owns the volume, which would
-                                # otherwise flash "0" over the correct dB value every
-                                # metadata tick. Keep polling (scale-change detection stays
-                                # active) but do not let that poll update the widget while
-                                # Denon still owns the line.
-                                last_denon_usable = float(
-                                    denon_vol_cache.get("mono_usable") or 0.0
-                                )
-                                denon_staleness_s = time.monotonic() - last_denon_usable
-                                denon_authoritative = (
-                                    not receiver_standby_holder[0]
-                                    and bool(denon_vol_cache.get("effective"))
-                                    and denon_staleness_s
-                                    < (RECEIVER_POLL_MS / 1000.0) * 6
-                                )
-                                if v_line and not denon_authoritative:
-                                    old_v = str(receiver_overlay_state.get("volume", ""))
-                                    if old_v != v_line:
-                                        receiver_overlay_state["volume"] = v_line
-                                        _bump_clock_saver_significant_device()
-                                        _warm_playback_overlay_blits()
-                                        skip_cache = None
-                                        render_once()
+                                    v_line = volume_percent_to_widget_line(
+                                        metadata_w.get("volume_percent")
+                                    )
+                                    # The Denon poll runs on its own short cadence and is the
+                                    # authoritative source whenever it has produced a usable
+                                    # reading recently — Apple TV's ``volume_percent`` reads 0
+                                    # when a physical AV receiver owns the volume, which would
+                                    # otherwise flash "0" over the correct dB value every
+                                    # metadata tick. Keep polling (scale-change detection stays
+                                    # active) but do not let that poll update the widget while
+                                    # Denon still owns the line.
+                                    last_denon_usable = float(
+                                        denon_vol_cache.get("mono_usable") or 0.0
+                                    )
+                                    denon_staleness_s = time.monotonic() - last_denon_usable
+                                    denon_authoritative = (
+                                        not receiver_standby_holder[0]
+                                        and bool(denon_vol_cache.get("effective"))
+                                        and denon_staleness_s
+                                        < (RECEIVER_POLL_MS / 1000.0) * 6
+                                    )
+                                    if v_line and not denon_authoritative:
+                                        old_v = str(receiver_overlay_state.get("volume", ""))
+                                        if old_v != v_line:
+                                            receiver_overlay_state["volume"] = v_line
+                                            _bump_clock_saver_significant_device()
+                                            _warm_playback_overlay_blits()
+                                            skip_cache = None
+                                            render_once()
                     md_poll = metadata_w if isinstance(metadata_w, dict) else None
                     _sync_streaming_badge_from_playback_sources(
                         md_poll,
@@ -12742,7 +13168,8 @@ def main() -> int:
                                 # Clear prior poster/cast and unlock spawn identity so the
                                 # new title can fetch (force-quit was previously the only
                                 # path that cleared tmdb_key after a stuck empty state).
-                                _clear_displayed_tmdb_art_for_content_change()
+                                if not meter_up:
+                                    _clear_displayed_tmdb_art_for_content_change()
                             apple_tv_auto_state["query"] = query
                             apple_tv_auto_state["prefer"] = prefer
                             needs_spawn = bool(
@@ -12812,7 +13239,8 @@ def main() -> int:
                                 r_md["inferred_prefer"] = prefer_r
                                 r_md["content_key"] = _content_key_from_metadata(r_md)
                                 apple_tv_auto_state["last_metadata"] = r_md
-                                _update_status_bar_from_metadata(r_md)
+                                if not meter_up:
+                                    _update_status_bar_from_metadata(r_md)
                                 md_for_status = r_md
                                 prev_rk = apple_tv_auto_state.get("content_key")
                                 r_ck = r_md.get("content_key")
@@ -12855,7 +13283,8 @@ def main() -> int:
                                     apple_tv_dashboard_track["consecutive_fail"] = 0
                         except Exception:
                             pass
-                    _sync_status_bar_visibility_for_playback(md_for_status)
+                    if not meter_up:
+                        _sync_status_bar_visibility_for_playback(md_for_status)
                     root.after(max(APPLE_TV_POLL_MS, int(next_poll_ms)), _apple_tv_auto_poll_tick)
 
                 root.after(0, finish)
@@ -14196,6 +14625,7 @@ def main() -> int:
             )
             if nxt:
                 _clock_saver_volume.remember(nxt, source="nudge")
+                _note_zone3_volume_takeover()
                 _note_volume_graphics(nxt)
                 try:
                     receiver_overlay_state["volume"] = nxt
@@ -14229,6 +14659,7 @@ def main() -> int:
             _bump_pigeon_user_activity()
             if action not in ("volume_up", "volume_down", "mute_toggle"):
                 return
+            _note_zone3_volume_takeover()
             try:
                 if receiver_standby_holder[0] or receiver_power_on_pending[0]:
                     receiver_power_on_pending[0] = True
@@ -14353,7 +14784,7 @@ def main() -> int:
             _intro_mono = post_splash_mono[0]
             if sync_audio_meter_capture is not None:
                 try:
-                    sync_audio_meter_capture(_idle_audio_meter_active(now))
+                    sync_audio_meter_capture(_audio_capture_wanted(now))
                 except Exception:
                     pass
             if _maybe_exit_settings_menus_on_idle(now):
@@ -14363,24 +14794,45 @@ def main() -> int:
             def _schedule_next_render() -> None:
                 elapsed_ms = int((time.perf_counter() - _render_tick_t0) * 1000.0)
                 interval = _next_render_ms()
-                delay = max(interval, elapsed_ms + 1)
+                if _PIGEON_EXT and (
+                    _idle_audio_meter_active()
+                    or _np_drawing_live_audio()
+                    or _np_wants_live_audio()
+                ):
+                    # Aim at *interval* wall time, not compose-duration + interval.
+                    delay = max(1, interval - elapsed_ms)
+                else:
+                    delay = max(interval, elapsed_ms + 1)
                 _schedule_render_oneshot(delay)
 
             def _next_render_ms() -> int:
                 # Settings must beat the video cadence. ATV "playing" used to keep
                 # 12 Hz PhotoImage uploads running under the menus.
+                live_audio = _PIGEON_EXT and (
+                    _idle_audio_meter_active()
+                    or _np_drawing_live_audio()
+                    or _np_wants_live_audio()
+                )
                 if (
                     _settings_menu_is_static()
                     and sys.platform.startswith("linux")
+                    and not live_audio
                 ):
+                    if _settings_audio_led_listen():
+                        return 100
                     return 500
+                # Meter face needs a tight cadence even if ATV still reports playing.
+                if _PIGEON_EXT and _idle_audio_meter_active():
+                    return 16
+                if live_audio:
+                    return 33
+                if _PIGEON_EXT and _idle_audio_listen():
+                    return 100
                 if playing:
                     return frame_interval_ms
                 # Post-splash clock fade-up needs a smooth cadence.
                 if _PIGEON_EXT and _clock_startup_intro_opacity(time.monotonic()) is not None:
                     return 33
-                if _PIGEON_EXT and _idle_audio_meter_active():
-                    return 33 if sys.platform.startswith("linux") else 16
                 # WiFi / box scan spinner: keep responsive without 60 FPS full-frame uploads on Pi.
                 if (
                     dev_phase == DevPhase.MAIN_SETTINGS
@@ -14406,6 +14858,16 @@ def main() -> int:
                         return 50
                 except Exception:
                     pass
+                if (
+                    _PIGEON_EXT
+                    and view_circles_widget is not None
+                    and _view_one_uses_now_playing_screen()
+                ):
+                    try:
+                        if view_circles_widget.volume_takeover_active():
+                            return 100
+                    except Exception:
+                        pass
                 return paused_interval_ms
 
             # With ext + splash, only count this window **after** splash removal.
@@ -14503,14 +14965,41 @@ def main() -> int:
                         else int(time.time())
                     )
                     clock_saver_off = 1 if _clock_saver_for_compose(now) else 0
+                    meter_off_key = 0
+                    meter_active_off = _PIGEON_EXT and _idle_audio_meter_active(now)
+                    if meter_active_off and latest_meter_cache_key is not None:
+                        meter_off_key = int(latest_meter_cache_key())
                     if clock_saver_off:
-                        no_anim = False
+                        if meter_active_off:
+                            # Meter face has no second-hand clock; skip identical fills.
+                            no_anim = True
+                            tick_key_off = 0
+                        else:
+                            # Digital clock needs ~1 Hz. Forcing no_anim=False plus a
+                            # 1 ms catch-up delay spun the saver at full CPU.
+                            no_anim = True
+                            tick_key_off = int(time.time())
+                    live_audio_off = False
+                    if (
+                        not meter_active_off
+                        and not clock_saver_off
+                        and latest_visualizer_cache_key is not None
+                        and (
+                            _np_drawing_live_audio()
+                            or _np_wants_live_audio()
+                        )
+                    ):
+                        # NP keeps scene off; wall-clock tick_key_off was 1 Hz.
+                        live_audio_off = True
+                        meter_off_key = int(latest_visualizer_cache_key())
+                        tick_key_off = 0
                     _np_vol_sig = ""
                     if view_circles_widget is not None:
                         try:
                             _np_vol_sig = (
                                 f"{view_circles_widget._state.volume!s}\x1f"
-                                f"{round(float(view_circles_widget._state.volume_fraction), 4)}"
+                                f"{round(float(view_circles_widget._state.volume_fraction), 4)}\x1f"
+                                f"{int(view_circles_widget.volume_takeover_active())}"
                             )
                         except Exception:
                             _np_vol_sig = ""
@@ -14527,18 +15016,25 @@ def main() -> int:
                         1 if tmdb_flag_badge_on_off else 0,
                         tick_key_off,
                         clock_saver_off,
+                        meter_off_key,
                         int(display_view_holder[0]),
                         _np_vol_sig,
                     )
                     if no_anim and skip_cache == scene_off_key:
                         _schedule_next_render()
                         return
+                    t_compose0 = time.perf_counter()
                     out_bgr = _compose_shown_frame(None, 1.0)
                     out_bgr = _blend_view_four_debug(out_bgr)
+                    sm_off = 0.0
                     if lerp_bgr_red_monochrome is not None:
-                        sm = max(0.0, min(1.0, _compose_idle_strength_holder[0]))
-                        if sm > 1e-6 and _effective_display_view() != DisplayView.FOUR:
-                            out_bgr = lerp_bgr_red_monochrome(out_bgr, sm)
+                        sm_off = max(0.0, min(1.0, _compose_idle_strength_holder[0]))
+                        if (
+                            sm_off > 1e-6
+                            and not meter_active_off
+                            and _effective_display_view() != DisplayView.FOUR
+                        ):
+                            out_bgr = lerp_bgr_red_monochrome(out_bgr, sm_off)
                     if tmdb_x_animating_off:
                         _blend_tmdb_quality_toggle_overlay(
                             out_bgr,
@@ -14548,14 +15044,18 @@ def main() -> int:
                         )
                     if tmdb_flag_badge_on_off:
                         _blend_tmdb_quality_flag_badge(out_bgr)
+                    t_compose1 = time.perf_counter()
                     _update_label_photo_from_bgr(label, out_bgr, label_live_photo)
+                    t_compose2 = time.perf_counter()
+                    if meter_active_off or live_audio_off:
+                        _record_live_audio_timing(t_compose0, t_compose1, t_compose2)
                     skip_cache = scene_off_key
                 else:
                     if black_photo is None:
                         black_photo = _bgr_to_tk_image(_black_screen_bgr())
                     label.configure(image=black_photo)
                     label.image = black_photo
-                if _PIGEON_EXT:
+                if _PIGEON_EXT and not meter_active_off:
                     try:
                         _capture_splash_underlay(out_bgr)
                     except NameError:
@@ -14606,6 +15106,10 @@ def main() -> int:
                 and main_settings_widget is not None
             ):
                 tick_key = main_settings_widget.frame_cache_token()
+            elif _PIGEON_EXT and _idle_audio_meter_active(now):
+                tick_key = 0
+            elif _PIGEON_EXT and _idle_audio_listen(now):
+                tick_key = int(now * 5)
             else:
                 tick_key = int(time.time()) if _PIGEON_EXT else 0
             idle_s_here = (
@@ -14634,9 +15138,22 @@ def main() -> int:
             startup_wm_cache_key = 0
             paused_row_cache_key = 1 if (_PIGEON_EXT and _show_paused_row_overlay()) else 0
             mic_viz_cache_key = 0
-            mic_eq_needs_composite = False
+            meter_face_active = False
+            live_audio_widgets = False
             if _PIGEON_EXT and _idle_audio_meter_active(now) and latest_meter_cache_key is not None:
                 mic_viz_cache_key = int(latest_meter_cache_key())
+                meter_face_active = True
+            elif _PIGEON_EXT and latest_visualizer_cache_key is not None and (
+                _np_drawing_live_audio()
+                or _np_wants_live_audio()
+            ):
+                mic_viz_cache_key = int(latest_visualizer_cache_key())
+                live_audio_widgets = True
+            meter_skip_ok = (
+                (not playing or _settings_menu_is_static())
+                or meter_face_active
+                or live_audio_widgets
+            )
             if _PIGEON_EXT and status_bar_widget is not None:
                 if status_bar_widget.set_theater_dim_suppressed(idle_s_here >= 0.5):
                     _warm_status_bar_blits()
@@ -14679,8 +15196,7 @@ def main() -> int:
             tmdb_flag_badge_cache_key = 1 if tmdb_flag_badge_on else 0
 
             if (
-                (not playing or _settings_menu_is_static())
-                and not mic_eq_needs_composite
+                meter_skip_ok
                 and not brightness_animating
                 and not idle_dim_animating
                 and not location_toast_animating
@@ -14717,6 +15233,7 @@ def main() -> int:
                 _schedule_next_render()
                 return
 
+            t_compose0 = time.perf_counter()
             if _PIGEON_EXT:
                 shown = _compose_shown_frame(
                     last_frame if not _backdrop_active else None, b_scene
@@ -14725,6 +15242,7 @@ def main() -> int:
                 if (
                     lerp_bgr_red_monochrome is not None
                     and _effective_display_view() != DisplayView.FOUR
+                    and not meter_face_active
                 ):
                     sm = max(0.0, min(1.0, _compose_idle_strength_holder[0]))
                     if sm > 1e-6:
@@ -14740,8 +15258,12 @@ def main() -> int:
                 )
             if tmdb_flag_badge_on:
                 _blend_tmdb_quality_flag_badge(shown)
+            t_compose1 = time.perf_counter()
             _update_label_photo_from_bgr(label, shown, label_live_photo)
-            if _PIGEON_EXT:
+            t_compose2 = time.perf_counter()
+            if _PIGEON_EXT and (meter_face_active or live_audio_widgets):
+                _record_live_audio_timing(t_compose0, t_compose1, t_compose2)
+            if _PIGEON_EXT and not meter_face_active:
                 try:
                     _capture_splash_underlay(shown)
                 except NameError:
@@ -14750,7 +15272,7 @@ def main() -> int:
                     pass
 
             if (
-                (not playing or _settings_menu_is_static())
+                meter_skip_ok
                 and not brightness_animating
                 and not idle_dim_animating
                 and not location_toast_animating
@@ -14900,11 +15422,13 @@ def main() -> int:
                 return
 
             def apply() -> None:
+                nonlocal skip_cache
                 _note_volume_source_lines(telnet_line=line)
                 changed = _commit_receiver_volume(line)
                 if not changed and not _volume_lines.fading():
                     return
-                nonlocal skip_cache
+                if _idle_audio_meter_active():
+                    return
                 skip_cache = None
                 try:
                     if _view_one_uses_now_playing_screen() and not (
@@ -14993,13 +15517,15 @@ def main() -> int:
                     vol, src = "", ""
 
                 def apply() -> None:
+                    nonlocal skip_cache
                     _volume_quick_busy[0] = False
                     if not vol:
                         return
                     changed = _commit_receiver_volume(vol)
                     if not changed and not _volume_lines.fading():
                         return
-                    nonlocal skip_cache
+                    if _idle_audio_meter_active():
+                        return
                     skip_cache = None
                     try:
                         if _view_one_uses_now_playing_screen() and not (
@@ -15102,13 +15628,15 @@ def main() -> int:
                 if overlay_unchanged:
                     if _view_one_uses_now_playing_screen() and not saver_up:
                         _sync_now_playing_screen_state()
-                    if saver_up and _clock_saver_receiver_off():
+                    if saver_up and _clock_saver_receiver_off() and not _idle_audio_meter_active():
                         skip_cache = None
                         render_once()
                     return
                 last_device_interaction_mono = time.monotonic()
                 if old_vol_raw != new_vol and not saver_up:
                     _bump_clock_saver_significant_device()
+                if _idle_audio_meter_active():
+                    return
                 _warm_playback_overlay_blits()
                 skip_cache = None
                 if _view_one_uses_now_playing_screen() and not saver_up:

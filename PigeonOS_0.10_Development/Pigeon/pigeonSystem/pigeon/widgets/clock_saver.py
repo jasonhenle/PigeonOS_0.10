@@ -16,6 +16,7 @@ import os
 import re
 import time
 import xml.etree.ElementTree as ET
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -77,7 +78,9 @@ _TEMP_END_LEFT_OF_DEG_SVG = 2.75
 _TEMP_FONT_SIZE_SVG = 31.93
 _HHMMSS_CHAR_SET = "0123456789:"
 # Digital-7 “2-pixel” glyphs — only use the middle column of a matching cell.
-_HHMMSS_SKINNY_CHARS = frozenset({"1", ":"})
+# Digits (including ``1``) still occupy a full matching cell so the clock width
+# does not shrink. Only the colon slot is half-width.
+_HHMMSS_SKINNY_CHARS = frozenset({":"})
 # Worst-case ``HH:MM:SS`` width in matching cells: 6 full digits + 2 half-colons.
 _HHMMSS_MATCHING_UNITS = 7.0
 # Slight horizontal inset so the block stays inside the plate.
@@ -453,7 +456,11 @@ def _svg_tree_from_path(path: Path) -> ET.Element:
 
 
 def _apply_clock_saver_svg_state(
-    root: ET.Element, *, color_hex: str, include_weather: bool = True
+    root: ET.Element,
+    *,
+    color_hex: str,
+    include_weather: bool = True,
+    refresh_weather: bool = True,
 ) -> float:
     now = _resolve_display_time()
     date_el = _find_by_logical_id(
@@ -477,7 +484,12 @@ def _apply_clock_saver_svg_state(
 
     weather_bottom_svg = 0.0
     if include_weather:
-        temps = ensure_weather(zip_code=DEFAULT_WEATHER_ZIP)
+        if refresh_weather:
+            temps = ensure_weather(zip_code=DEFAULT_WEATHER_ZIP)
+        else:
+            from pigeon.weather import cached_weather_temps
+
+            temps = cached_weather_temps()
         high_s = _format_temp_f(temps.high_f) if temps is not None else "--"
         low_s = _format_temp_f(temps.low_f) if temps is not None else "--"
         if high_el is not None:
@@ -539,9 +551,9 @@ def _cell_metrics(
 ) -> tuple[int, int]:
     """Matching cell pitch from digit ``0``; height from the full clock charset.
 
-    Most Digital-7 digits fill a 1×2 faux-pixel rectangle. Skinny glyphs
-    (``1``, ``:``) only use the middle column; layout crops 25% off each side
-    of their matching cell so they advance at half width.
+    Most Digital-7 digits fill a 1×2 faux-pixel rectangle. The colon only
+    uses the middle column; layout crops 25% off each side of its matching
+    cell so it advances at half width. Digit ``1`` stays in a full cell.
     """
     l0, _t0, r0, _b0 = _char_bbox(draw, font, "0")
     cell_w = max(1, r0 - l0)
@@ -555,13 +567,19 @@ def _cell_metrics(
 def _hhmmss_advance(matching_w: int, ch: str) -> int:
     """Horizontal advance for one clock glyph in matching-cell units.
 
-    Full digits keep the matching width. Two-pixel glyphs (``1``, ``:``) crop
-    25% from each side of that cell, so they occupy 50% of the matching width.
+    Every digit, including skinny ``1``, keeps the matching width so the
+    overall ``HH:MM:SS`` block does not resize. Only ``:`` is half-width.
     """
     w = max(1, int(matching_w))
-    if ch in _HHMMSS_SKINNY_CHARS:
+    if ch == ":":
         return max(1, int(round(0.5 * w)))
     return w
+
+
+def _hhmmss_scaffold_width(matching_w: int) -> int:
+    """Reserved ``HH:MM:SS`` width: six digit cells + two half-width colons."""
+    mw = max(1, int(matching_w))
+    return 6 * mw + 2 * _hhmmss_advance(mw, ":")
 
 
 def _hhmmss_block_width(matching_w: int, text: str) -> int:
@@ -569,23 +587,46 @@ def _hhmmss_block_width(matching_w: int, text: str) -> int:
 
 
 def _parse_hhmmss_pairs(time_text: str) -> tuple[str, str, str]:
-    """Split a clock string into ``(HH, MM, SS)`` digit pairs."""
+    """Split a clock string into ``(HH, MM, SS)`` groups on colons.
+
+    12-hour labels drop the leading hour zero (``3:11:10``). Packing raw
+    digits used to turn that into ``31:11:00``.
+    """
     s = str(time_text or "").strip() or "00:00:00"
-    if len(s) >= 8 and s[2] == ":" and s[5] == ":":
-        return s[0:2], s[3:5], s[6:8]
-    digits = [c for c in s if c.isdigit()]
-    while len(digits) < 6:
-        digits.append("0")
-    d = "".join(digits[:6])
-    return d[0:2], d[2:4], d[4:6]
+    parts = [p.strip() for p in s.split(":") if p.strip() != ""]
+    if not parts:
+        return "00", "00", "00"
+
+    def _group(part: str, *, min_width: int) -> str:
+        d = "".join(c for c in part if c.isdigit())
+        if not d:
+            return "0" * min_width
+        if min_width <= 1:
+            return d
+        return d[-min_width:].zfill(min_width)
+
+    hh = _group(parts[0], min_width=1)
+    mm = _group(parts[1], min_width=2) if len(parts) > 1 else "00"
+    ss = _group(parts[2], min_width=2) if len(parts) > 2 else "00"
+    return hh, mm, ss
 
 
 def _hhmmss_pair_width(matching_w: int, pair: str) -> int:
     return sum(_hhmmss_advance(matching_w, ch) for ch in pair)
 
 
+def _pair_cell_glyphs(pair: str, *, pad: str = "left") -> tuple[str, str]:
+    """Two matching-cell glyphs. A one-digit hour pads on the left (ones against the colon)."""
+    glyphs = [ch for ch in str(pair or "") if ch != " "]
+    if len(glyphs) >= 2:
+        return glyphs[-2], glyphs[-1]
+    if len(glyphs) == 1:
+        return ("", glyphs[0]) if pad == "left" else (glyphs[0], "")
+    return "", ""
+
+
 def _hhmmss_locked_scaffold(
-    matching_w: int, canvas_w: int
+    matching_w: int, canvas_w: int, origin_x: int = 0
 ) -> tuple[
     tuple[tuple[int, int], tuple[int, int], tuple[int, int]],
     tuple[int, int],
@@ -596,14 +637,15 @@ def _hhmmss_locked_scaffold(
 
         [HH slot = 2 full][colon half][MM slot][colon half][SS slot]
 
-    Colons stay at absolute X forever. Each digit pair is later centered as a
-    group inside its ``[left, right)`` band.
+    Colons stay at absolute X forever. Each pair occupies two matching-width
+    cells; a one-digit 12-hour hour sits in the right cell. Colons are centered
+    in the half-cells so they keep a gap from the digits.
     """
     mw = max(1, int(matching_w))
     colon_w = _hhmmss_advance(mw, ":")
     pair_slot = 2 * mw
-    block_w = 3 * pair_slot + 2 * colon_w
-    block_x = (int(canvas_w) - block_w) // 2
+    block_w = _hhmmss_scaffold_width(mw)
+    block_x = int(origin_x) + (int(canvas_w) - block_w) // 2
     c0 = block_x + pair_slot
     c1 = c0 + colon_w + pair_slot
     regions = (
@@ -611,8 +653,8 @@ def _hhmmss_locked_scaffold(
         (c0 + colon_w, c1),
         (c1 + colon_w, block_x + block_w),
     )
-    # Glyph center X for each locked colon (half-width slot).
-    colon_cx = (c0 + colon_w // 2, c1 + colon_w // 2)
+    # Left edge of each locked colon slot (hour ones-digit lives in the right cell).
+    colon_cx = (c0, c1)
     return regions, colon_cx
 
 
@@ -643,8 +685,164 @@ def _fit_digital7_fixed_cells(
     return best
 
 
+_INK_TILE_CACHE: dict[
+    tuple[str, int, tuple[int, int, int, int]], tuple[Image.Image, float]
+] = {}
+
+
+def _digital7_ink_rgba(
+    ch: str, font: ImageFont.ImageFont, color: tuple[int, int, int, int]
+) -> tuple[Image.Image, float]:
+    """Rasterize one Digital-7 glyph and crop to visible ink.
+
+    The float is the ``anchor="ms"`` point's Y inside the cropped tile so
+    glyphs keep the old baseline while shifting horizontally by ink.
+    """
+    glyph = str(ch or "")
+    empty = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
+    if not glyph:
+        return empty, 0.5
+    size = int(getattr(font, "size", 0) or 0)
+    key = (glyph, size, color)
+    hit = _INK_TILE_CACHE.get(key)
+    if hit is not None:
+        return hit
+    probe = Image.new("RGBA", (4, 4), (0, 0, 0, 0))
+    pdraw = ImageDraw.Draw(probe)
+    l, t, r, b = pdraw.textbbox((0, 0), glyph, font=font, anchor="ms")
+    pad = 8
+    w = max(1, int(r - l) + 2 * pad)
+    h = max(1, int(b - t) + 2 * pad)
+    im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    ox = pad - int(l)
+    oy = pad - int(t)
+    ImageDraw.Draw(im).text(
+        (ox, oy), glyph, font=font, fill=color, anchor="ms"
+    )
+    arr = np.asarray(im)
+    ys, xs = np.where(arr[:, :, 3] > 8)
+    if xs.size == 0:
+        tile, ms_y = im, float(oy)
+    else:
+        ix0 = int(xs.min())
+        iy0 = int(ys.min())
+        tile = im.crop(
+            (ix0, iy0, int(xs.max()) + 1, int(ys.max()) + 1)
+        )
+        ms_y = float(oy - iy0)
+    if len(_INK_TILE_CACHE) >= 96:
+        _INK_TILE_CACHE.clear()
+    _INK_TILE_CACHE[key] = (tile, ms_y)
+    return tile, ms_y
+
+
+def _paste_ink_glyph(
+    img: Image.Image,
+    ch: str,
+    *,
+    cy: int,
+    font: ImageFont.ImageFont,
+    color: tuple[int, int, int, int],
+    left: int | None = None,
+    right: int | None = None,
+    cx: float | None = None,
+) -> None:
+    tile, ms_y = _digital7_ink_rgba(ch, font, color)
+    tw, _th = tile.size
+    if right is not None:
+        x = int(right) - tw
+    elif left is not None:
+        x = int(left)
+    elif cx is not None:
+        x = int(round(float(cx) - tw / 2.0))
+    else:
+        return
+    y = int(round(float(cy) - ms_y))
+    if img.mode != "RGBA":
+        converted = img.convert("RGBA")
+        converted.paste(tile, (x, y), tile)
+        img.paste(converted)
+        return
+    img.paste(tile, (x, y), tile)
+
+
+def _hhmmss_display_text(time_text: str) -> str:
+    hh, mm, ss = _parse_hhmmss_pairs(time_text)
+    return f"{hh}:{mm}:{ss}"
+
+
+def _hhmmss_gap_px(
+    matching_w: int, font: ImageFont.ImageFont, color: tuple[int, int, int, int]
+) -> int:
+    """Ink-to-ink tracking: the air between two ``0``s in adjacent matching cells."""
+    ink0, _ = _digital7_ink_rgba("0", font, color)
+    return max(2, int(matching_w) - int(ink0.size[0]))
+
+
+def _hhmmss_ink_layout(
+    text: str,
+    *,
+    matching_w: int,
+    font: ImageFont.ImageFont,
+    color: tuple[int, int, int, int],
+    canvas_w: int,
+    origin_x: int = 0,
+) -> tuple[list[tuple[str, int, int]], int]:
+    """Left/right ink edges for each clock glyph, centered as one run."""
+    glyphs = [ch for ch in str(text or "")]
+    gap = _hhmmss_gap_px(matching_w, font, color)
+    if not glyphs:
+        return [], gap
+    widths = [_digital7_ink_rgba(ch, font, color)[0].size[0] for ch in glyphs]
+    total = sum(widths) + gap * (len(glyphs) - 1)
+    x = origin_x + (int(canvas_w) - total) // 2
+    slots: list[tuple[str, int, int]] = []
+    for ch, w in zip(glyphs, widths):
+        slots.append((ch, x, x + w))
+        x += w + gap
+    return slots, gap
+
+
+def _draw_hhmmss_matching_run(
+    img: Image.Image,
+    *,
+    text: str,
+    matching_w: int,
+    cy: int,
+    font: ImageFont.ImageFont,
+    color: tuple[int, int, int, int],
+    canvas_w: int,
+    origin_x: int = 0,
+) -> None:
+    hh, mm, ss = _parse_hhmmss_pairs(text)
+    regions, colon_lefts = _hhmmss_locked_scaffold(
+        matching_w, canvas_w, origin_x=origin_x
+    )
+    for pair, region in zip((hh, mm, ss), regions):
+        _draw_pair_in_region(
+            img,
+            pair=pair,
+            region=region,
+            matching_w=matching_w,
+            cy=cy,
+            font=font,
+            color=color,
+            align="center",
+        )
+    colon_w = _hhmmss_advance(matching_w, ":")
+    for slot_left in colon_lefts:
+        _paste_ink_glyph(
+            img,
+            ":",
+            cx=float(slot_left) + float(colon_w) * 0.5,
+            cy=cy,
+            font=font,
+            color=color,
+        )
+
+
 def _draw_pair_in_region(
-    draw: ImageDraw.ImageDraw,
+    img: Image.Image,
     *,
     pair: str,
     region: tuple[int, int],
@@ -652,17 +850,34 @@ def _draw_pair_in_region(
     cy: int,
     font: ImageFont.ImageFont,
     color: tuple[int, int, int, int],
+    pad: str = "left",
+    align: str = "center",
 ) -> None:
-    """Center a two-digit group horizontally inside ``region`` (colon boundaries)."""
-    left, right = region
-    span = max(1, right - left)
-    pair_w = _hhmmss_pair_width(matching_w, pair)
-    x = left + max(0, (span - pair_w) // 2)
-    for glyph in pair:
-        adv = _hhmmss_advance(matching_w, glyph)
-        cx = x + adv // 2
-        draw.text((cx, cy), glyph, font=font, fill=color, anchor="ms")
-        x += adv
+    """Place a pair into two matching-width cells spanning ``region``.
+
+    Glyphs are cropped to ink so a 12-hour hour sits in the ones cell. The
+    colon is centered in its own half-cell so the pair does not kiss.
+    """
+    left, _right = region
+    mw = max(1, int(matching_w))
+    tens, ones = _pair_cell_glyphs(pair, pad=pad)
+    for i, glyph in enumerate((tens, ones)):
+        if not glyph:
+            continue
+        cell_left = left + i * mw
+        if align == "right":
+            _paste_ink_glyph(
+                img, glyph, right=cell_left + mw, cy=cy, font=font, color=color
+            )
+        else:
+            _paste_ink_glyph(
+                img,
+                glyph,
+                cx=cell_left + mw / 2.0,
+                cy=cy,
+                font=font,
+                color=color,
+            )
 
 
 def clock_saver_volume_label(raw: object | None) -> str:
@@ -943,14 +1158,12 @@ def _draw_hhmmss_fixed_cells(
     weather_bottom: float | None = None,
     line_opacity: float = 1.0,
 ) -> None:
-    """Paint ``HH:MM:SS`` as three pairs between two screen-locked colons.
+    """Paint ``HH:MM:SS`` in locked matching-width cells.
 
-    Matching cell widths still apply (skinny ``1`` / ``:`` at half width).
-    Colon X positions come from a full-digit scaffold and never move. Each of
-    HH, MM, and SS shifts as a group to stay centered in the band the colons
-    (and outer edges) define.
+    Every digit, including ``1``, occupies the width of ``0``. A 12-hour hour
+    sits in the ones cell so the colon anchors never move.
     """
-    pairs = _parse_hhmmss_pairs(time_text)
+    label = _hhmmss_display_text(time_text)
     font_path = resolve_digital7_font() or resolve_ui_font_bold()
     canvas_h, canvas_w = int(bgra.shape[0]), int(bgra.shape[1])
     sy = float(canvas_w) / _ARTBOARD_W
@@ -971,7 +1184,6 @@ def _draw_hhmmss_fixed_cells(
     img = Image.fromarray(rgba)
     draw = ImageDraw.Draw(img)
     matching_w, _cell_h = _cell_metrics(draw, font, _HHMMSS_CHAR_SET)
-    regions, colon_cx = _hhmmss_locked_scaffold(matching_w, canvas_w)
     if canvas_h == int(DESIGN_H):
         from pigeon.np_layout import clock_saver_seconds_track_rect
 
@@ -988,18 +1200,15 @@ def _draw_hhmmss_fixed_cells(
         else float(weather_bottom or 0.0)
     )
 
-    for region, pair in zip(regions, pairs):
-        _draw_pair_in_region(
-            draw,
-            pair=pair,
-            region=region,
-            matching_w=matching_w,
-            cy=cy,
-            font=font,
-            color=color,
-        )
-    for cx in colon_cx:
-        draw.text((cx, cy), ":", font=font, fill=color, anchor="ms")
+    _draw_hhmmss_matching_run(
+        img,
+        text=label,
+        matching_w=matching_w,
+        cy=cy,
+        font=font,
+        color=color,
+        canvas_w=canvas_w,
+    )
 
     post_ink = _color_ink_mask(np.asarray(img))
     new_rows = np.where((post_ink & ~pre_ink).any(axis=1))[0]
@@ -1226,6 +1435,58 @@ def _draw_clock_saver_seconds_bar(
         )
 
 
+def render_seconds_bar_widget_bgra(
+    width: int,
+    height: int,
+    *,
+    now=None,
+    fill_bgr: tuple[int, int, int] | None = None,
+) -> np.ndarray:
+    """Clock-saver seconds cells, fitted into a strip well."""
+    from datetime import datetime
+
+    from pigeon.np_layout import (
+        clock_saver_seconds_filled,
+        clock_saver_seconds_segment_rects,
+    )
+    from pigeon.widgets.view_circles import _draw_rounded_bar_bgra, np_theme_from_settings
+
+    w = max(32, int(width))
+    h = max(12, int(height))
+    out = np.zeros((h, w, 4), dtype=np.uint8)
+    when = now if now is not None else datetime.now()
+    pad_x = max(8, int(round(w * 0.03)))
+    pad_y = max(4, int(round(h * 0.22)))
+    tw = max(8, w - 2 * pad_x)
+    th = max(4, h - 2 * pad_y)
+    rects = clock_saver_seconds_segment_rects((float(pad_x), float(pad_y), float(tw), float(th)))
+    if not rects:
+        return out
+    filled = clock_saver_seconds_filled(int(getattr(when, "second", 0)))
+    color = fill_bgr
+    if color is None:
+        try:
+            color = np_theme_from_settings().ui_bgr
+        except Exception:
+            color = (255, 255, 255)
+    seg_w = min(r[2] for r in rects)
+    radius = max(1, min(seg_w // 2, th // 2))
+    for i, (x, y, rw, rh) in enumerate(rects):
+        if i >= filled:
+            break
+        _draw_rounded_bar_bgra(
+            out,
+            x=x,
+            y=y,
+            w=rw,
+            h=rh,
+            fill_bgr=color,
+            radius=radius,
+            fill_opacity=1.0,
+        )
+    return out
+
+
 def clock_saver_time_design_rect() -> tuple[int, int, int, int]:
     """Pixel rect for large saver time: full grid width, rows 2 .. top of row 7."""
     g = get_grid_geometry()
@@ -1321,6 +1582,7 @@ def render_clock_saver_weather_cluster_bgra(
     *,
     assets_dir: Path | str | None = None,
     svg_path: Path | str | None = None,
+    preview: bool = False,
 ) -> np.ndarray:
     """High/low weather cluster from clocksaver.svg, without date or time."""
     path = (
@@ -1330,10 +1592,13 @@ def render_clock_saver_weather_cluster_bgra(
     )
     if not path.is_file():
         return _EMPTY_PATCH.copy()
-    color = _time_color_rgba(time.monotonic())
+    color = _time_color_rgba(0.0 if preview else time.monotonic())
     root = _svg_tree_from_path(path)
     _apply_clock_saver_svg_state(
-        root, color_hex=_rgba_to_hex(color), include_weather=True
+        root,
+        color_hex=_rgba_to_hex(color),
+        include_weather=True,
+        refresh_weather=not preview,
     )
     _set_visible(_find_by_logical_id(root, "clock"), False)
     from pigeon.widgets.settings_svg_text import rasterize_settings_svg_bgra
@@ -1352,6 +1617,7 @@ def render_clock_saver_face_bgra(
     height: int,
     include_weather: bool = False,
     include_seconds_bar: bool = True,
+    when: datetime | None = None,
 ) -> np.ndarray:
     """Date + HH:MM:SS (+ optional seconds bar) sized to ``width``×``height``.
 
@@ -1361,8 +1627,8 @@ def render_clock_saver_face_bgra(
     w = max(32, int(width))
     h = max(24, int(height))
     out = np.zeros((h, w, 4), dtype=np.uint8)
-    now = _resolve_display_time()
-    color = _time_color_rgba(time.monotonic())
+    now = when if when is not None else _resolve_display_time()
+    color = _time_color_rgba(0.0 if when is not None else time.monotonic())
     pad = max(4, int(round(min(w, h) * 0.05)))
     date_h = max(16, int(round(h * 0.16)))
     bar_h = max(6, int(round(h * 0.08))) if include_seconds_bar else 0
@@ -1461,21 +1727,17 @@ def _draw_face_hhmmss(
     img = Image.fromarray(rgba)
     draw = ImageDraw.Draw(img)
     matching_w, _cell_h = _cell_metrics(draw, font, _HHMMSS_CHAR_SET)
-    regions, colon_cx = _hhmmss_locked_scaffold(matching_w, w)
     cy = y + h // 2
-    pairs = _parse_hhmmss_pairs(time_text)
-    for (left, right), pair in zip(regions, pairs):
-        _draw_pair_in_region(
-            draw,
-            pair=pair,
-            region=(x + left, x + right),
-            matching_w=matching_w,
-            cy=cy,
-            font=font,
-            color=color,
-        )
-    for cx in colon_cx:
-        draw.text((x + cx, cy), ":", font=font, fill=color, anchor="ms")
+    _draw_hhmmss_matching_run(
+        img,
+        text=_hhmmss_display_text(time_text),
+        matching_w=matching_w,
+        cy=cy,
+        font=font,
+        color=color,
+        canvas_w=w,
+        origin_x=x,
+    )
     arr = np.asarray(img)
     bgra[:, :, 0] = arr[:, :, 2]
     bgra[:, :, 1] = arr[:, :, 1]

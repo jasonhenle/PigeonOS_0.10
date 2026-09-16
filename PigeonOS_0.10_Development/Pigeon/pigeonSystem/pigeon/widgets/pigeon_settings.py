@@ -365,8 +365,17 @@ def _hdmi_status_ok(state: MainSettingsState) -> bool:
 
 
 def _audio_status_ok(state: MainSettingsState) -> bool:
-    """Audio recognizer is not wired — LED stays red even when the tile is on."""
-    return False
+    """Green when the tile is on and program audio is above the visualizer gate."""
+    if not _source_on(state, "audio"):
+        return False
+    try:
+        from pigeon.widgets.audio_meter_saver import program_audio_present
+
+        present = bool(program_audio_present())
+        state.pigeon_audio_ok = present
+        return present
+    except Exception:
+        return bool(getattr(state, "pigeon_audio_ok", False))
 
 
 def _status_ok_for(kind: str, state: MainSettingsState) -> bool:

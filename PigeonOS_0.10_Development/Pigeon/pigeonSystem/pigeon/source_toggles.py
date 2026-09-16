@@ -1,8 +1,8 @@
 """On/off switches for Pigeon data sources (Wi‑Fi, Apple TV metadata, HDMI OCR, audio).
 
 Persisted in ``state.json`` as ``source_toggles``. Default is on so existing
-devices keep working. Audio is reserved (no recognizer yet) but the switch
-is stored so the settings tile can toggle now.
+devices keep working. The audio tile still gates capture; the LED follows
+``program_audio_present()``, the same gate as the visualizer.
 """
 
 from __future__ import annotations
@@ -63,14 +63,19 @@ def apply_toggles_to_settings_state(state: Any) -> None:
     state.source_metadata_on = flags["metadata"]
     state.source_hdmi_on = flags["hdmi"]
     state.source_audio_on = flags["audio"]
-    # HDMI LED follows a live video signal, not the toggle or a stale handle.
+    # HDMI / audio LEDs follow a live signal, not the toggle or a stale handle.
     try:
         from pigeon.hdmi_ocr import hdmi_capture_available
 
         state.pigeon_hdmi_ok = hdmi_capture_available()
     except Exception:
         pass
-    state.pigeon_audio_ok = flags["audio"]
+    try:
+        from pigeon.widgets.audio_meter_saver import program_audio_present
+
+        state.pigeon_audio_ok = bool(program_audio_present())
+    except Exception:
+        state.pigeon_audio_ok = False
 
 
 _IDENTITY_KEYS = (

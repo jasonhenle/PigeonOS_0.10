@@ -50,28 +50,30 @@ _COLOR_GRAY = "#808080"  # 50% gray for unavailable chrome
 DEFAULT_ZONE_WIDGETS: tuple[str, str, str, str, str] = (
     "tt_countdown_16x9",
     "",
-    "volume",
+    "audio_levels",
     "cast_info",
     "status_bar",
 )
 
-# Music: wide album/TT, volume disc in zone 3, track titles in the zone-4 strip.
+# Music: wide album/TT, levels in zone 3, track titles in the zone-4 strip.
 DEFAULT_MUSIC_ZONE_WIDGETS: tuple[str, str, str, str, str] = (
     "tt_countdown_16x9",
     "",
-    "volume",
+    "audio_levels",
     "cast_info",
     "status_bar",
 )
 
 # Bump to rewrite persisted NP layouts / clocksaver defaults once.
-NP_ZONE_LAYOUT_GENERATION = 167
+NP_ZONE_LAYOUT_GENERATION = 168
 
 # Spec catalog — which widgets may occupy each zone.
 ZONE_WIDGET_CATALOG: dict[int, tuple[str, ...]] = {
     1: (
         "tt_countdown",
         "tt_countdown_16x9",
+        "visualizer",
+        "vu",
         "audio_levels",
         "clock",
         "clock_16x9",
@@ -105,8 +107,8 @@ ZONE_WIDGET_CATALOG: dict[int, tuple[str, ...]] = {
         "clock_saver_volume",
         "weather",
     ),
-    4: ("cast_info", "clock_saver_volume", "weather"),
-    5: ("status_bar", "cast_info"),
+    4: ("cast_info", "clock_saver_volume", "weather", "clock", "audio_levels", "status_bar"),
+    5: ("status_bar", "cast_info", "clock", "audio_levels", "weather"),
 }
 
 # Selector chrome groups (navigation B), left → right in the SVG.
@@ -731,6 +733,8 @@ _SELECTOR_LABELS: dict[str, tuple[str, ...]] = {
     "tt_countdown": ("count", "down"),
     "tt_countdown_16x9": ("wide", "count"),
     "audio_levels": ("audio", "levels"),
+    "visualizer": ("visual",),
+    "vu": ("vu",),
     "clock": ("clock",),
     "poster": ("poster", "art"),
     "volume": ("volume",),

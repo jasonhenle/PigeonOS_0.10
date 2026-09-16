@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 import unittest
 
 import numpy as np
@@ -133,6 +134,126 @@ class AudioMeterRasterTests(unittest.TestCase):
         left_band = np.abs(left[:, 548:597].astype(np.int16) - dark[:, 548:597].astype(np.int16)).sum()
         right_band = np.abs(left[:, 684:733].astype(np.int16) - dark[:, 684:733].astype(np.int16)).sum()
         self.assertGreater(int(left_band), int(right_band) * 10)
+
+
+class ProgramAudioPresentTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        am._latest = am._SILENCE
+        am._last_pcm_mono = 0.0
+        am._capture_dead = False
+        am._program_audio_until = 0.0
+        am._program_audio_session_until = 0.0
+
+    def test_session_hold_outlasts_short_gate(self) -> None:
+        now = time.monotonic()
+        am._latest = am._SILENCE
+        am._last_pcm_mono = now
+        am._capture_dead = False
+        am._program_audio_until = now - 0.1
+        am._program_audio_session_until = now + 60.0
+        self.assertFalse(am.program_audio_present())
+        self.assertTrue(am.program_audio_session_present())
+
+    def test_loud_fill_arms_session_hold(self) -> None:
+        now = time.monotonic()
+        am._latest = am.MeterLevels(
+            rms_l=0.1,
+            rms_r=0.1,
+            env_l=0.1,
+            env_r=0.1,
+            dbfs_l=-20.0,
+            dbfs_r=-20.0,
+            cal_dbfs_l=-20.0,
+            cal_dbfs_r=-20.0,
+            fill_l=0.2,
+            fill_r=0.2,
+            seg_l=3,
+            seg_r=3,
+            rms_lfe=0.0,
+            env_lfe=0.0,
+            lfe_fill=0.0,
+        )
+        am._last_pcm_mono = now
+        am._capture_dead = False
+        am._program_audio_until = 0.0
+        am._program_audio_session_until = 0.0
+        self.assertTrue(am.program_audio_present())
+        self.assertTrue(am.program_audio_session_present())
+        self.assertGreater(am._program_audio_session_until, now + 60.0)
+
+
+class StereoMeterWidgetLayoutTests(unittest.TestCase):
+    def test_volume_band_is_the_lower_fifth(self) -> None:
+        self.assertEqual(am.stereo_meter_volume_band_h(400), 88)
+        self.assertEqual(am.stereo_meter_volume_band_h(488), 107)
+
+    def test_bars_stay_above_volume_band(self) -> None:
+        try:
+            import fitz  # noqa: F401
+        except ImportError:
+            self.skipTest("PyMuPDF required to rasterize meter SVG")
+        if not am.default_audio_meter_svg_path().is_file():
+            self.skipTest("meter SVG not in this tree")
+        am.clear_audio_meter_render_caches()
+        h = 400
+        patch = am.render_stereo_meter_widget_bgra(
+            200, h, left_fill=1.0, right_fill=1.0
+        )
+        ys = np.where(patch[:, :, 3] > 16)[0]
+        self.assertGreater(int(ys.size), 50)
+        reserve = am.stereo_meter_volume_band_h(h)
+        self.assertLess(int(ys.max()), h - reserve + 2)
+        self.assertLess(float(ys.mean()), h * 0.45)
+
+
+class TitleMeterCalTests(unittest.TestCase):
+    def setUp(self) -> None:
+        am.reset_meter_title_calibration(persist=False)
+
+    def tearDown(self) -> None:
+        am.reset_meter_title_calibration(persist=False)
+
+    def test_content_key_requires_a_title(self) -> None:
+        self.assertEqual(am.meter_content_key(title=""), "")
+        self.assertEqual(
+            am.meter_content_key(title="Popstar", artist="", mode="video"),
+            "video|popstar|",
+        )
+
+    def test_new_title_does_not_boost_during_warmup(self) -> None:
+        am.set_meter_content_key("video|popstar|")
+        am.note_title_peak_db(-18.0, -18.0, -30.0)
+        self.assertEqual(am.title_meter_gain_db(), 0.0)
+
+    def test_loud_peak_cuts_immediately(self) -> None:
+        am.set_meter_content_key("video|popstar|")
+        am.note_title_peak_db(18.0, 16.0, 10.0)
+        gain = am.title_meter_gain_db()
+        self.assertAlmostEqual(gain, am.TITLE_CAL_TARGET_DB - 18.0, places=5)
+        raw = am.meter_fill_from_calibrated_dbfs(18.0)
+        shown = am.title_calibrated_fill(18.0)
+        self.assertLess(shown, raw)
+        self.assertGreater(shown, 0.7)
+
+    def test_quiet_title_boosts_after_warmup(self) -> None:
+        am.set_meter_content_key("video|quiet film|")
+        am.note_title_peak_db(-12.0, -12.0, -20.0)
+        am._title_since_mono = time.monotonic() - 20.0
+        gain = am.title_meter_gain_db()
+        self.assertGreater(gain, 0.0)
+        self.assertAlmostEqual(
+            gain,
+            min(am.TITLE_CAL_MAX_BOOST_DB, am.TITLE_CAL_TARGET_DB - (-12.0)),
+            places=5,
+        )
+
+    def test_title_change_isolates_peaks(self) -> None:
+        am.set_meter_content_key("video|loud|")
+        am.note_title_peak_db(16.0, 16.0, 8.0)
+        am.set_meter_content_key("video|quiet|")
+        self.assertLess(am._title_peak_db, am.TITLE_CAL_MIN_PEAK_DB)
+        am.set_meter_content_key("video|loud|")
+        self.assertAlmostEqual(am._title_peak_db, 16.0, places=5)
 
 
 if __name__ == "__main__":

@@ -2267,6 +2267,7 @@ class TtCountdown16x9WidgetTests(unittest.TestCase):
 
     def test_volume_align_centers_plate_on_disc(self) -> None:
         from pigeon.np_layout import (
+            layout_shows_tt_countdown_and_levels,
             layout_shows_tt_countdown_and_volume,
             tt_countdown_volume_align_dy,
         )
@@ -2274,6 +2275,11 @@ class TtCountdown16x9WidgetTests(unittest.TestCase):
         self.assertTrue(
             layout_shows_tt_countdown_and_volume(
                 ("tt_countdown_16x9", "", "volume", "cast_info", "status_bar")
+            )
+        )
+        self.assertTrue(
+            layout_shows_tt_countdown_and_levels(
+                ("tt_countdown_16x9", "", "audio_levels", "cast_info", "status_bar")
             )
         )
         self.assertFalse(
@@ -2798,6 +2804,160 @@ class MusicTtAlbumArtTests(unittest.TestCase):
         zx, zy, zw, zh = _zone4_title_xywh()
         region = frame[zy : zy + zh, zx : zx + zw]
         self.assertGreater(int((region[:, :, :3].max(axis=2) > 180).sum()), 200)
+
+
+class AudioOnlyEmptyMetadataPaintTests(unittest.TestCase):
+    def test_audio_only_keeps_selected_widgets_and_status_track(self) -> None:
+        from pigeon.np_layout import STATUS_BAR_TRACK, STATUS_BAR_VIEW_H, STATUS_BAR_VIEW_W
+        from pigeon.np_layout import design_rect_from_local
+        from pigeon.widgets import view_circles as vc
+        from pigeon.widgets.view_circles import ViewCirclesWidget
+
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        widget = ViewCirclesWidget(assets_dir=assets)
+        vc._default_zone_widget_assignments = lambda content_mode=None: (  # type: ignore[method-assign]
+            "tt_countdown_16x9",
+            "",
+            "volume",
+            "cast_info",
+            "status_bar",
+        )
+        widget.update_state(
+            progress=0.0,
+            elapsed_text="",
+            remaining_text="",
+            volume_text="",
+            has_now_playing=True,
+            has_position=False,
+            content_active=True,
+            content_mode="video",
+        )
+        self.assertEqual(
+            widget._assignments(),
+            ("tt_countdown_16x9", "", "volume", "cast_info", "status_bar"),
+        )
+        self.assertEqual(widget._info_text_lines(), ("", "", ""))
+        frame = widget.bgra_frame()
+        self.assertIsNotNone(frame)
+        assert frame is not None
+        z5 = NOW_PLAYING_ZONES[5]
+        bx, by, bw, bh, _ = design_rect_from_local(
+            z5,
+            STATUS_BAR_TRACK,
+            view_w=STATUS_BAR_VIEW_W,
+            view_h=STATUS_BAR_VIEW_H,
+        )
+        bar = frame[by : by + bh, bx : bx + bw]
+        self.assertGreater(int((bar[:, :, 3] > 16).sum()), 40)
+
+
+class LevelsVolumeReadoutTests(unittest.TestCase):
+    def test_volume_number_sits_under_the_meters(self) -> None:
+        from pigeon.widgets.audio_meter_saver import stereo_meter_volume_band_h
+        from pigeon.widgets.view_circles import draw_levels_volume_readout
+
+        z = NOW_PLAYING_ZONES[3]
+        out = np.zeros((int(DESIGN_H), int(DESIGN_W), 4), dtype=np.uint8)
+        draw_levels_volume_readout(out, z.xywh, "-22.5 dB")
+        zx, zy, zw, zh = (int(v) for v in z.xywh)
+        reserve = stereo_meter_volume_band_h(zh)
+        band = out[zy + zh - reserve : zy + zh, zx : zx + zw]
+        self.assertGreater(int((band[:, :, 3] > 16).sum()), 80)
+        # 80px TRT-sized digits can graze the band top; almost all ink stays in-row.
+        upper = out[zy : zy + zh - reserve, zx : zx + zw]
+        self.assertLess(
+            int((upper[:, :, 3] > 16).sum()),
+            int((band[:, :, 3] > 16).sum()) * 0.15,
+        )
+
+    def test_trt_shares_the_volume_row(self) -> None:
+        from pigeon.widgets.audio_meter_saver import (
+            levels_readout_center_y,
+            stereo_meter_volume_band_h,
+        )
+        from pigeon.widgets import view_circles as vc
+        from pigeon.widgets.view_circles import ViewCirclesWidget, draw_levels_volume_readout
+
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        widget = ViewCirclesWidget(assets_dir=assets)
+        vc._default_zone_widget_assignments = lambda content_mode=None: (  # type: ignore[method-assign]
+            "tt_countdown_16x9",
+            "",
+            "audio_levels",
+            "cast_info",
+            "status_bar",
+        )
+        widget.update_state(
+            progress=0.4,
+            elapsed_text="0:20:00",
+            remaining_text="-1:07:31",
+            volume_text="-22.5 dB",
+            has_now_playing=True,
+            has_position=True,
+            content_active=True,
+            content_mode="video",
+        )
+        out = np.zeros((int(DESIGN_H), int(DESIGN_W), 4), dtype=np.uint8)
+        widget._draw_tt_countdown(out, zone=6, wide=True)
+        z3 = NOW_PLAYING_ZONES[3]
+        draw_levels_volume_readout(out, z3.xywh, "-22.5 dB")
+        frame = out
+        z6 = NOW_PLAYING_ZONES[6]
+        reserve = stereo_meter_volume_band_h(int(z3.h))
+        cy = levels_readout_center_y(z3.y, z3.h)
+
+        def _band_cy(zone) -> float:
+            zx, zy, zw, zh = (int(v) for v in zone.xywh)
+            band = frame[zy + zh - reserve : zy + zh, zx : zx + zw]
+            ys = np.where(band[:, :, 3] > 16)[0]
+            self.assertGreater(int(ys.size), 40)
+            return float(zy + zh - reserve) + float(ys.mean())
+
+        vol_cy = _band_cy(z3)
+        trt_cy = _band_cy(z6)
+        self.assertLess(abs(vol_cy - trt_cy), 12.0)
+        self.assertLess(abs(vol_cy - cy), 14.0)
+        self.assertLess(abs(trt_cy - cy), 14.0)
+
+    def test_paused_clock_saver_fits_zone6_over_backdrop(self) -> None:
+        from pigeon.widgets import view_circles as vc
+        from pigeon.widgets.view_circles import ViewCirclesWidget
+
+        assets = Path(__file__).resolve().parents[2] / "pigeonAssets"
+        widget = ViewCirclesWidget(assets_dir=assets)
+        vc._default_zone_widget_assignments = lambda content_mode=None: (  # type: ignore[method-assign]
+            "tt_countdown_16x9",
+            "",
+            "audio_levels",
+            "cast_info",
+            "status_bar",
+        )
+        widget.update_state(
+            progress=0.4,
+            elapsed_text="0:20:00",
+            remaining_text="-1:07:31",
+            volume_text="-22.5 dB",
+            has_now_playing=True,
+            has_position=True,
+            content_active=True,
+            paused=True,
+            content_mode="video",
+        )
+        self.assertTrue(widget._paused_clock_in_zone6())
+        self.assertTrue(widget._ticking_needs_wall_second())
+        frame = np.zeros((int(DESIGN_H), int(DESIGN_W), 4), dtype=np.uint8)
+        widget._overlay_ticking(frame)
+        zx, zy, zw, zh = NOW_PLAYING_ZONES[6].xywh
+        band = frame[
+            zy + zh // 2 - 24 : zy + zh // 2 + 24,
+            zx + 48 : zx + zw - 48,
+            :3,
+        ]
+        self.assertGreater(int(np.count_nonzero(band.max(axis=2) > 40)), 300)
+        rects = widget._ticking_dirty_rects()
+        self.assertTrue(
+            any(r[0] == zx and r[1] == zy and r[2] == zw and r[3] == zh for r in rects)
+        )
 
 
 if __name__ == "__main__":

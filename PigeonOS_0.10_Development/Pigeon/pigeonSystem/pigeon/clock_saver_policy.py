@@ -38,9 +38,10 @@ def clock_saver_due_for_no_content(
     paused_with_content: bool,
     live: bool = False,
     content_idle: bool = True,
+    incoming_audio: bool = False,
 ) -> bool:
     """True when nothing is playing and no paused title is holding now-playing."""
-    if playing or paused_with_content or live:
+    if playing or paused_with_content or live or incoming_audio:
         return False
     return bool(content_idle)
 

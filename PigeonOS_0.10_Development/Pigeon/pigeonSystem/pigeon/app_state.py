@@ -97,6 +97,8 @@ def write_app_state(**updates: Any) -> None:
                         return
             except OSError:
                 return
+        if all(key in cur and cur[key] == val for key, val in updates.items()):
+            return
         cur.update(updates)
         _atomic_write_state(cur)
     except Exception:

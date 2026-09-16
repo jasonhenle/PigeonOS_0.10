@@ -241,6 +241,51 @@ def alpha_blend_bgra_over_bgr(base_bgr: np.ndarray, overlay_bgra: np.ndarray) ->
     return out.astype(np.uint8)
 
 
+def premultiply_bgra_on_black(overlay_bgra: np.ndarray) -> np.ndarray:
+    """BGR of ``overlay`` as if composited onto black. Cached chrome uses this once."""
+    alpha_u8 = overlay_bgra[:, :, 3]
+    if int(alpha_u8.min()) == 255:
+        return overlay_bgra[:, :, :3].copy()
+    a = alpha_u8.astype(np.uint16)
+    rgb = overlay_bgra[:, :, :3].astype(np.uint16)
+    return ((rgb * a[:, :, None] + 127) // 255).astype(np.uint8)
+
+
+def blend_bgra_over_bgr_u8(
+    base_bgr: np.ndarray,
+    overlay_bgra: np.ndarray,
+    *,
+    out: np.ndarray | None = None,
+) -> np.ndarray:
+    """Uint8 lerp without boolean indexing — cheap enough for per-frame widget rects."""
+    if base_bgr.shape[:2] != overlay_bgra.shape[:2]:
+        raise ValueError("Overlay and base frame sizes must match")
+    alpha_u8 = overlay_bgra[:, :, 3]
+    if int(alpha_u8.max()) <= 0:
+        if out is None:
+            return base_bgr
+        if out is not base_bgr:
+            out[:] = base_bgr
+        return out
+    if int(alpha_u8.min()) >= 255:
+        rgb = overlay_bgra[:, :, :3]
+        if out is None:
+            return rgb
+        out[:] = rgb
+        return out
+    a = alpha_u8.astype(np.uint16)
+    ia = 255 - a
+    blended = (
+        overlay_bgra[:, :, :3].astype(np.uint16) * a[:, :, None]
+        + base_bgr.astype(np.uint16) * ia[:, :, None]
+        + 127
+    ) // 255
+    if out is None:
+        return blended.astype(np.uint8)
+    out[:] = blended
+    return out
+
+
 def scale_height_and_center_crop(image: np.ndarray, target_w: int, target_h: int) -> np.ndarray:
     """Scale by height to target_h, then center-crop horizontally to target_w."""
     src_h, src_w = image.shape[:2]

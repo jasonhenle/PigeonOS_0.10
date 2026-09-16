@@ -437,6 +437,16 @@ def layout_shows_tt_countdown_and_volume(
     return has_vol and has_tt
 
 
+def layout_shows_tt_countdown_and_levels(
+    assignments: tuple[str, ...] | list[str],
+) -> bool:
+    """True when the live layout has a TT countdown beside the levels well."""
+    names = [str(n or "").strip() for n in list(assignments)[:5]]
+    has_levels = "audio_levels" in names
+    has_tt = any(n in ("tt_countdown", TT_COUNTDOWN_16X9_WIDGET) for n in names)
+    return has_levels and has_tt
+
+
 def tt_countdown_volume_align_dy(
     *,
     plate_top: float,
@@ -479,7 +489,7 @@ def tt_countdown_16x9_zone(assignments: tuple[str, ...] | list[str]) -> int | No
 
 
 def zone6_span_widget(assignments: tuple[str, ...] | list[str]) -> str:
-    """Widget drawn in the wide zone-6 slot (TT, clock, or weather), or ``""``."""
+    """Widget drawn in the wide zone-6 slot (TT, clock, weather, visualizer), or ``""``."""
     zones = [str(n or "").strip() for n in list(assignments)[:3]]
     while len(zones) < 3:
         zones.append("")
@@ -487,6 +497,10 @@ def zone6_span_widget(assignments: tuple[str, ...] | list[str]) -> str:
         return TT_COUNTDOWN_16X9_WIDGET
     if zones[0] == "clock_16x9":
         return "clock"
+    if zones[0] == "visualizer":
+        return "visualizer"
+    if zones[0] == "vu":
+        return "vu"
     if zones[0] == "weather" and not zones[1]:
         return "weather"
     return ""
@@ -553,6 +567,7 @@ WIDGET_FILENAMES: dict[str, str] = {
     "status_bar": "widget_np_05_status_bar.svg",
     "tt_countdown": "widget_np_01-02-03_tt_countdown.svg",
     "tt_countdown_16x9": "widget_np_06-07_tt_countdown.svg",
+    "vu": "widget_np_06-07_vu_meters.svg",
     "play": "widget_np_01-02-03_play.svg",
     "poster_2x3": "widget_np_01-02-03_poster_2x3.svg",
     "poster_1x1": "widget_np_01-02-03_poster_1x1.svg",
@@ -566,7 +581,9 @@ def canonical_zone_widget(zone: int, name: str) -> str:
     """Zone 5 bar is ``status_bar``; zones 1–3 circular NP stays ``now_playing``."""
     n = str(name or "").strip()
     z = int(zone)
-    if n in ("now_playing", "status_bar"):
+    if n == "status_bar":
+        return "status_bar" if z in (4, 5) else "now_playing"
+    if n == "now_playing":
         return "status_bar" if z == 5 else "now_playing"
     return n
 
