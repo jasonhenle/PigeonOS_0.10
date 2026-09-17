@@ -32,7 +32,7 @@ _SHELL_UPDATE_SCRIPT = "pigeon_github_update.sh"
 _LEGACY_SHELL_UPDATE_SCRIPT = "pi_update_from_github.sh"
 _BOOTSTRAP_SCRIPT_RAW = (
     "https://raw.githubusercontent.com/jasonhenle/PigeonOS_0.10/main/"
-    "PigeonOS_0.10_Development/Pigeon/installer/pigeon_github_update.sh"
+    "PigeonOS_0.11_Development/Pigeon/installer/pigeon_github_update.sh"
 )
 _LAUNCHER_NAMES = (
     "run_pigeon_0_10.command",
@@ -48,7 +48,7 @@ _LAUNCHER_NAMES = (
 _INSTALLER_DIR = "installer"
 # Prefer 0.10; legacy names accepted when scanning old zips for migration.
 _MAIN_PY_NAMES = ("pigeon_0_9.py", "pigeon_0_8.py", "pigeon_0_7.py", "pigeon_0_6.py")
-_PREFERRED_APP_REL = Path("PigeonOS_0.10_Development") / "Pigeon"
+_PREFERRED_APP_REL = Path("PigeonOS_0.11_Development") / "Pigeon"
 
 
 @dataclass(frozen=True)
@@ -764,7 +764,7 @@ def apply_github_update(
             "  rm -f ~/.pigeon_0_6/github_update_token\n"
             "  curl -fsSL -o /tmp/pigeon-install.sh \\\n"
             '    "https://raw.githubusercontent.com/jasonhenle/PigeonOS_0.10/main/'
-            'PigeonOS_0.10_Development/Pigeon/installer/install_from_github.sh"\n'
+            'PigeonOS_0.11_Development/Pigeon/installer/install_from_github.sh"\n'
             "  bash /tmp/pigeon-install.sh\n\n"
             f"{e}",
         )

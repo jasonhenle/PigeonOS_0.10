@@ -49,7 +49,7 @@ REQUIRED_ASSET_PATHS: tuple[str, ...] = (
 )
 
 _REPO_APP_PREFIXES: tuple[str, ...] = (
-    "PigeonOS_0.10_Development/Pigeon",
+    "PigeonOS_0.11_Development/Pigeon",
     "PigeonOS_0.9_Development/Pigeon",
     "Pigeon",
 )

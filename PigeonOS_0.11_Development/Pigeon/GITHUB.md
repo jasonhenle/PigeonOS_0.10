@@ -15,7 +15,7 @@ Pigeon splits **app files** (this repo) from **your settings** (`~/.pigeon_0_6/`
 
 ```bash
 curl -fsSL -o /tmp/pigeon-install.sh \
-  "https://raw.githubusercontent.com/jasonhenle/PigeonOS_0.10/main/PigeonOS_0.10_Development/Pigeon/installer/install_from_github.sh"
+  "https://raw.githubusercontent.com/jasonhenle/PigeonOS_0.10/main/PigeonOS_0.11_Development/Pigeon/installer/install_from_github.sh"
 bash /tmp/pigeon-install.sh
 ```
 
@@ -37,13 +37,13 @@ Releases are built automatically when `pigeonSystem/pigeon/version.py` changes o
 ### Alternative — ZIP or git (any platform)
 
 **ZIP:** https://github.com/jasonhenle/PigeonOS_0.10/archive/refs/heads/main.zip  
-Then go to **`PigeonOS_0.10_Development/Pigeon/`** inside the extracted folder and run the installer for your platform.
+Then go to **`PigeonOS_0.11_Development/Pigeon/`** inside the extracted folder and run the installer for your platform.
 
 **Clone:**
 
 ```bash
 git clone https://github.com/jasonhenle/PigeonOS_0.10.git
-cd PigeonOS_0.10/PigeonOS_0.10_Development/Pigeon
+cd PigeonOS_0.10/PigeonOS_0.11_Development/Pigeon
 ./installer/install_pigeon.sh          # Mac
 ./installer/install_on_pi.sh           # Pi / Linux
 ```

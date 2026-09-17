@@ -12,7 +12,7 @@ set -euo pipefail
 
 REPO="${PIGEON_UPDATE_GITHUB_USER:-jasonhenle}/${PIGEON_UPDATE_GITHUB_REPO:-PigeonOS_0.10}"
 BRANCH="${PIGEON_UPDATE_GITHUB_BRANCH:-main}"
-APP_PREFIX="PigeonOS_0.10_Development/Pigeon"
+APP_PREFIX="PigeonOS_0.11_Development/Pigeon"
 INSTALL_DIR="${PIGEON_INSTALL_DIR:-}"
 IN_PLACE=0
 

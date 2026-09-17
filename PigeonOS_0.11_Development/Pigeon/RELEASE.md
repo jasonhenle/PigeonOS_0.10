@@ -37,7 +37,7 @@ Nothing is released yet — `experiment` is your sandbox on GitHub.
 From the **git repo root** (`Desktop/Pigeon`):
 
 ```bash
-./PigeonOS_0.10_Development/Pigeon/installer/ship_to_main.sh
+./PigeonOS_0.11_Development/Pigeon/installer/ship_to_main.sh
 ```
 
 This script:
@@ -56,7 +56,7 @@ After merge, wait ~1 minute for GitHub’s cache, then **Updates** in Pigeon sho
 Run once from the git repo root:
 
 ```bash
-./PigeonOS_0.10_Development/Pigeon/installer/setup_desktop_launchers.sh
+./PigeonOS_0.11_Development/Pigeon/installer/setup_desktop_launchers.sh
 ```
 
 This creates two double-click icons on your Desktop:
@@ -117,7 +117,7 @@ Do **not** delete `experiment` — keep using it for the next round.
 
 ```bash
 gh api repos/jasonhenle/PigeonOS_0.10/commits/main --jq '.sha[0:7]'
-curl -s "https://raw.githubusercontent.com/jasonhenle/PigeonOS_0.10/main/PigeonOS_0.10_Development/Pigeon/pigeonSystem/pigeon/version.py" | grep PATCH
+curl -s "https://raw.githubusercontent.com/jasonhenle/PigeonOS_0.10/main/PigeonOS_0.11_Development/Pigeon/pigeonSystem/pigeon/version.py" | grep PATCH
 ```
 
 Open Pigeon → Settings → **Check for updates**. You should see a newer version than the one installed.

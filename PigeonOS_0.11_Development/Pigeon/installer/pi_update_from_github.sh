@@ -12,7 +12,7 @@ set -euo pipefail
 REPO="${PIGEON_UPDATE_GITHUB_USER:-jasonhenle}/${PIGEON_UPDATE_GITHUB_REPO:-PigeonOS_0.10}"
 BRANCH="${PIGEON_UPDATE_GITHUB_BRANCH:-main}"
 ZIP_URL="https://codeload.github.com/${REPO}/zip/refs/heads/${BRANCH}"
-APP_REL="PigeonOS_0.10_Development/Pigeon"
+APP_REL="PigeonOS_0.11_Development/Pigeon"
 
 INSTALL_DIR="${1:-}"
 if [[ -z "${INSTALL_DIR}" ]]; then

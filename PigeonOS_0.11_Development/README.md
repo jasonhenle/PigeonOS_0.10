@@ -3,9 +3,9 @@
 Active development for **PigeonOS 0.10** lives here.
 
 ```
-PigeonOS_0.10_Development/
+PigeonOS_0.11_Development/
   Pigeon/                 Runnable app (Mac + Pi) — code + pigeonAssets
-  PigeonOS_0.10_GFX/       Design sources (.ai / exports) — local archive, not shipped
+  PigeonOS_0.11_GFX/       Design sources (.ai / exports) — local archive, not shipped
   docs/                   Settings / design notes
   testingEnvironments/    Standalone widget previews
   README.md               This glossary + folder map
@@ -20,7 +20,7 @@ PigeonOS_0.10_Development/
 
 Previous 0.9 tree + GFX: `../Archive/PigeonOS_0.9_Development/` (+ `PigeonOS_0.9_GFX/`)  
 Previous 0.8 tree (code + design GFX): `../Archive/Pigeon_0.8.0_Development/`  
-Do **not** link new builds to Archive paths (use `PigeonOS_0.10_GFX/` for 0.10 design).
+Do **not** link new builds to Archive paths (use `PigeonOS_0.11_GFX/` for 0.10 design).
 
 ---
 
@@ -96,7 +96,7 @@ Shipped with the app. Paths are relative to the `Pigeon/` app root.
 | `App logos/` | Streaming service badges (when present) |
 | Hex-named `.png`/`.jpg` | TMDb title-key cache files (gitignored; regenerated) |
 
-Design sources (Illustrator, etc.) live in **`PigeonOS_0.10_GFX/`** — not required for install/update.
+Design sources (Illustrator, etc.) live in **`PigeonOS_0.11_GFX/`** — not required for install/update.
 
 ## Keyboard shortcuts
 
@@ -148,7 +148,7 @@ Env: `PIGEON_ROTARY_SERIAL=0` disables; `PIGEON_ADB_SERIAL` selects ADB device; 
 |------|----------|
 | User settings | `~/.pigeon_0_6/` |
 | Install root on Pi (typical) | `~/Pigeon_0.7.23/` (legacy folder name on device) |
-| Dev app root | `PigeonOS_0.10_Development/Pigeon/` |
+| Dev app root | `PigeonOS_0.11_Development/Pigeon/` |
 | GitHub repo | `jasonhenle/PigeonOS_0.10` |
 
 ## Versioning

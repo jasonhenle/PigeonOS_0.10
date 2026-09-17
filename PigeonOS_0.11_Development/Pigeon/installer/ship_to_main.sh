@@ -8,7 +8,7 @@ SOURCE_BRANCH="${PIGEON_SHIP_SOURCE_BRANCH:-experiment}"
 TARGET_BRANCH="main"
 DO_MERGE=0
 REPO="jasonhenle/PigeonOS_0.10"
-VERSION_REL="PigeonOS_0.10_Development/Pigeon/pigeonSystem/pigeon/version.py"
+VERSION_REL="PigeonOS_0.11_Development/Pigeon/pigeonSystem/pigeon/version.py"
 
 usage() {
   cat <<'EOF'

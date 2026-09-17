@@ -18,7 +18,7 @@ _DEFAULT_GITHUB_USER = "jasonhenle"
 _DEFAULT_GITHUB_REPO = "PigeonOS_0.10"
 _DEFAULT_GITHUB_BRANCH = "main"
 _DEFAULT_VERSION_PATHS: tuple[str, ...] = (
-    "PigeonOS_0.10_Development/Pigeon/pigeonSystem/pigeon/version.py",
+    "PigeonOS_0.11_Development/Pigeon/pigeonSystem/pigeon/version.py",
     "PigeonOS_0.9_Development/Pigeon/pigeonSystem/pigeon/version.py",
     "Pigeon_0.7.0_Development/Pigeon/pigeonSystem/pigeon/version.py",
     "Pigeon_0.70_Development/Pigeon/pigeonSystem/pigeon/version.py",

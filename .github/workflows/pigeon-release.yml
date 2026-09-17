@@ -5,7 +5,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "PigeonOS_0.10_Development/Pigeon/pigeonSystem/pigeon/version.py"
+      - "PigeonOS_0.11_Development/Pigeon/pigeonSystem/pigeon/version.py"
   workflow_dispatch:
 
 permissions:
@@ -19,12 +19,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build Raspberry Pi tarball
-        run: bash PigeonOS_0.10_Development/Pigeon/raspberryPi/package_for_pi.sh
+        run: bash PigeonOS_0.11_Development/Pigeon/raspberryPi/package_for_pi.sh
 
       - name: Read version
         id: ver
         run: |
-          VERSION="$(python3 -c "import importlib.util; p='PigeonOS_0.10_Development/Pigeon/pigeonSystem/pigeon/version.py'; s=importlib.util.spec_from_file_location('pv', p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(m.version_string())")"
+          VERSION="$(python3 -c "import importlib.util; p='PigeonOS_0.11_Development/Pigeon/pigeonSystem/pigeon/version.py'; s=importlib.util.spec_from_file_location('pv', p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(m.version_string())")"
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
           echo "Pigeon ${VERSION}"
 
@@ -34,13 +34,13 @@ jobs:
         run: |
           VERSION="${{ steps.ver.outputs.version }}"
           TAG="v${VERSION}"
-          FILE="PigeonOS_0.10_Development/Pigeon/raspberryPi/dist/pigeon_${VERSION}_raspberry_pi.tar.gz"
+          FILE="PigeonOS_0.11_Development/Pigeon/raspberryPi/dist/pigeon_${VERSION}_raspberry_pi.tar.gz"
           test -f "${FILE}"
           NOTES="Full Pigeon ${VERSION} install package for Raspberry Pi (includes pigeonAssets, installer, and app code).
 
           Fresh install on Pi:
             curl -fsSL -o /tmp/pigeon-install.sh \\
-              \"https://raw.githubusercontent.com/${{ github.repository }}/main/PigeonOS_0.10_Development/Pigeon/installer/install_from_github.sh\"
+              \"https://raw.githubusercontent.com/${{ github.repository }}/main/PigeonOS_0.11_Development/Pigeon/installer/install_from_github.sh\"
             bash /tmp/pigeon-install.sh
 
           Mac or dev tree: clone or download ZIP from the repo root — see GITHUB.md."

@@ -42,7 +42,7 @@ If in-app Updates fails with a latin-1 or U+202F encoding error, run once on the
 
   rm -f ~/.pigeon_0_6/github_update_token
   curl -fsSL -o /tmp/pi_update.sh \
-    "https://raw.githubusercontent.com/jasonhenle/PigeonOS_0.10/main/PigeonOS_0.10_Development/Pigeon/installer/pi_update_from_github.sh"
+    "https://raw.githubusercontent.com/jasonhenle/PigeonOS_0.10/main/PigeonOS_0.11_Development/Pigeon/installer/pi_update_from_github.sh"
   bash /tmp/pi_update.sh
 
 If Pigeon is already installed, you can also run:

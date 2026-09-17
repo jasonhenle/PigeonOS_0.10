@@ -8,7 +8,7 @@ set -euo pipefail
 REPO="${PIGEON_UPDATE_GITHUB_USER:-jasonhenle}/${PIGEON_UPDATE_GITHUB_REPO:-PigeonOS_0.10}"
 BRANCH="${PIGEON_UPDATE_GITHUB_BRANCH:-main}"
 ZIP_URL="https://codeload.github.com/${REPO}/zip/refs/heads/${BRANCH}"
-APP_REL="PigeonOS_0.10_Development/Pigeon"
+APP_REL="PigeonOS_0.11_Development/Pigeon"
 STATE_DIR="${HOME}/.pigeon_0_6"
 LOG_FILE="${STATE_DIR}/pigeon.log"
 

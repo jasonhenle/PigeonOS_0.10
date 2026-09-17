@@ -4,7 +4,7 @@ PigeonOS 0.10 Development
 Active development lives here:
 
   Pigeon/                 Runnable app (Mac + Pi scripts + pigeonAssets)
-  PigeonOS_0.10_GFX/      Design sources for this version (local duplicate of Pigeon_GFX; not in Pi tarball)
+  PigeonOS_0.11_GFX/      Design sources for this version (local duplicate of Pigeon_GFX; not in Pi tarball)
   testingEnvironments/    Standalone UI / widget previews
   README.md               Glossary (views, assets, shortcuts, modules)
 
@@ -23,4 +23,4 @@ The previous 0.9 development tree + GFX snapshot is archived at:
   ../Archive/PigeonOS_0.9_Development/PigeonOS_0.9_GFX/
 
 Do not link future builds to Archive/ or to the root Pigeon_GFX/ tree
-(prefer PigeonOS_0.10_GFX/ for 0.10 design work).
+(prefer PigeonOS_0.11_GFX/ for 0.10 design work).

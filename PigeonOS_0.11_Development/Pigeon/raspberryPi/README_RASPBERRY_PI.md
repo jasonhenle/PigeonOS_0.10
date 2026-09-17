@@ -10,7 +10,7 @@ On the Pi (Terminal):
 
 ```bash
 curl -fsSL -o /tmp/pigeon-install.sh \
-  "https://raw.githubusercontent.com/jasonhenle/PigeonOS_0.10/main/PigeonOS_0.10_Development/Pigeon/installer/install_from_github.sh"
+  "https://raw.githubusercontent.com/jasonhenle/PigeonOS_0.10/main/PigeonOS_0.11_Development/Pigeon/installer/install_from_github.sh"
 bash /tmp/pigeon-install.sh
 ```
 

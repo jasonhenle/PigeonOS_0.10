@@ -60,24 +60,27 @@ Pigeon_0.7.0_Development/**/installer/setup/tmdb_api_key
 Pigeon_0.7.0_Development/**/installer/setup/tmdb_read_token
 Pigeon_0.7.0_Development/**/installer/setup/pyatv_credentials
 
-# Pigeon 0.8 runtime caches and packaging staging (regenerated locally)
-PigeonOS_0.10_Development/**/pigeonCashe/
-PigeonOS_0.10_Development/**/pigeonAssets/[0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F].png
-PigeonOS_0.10_Development/**/pigeonAssets/[0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F].jpg
-PigeonOS_0.10_Development/**/pigeonTMDB/pigeonTMDB_BD/
-PigeonOS_0.10_Development/**/pigeonTMDB/pigeonTMDB_ORIGINAL/
-PigeonOS_0.10_Development/**/pigeonTMDB/pigeonTMDB_Poster/
-PigeonOS_0.10_Development/**/pigeonTMDB/pigeonTMDB_TT/
-PigeonOS_0.10_Development/**/pigeonTMDB/*.jpg
-PigeonOS_0.10_Development/**/pigeonTMDB/*.png
-PigeonOS_0.10_Development/**/pigeonTMDB/*.ai
-PigeonOS_0.10_Development/**/raspberryPi/dist/staging/
-PigeonOS_0.10_Development/**/raspberryPi/dist/*.tar.gz
-PigeonOS_0.10_Development/**/installer/setup/tmdb_api_key
-PigeonOS_0.10_Development/**/installer/setup/tmdb_read_token
-PigeonOS_0.10_Development/**/installer/setup/pyatv_credentials
-PigeonOS_0.10_Development/**/PigeonOS_0.10_GFX/
-PigeonOS_0.10_Development/**/pigeonSystem/_kb_debug/
+# PigeonOS 0.11 runtime caches and packaging staging (regenerated locally)
+PigeonOS_0.11_Development/**/pigeonCashe/
+PigeonOS_0.11_Development/**/pigeonAssets/[0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F].png
+PigeonOS_0.11_Development/**/pigeonAssets/[0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F].jpg
+PigeonOS_0.11_Development/**/pigeonTMDB/pigeonTMDB_BD/
+PigeonOS_0.11_Development/**/pigeonTMDB/pigeonTMDB_ORIGINAL/
+PigeonOS_0.11_Development/**/pigeonTMDB/pigeonTMDB_Poster/
+PigeonOS_0.11_Development/**/pigeonTMDB/pigeonTMDB_TT/
+PigeonOS_0.11_Development/**/pigeonTMDB/*.jpg
+PigeonOS_0.11_Development/**/pigeonTMDB/*.png
+PigeonOS_0.11_Development/**/pigeonTMDB/*.ai
+PigeonOS_0.11_Development/**/raspberryPi/dist/staging/
+PigeonOS_0.11_Development/**/raspberryPi/dist/*.tar.gz
+PigeonOS_0.11_Development/**/installer/setup/tmdb_api_key
+PigeonOS_0.11_Development/**/installer/setup/tmdb_read_token
+PigeonOS_0.11_Development/**/installer/setup/pyatv_credentials
+PigeonOS_0.11_Development/**/PigeonOS_0.11_GFX/
+PigeonOS_0.11_Development/**/pigeonSystem/_kb_debug/
+PigeonOS_0.11_Development/**/*.psd
+PigeonOS_0.11_Development/**/*.ai
+PigeonOS_0.11_Development/**/*.aep
 
 # Local archives and full GFX tree (not required for app download path)
 Archive/

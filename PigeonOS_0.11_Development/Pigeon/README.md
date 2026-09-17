@@ -21,7 +21,7 @@ Pigeon is a full-screen media display and control surface. It can show playback 
   - `pigeonUI`: non-purgeable UI assets.
 - `pigeonCashe/`: centralized Python bytecode cache output (`PYTHONPYCACHEPREFIX` target).
 - `pigeonTMDB/`: TMDB media staging folders (`pigeonTMDB_BD`, `pigeonTMDB_ORIGINAL`, `pigeonTMDB_TT`).
-- `testingEnvironments/`: local test scripts in `PigeonOS_0.10_Development/testingEnvironments` (development-level folder).
+- `testingEnvironments/`: local test scripts in `PigeonOS_0.11_Development/testingEnvironments` (development-level folder).
 
 ## Hotkeys
 
@@ -75,7 +75,7 @@ Develop on branch **`experiment`**. The in-app **Updates** button only sees **`m
 See **[RELEASE.md](RELEASE.md)** for the full workflow, or run from the git repo root:
 
 ```bash
-./PigeonOS_0.10_Development/Pigeon/installer/ship_to_main.sh
+./PigeonOS_0.11_Development/Pigeon/installer/ship_to_main.sh
 ```
 
 ### Desktop launchers (Mac)
@@ -83,7 +83,7 @@ See **[RELEASE.md](RELEASE.md)** for the full workflow, or run from the git repo
 Run once to create/update:
 
 ```bash
-./PigeonOS_0.10_Development/Pigeon/installer/setup_desktop_launchers.sh
+./PigeonOS_0.11_Development/Pigeon/installer/setup_desktop_launchers.sh
 ```
 
 This adds on your Desktop:
